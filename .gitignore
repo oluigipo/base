@@ -1,0 +1,19 @@
+# Ignore everything else
+/*
+
+# Public tools
+!/common/
+!/gamepad_db_gen/
+!/header2odin/
+!/hlsl2glsl/
+!/meshtool/
+!/os/
+!/render3/
+!/render4/
+!/steam/
+!/third_party/
+!/.gitattributes
+!/.gitignore
+!/build.py
+!/copyright_notices.txt
+!/README.md

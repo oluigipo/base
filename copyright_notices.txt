@@ -1,0 +1,20 @@
+
+Third Party code (third_party/) in this codebase include:
+	- stb_image            |
+	- stb_freetype         |
+	- stb_vorbis           (MIT & Public Domain) at https://github.com/nothings/stb
+	- cglm                 (MIT)                 at https://github.com/recp/cglm
+	- meshoptimizer        (MIT)                 at https://github.com/zeux/meshoptimizer
+	- SPIRV-Cross          (Apache 2.0)          at https://github.com/KhronosGroup/SPIRV-Cross
+	- d3dx12.h             (MIT)                 at 
+	- gamecontrollerdb.txt (Zlib)                at https://github.com/gabomdq/SDL_GameControllerDB
+	- guid_utils.h         (MIT) I wrote this by borrowing code from GLFW at https://github.com/glfw/glfw
+	- SQLite3              (Public Domain)       at https://sqlite.org
+
+Libraries used, but not included in this codebase:
+	- Zstd         (BSD License)          at https://github.com/facebook/zstd
+	- LZ4          (BSD 2-Clause License) at https://github.com/lz4/lz4
+
+Third Party SDKs used, but not included in this codebase:
+	- Steamworks SDK
+	- Discord Game SDK

@@ -1,0 +1,9 @@
+# Dependencies
+@win64 c os/os_win32.c
+
+# Translation Units
+c gamepad_db_gen/main.c
+
+# Output
+root
+output gamepad_db_gen

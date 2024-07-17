@@ -1,0 +1,22 @@
+# Third-party Dependencies
+incdir third_party/spirv-cross
+define SPIRV_CROSS_EXCEPTIONS_TO_ASSERTIONS
+
+cxx third_party/spirv-cross/spirv_cfg.cpp
+cxx third_party/spirv-cross/spirv_cpp.cpp
+cxx third_party/spirv-cross/spirv_cross.cpp
+cxx third_party/spirv-cross/spirv_cross_c.cpp
+cxx third_party/spirv-cross/spirv_cross_parsed_ir.cpp
+cxx third_party/spirv-cross/spirv_glsl.cpp
+cxx third_party/spirv-cross/spirv_parser.cpp
+cxx third_party/spirv-cross/spirv_reflect.cpp
+
+# Dependencies
+@win64 c os/os_win32.c
+
+# Translation Units
+cxx hlsl2glsl/hlsl2glsl.cpp
+
+# Output
+root
+output hlsl2glsl

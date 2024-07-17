@@ -1,0 +1,21 @@
+# Library Dependencies
+lib zstd_static64
+lib lz4_static64
+
+# Third-party Dependencies
+cxx third_party/meshoptimizer/indexgenerator.cpp
+cxx third_party/meshoptimizer/vcacheoptimizer.cpp
+cxx third_party/meshoptimizer/overdrawoptimizer.cpp
+cxx third_party/meshoptimizer/vfetchoptimizer.cpp
+cxx third_party/meshoptimizer/quantization.cpp
+cxx third_party/meshoptimizer/clusterizer.cpp
+
+# Dependencies
+@win64 c os/os_win32.c
+
+# Translation Units
+c meshtool/meshtool.c
+
+# Output
+root
+output meshtool

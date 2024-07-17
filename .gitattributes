@@ -1,0 +1,4 @@
+*.c text diff=c linguist-language=c eol=lf
+*.h text diff=c linguist-language=c eol=lf
+*.inc text diff=c linguist-language=c eol=lf
+*.cpp text diff=c linguist-language=cpp eol=lf
