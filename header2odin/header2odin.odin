@@ -13,6 +13,7 @@ Decl :: struct
 	name: string,
 	initializer: string,
 	bitfield_bit_count: string,
+	alignment_req: string,
 	is_api_decl: bool,
 	is_typedef: bool,
 	type: Type,
@@ -35,7 +36,8 @@ StructType :: struct
 	name: string,
 	is_union: bool,
 	is_bitfield: bool,
-	fields: []^Decl,
+	has_body: bool,
+	fields: ^Decl,
 }
 
 ProcType :: struct
@@ -95,6 +97,7 @@ PrimitiveType :: enum
 	Bool,
 	String,
 	Char,
+	Buffer,
 }
 
 Parser :: struct
@@ -162,7 +165,7 @@ main :: proc()
 	if err != .None {
 		return
 	}
-	fmt.sbprint(&builder, "package capi\n\n")
+	fmt.sbprint(&builder, "package common_odin\n\n")
 	write_decls(decls, &builder)
 
 	output := strings.to_string(builder)
@@ -203,6 +206,7 @@ parse_decl :: proc(parser: ^Parser, allow_multiple: bool) -> ^Decl
 			case "char": decl.type = PrimitiveType.Char
 			case "bool": decl.type = PrimitiveType.Bool
 			case "String": decl.type = PrimitiveType.String
+			case "Buffer": decl.type = PrimitiveType.Buffer
 			case "intsize": decl.type = PrimitiveType.Intsize
 			case "uintsize": decl.type = PrimitiveType.UIntsize
 			case "intptr": decl.type = PrimitiveType.Intptr
@@ -225,11 +229,13 @@ parse_decl :: proc(parser: ^Parser, allow_multiple: bool) -> ^Decl
 					name = parser.head.lit
 					advance(parser)
 				}
-				fields: []^Decl = {}
+				fields: ^Decl = nil
 				is_bitfield := false
+				has_body := false
 				if runtime.string_eq(parser.head.lit, "{") {
 					eat(parser, "{")
-					fields_list := make([dynamic]^Decl)
+					pfield := &fields
+					has_body = true
 					for !runtime.string_eq(parser.head.lit, "}") {
 						field_decl := parse_decl(parser, true)
 						if tryeat(parser, ":") {
@@ -238,16 +244,19 @@ parse_decl :: proc(parser: ^Parser, allow_multiple: bool) -> ^Decl
 							advance(parser)
 						}
 						eat(parser, ";")
-						append_elem(&fields_list, field_decl)
+						pfield^ = field_decl
+						it := field_decl
+						for ; it.next != nil; it = it.next {}
+						pfield = &it.next
 					}
 					eat(parser, "}")
-					fields = fields_list[:]
 				}
 				decl.type = StructType {
 					name = name,
 					fields = fields,
 					is_union = is_union,
 					is_bitfield = is_bitfield,
+					has_body = has_body,
 				}
 				should_eat_token = false
 			case "enum":
@@ -293,6 +302,13 @@ parse_decl :: proc(parser: ^Parser, allow_multiple: bool) -> ^Decl
 				decl.is_typedef = true
 			case "const":
 				base_has_const = true
+			case "alignas":
+				advance(parser)
+				eat(parser, "(")
+				decl.alignment_req = parser.head.lit
+				advance(parser)
+				eat(parser, ")")
+				should_eat_token = false
 			case:
 				if parser.head.kind != .Ident || decl.type != nil {
 					break declarator_loop
@@ -394,22 +410,23 @@ parse_decl :: proc(parser: ^Parser, allow_multiple: bool) -> ^Decl
 			}
 		}
 	}
-		
+	
 	has_const := base_has_const
 	parse_operand(parser, decl, &decl.type, &has_const)
 	
 	if allow_multiple {
 		tail := &decl.next
-		for {
-			if !runtime.string_eq(parser.head.lit, ",") {
-				break
-			}
+		for runtime.string_eq(parser.head.lit, ",") {
 			advance(parser)
-			new_decl := new_clone(decl^)
-			tail^ = new_decl
-			tail = &new_decl.next
+			new_decl := new(Decl)
+			new_decl.alignment_req = decl.alignment_req
+			new_decl.type = decl.type
+			new_decl.is_api_decl = decl.is_api_decl
+			new_decl.is_typedef = decl.is_typedef
 			has_const := base_has_const
 			parse_operand(parser, new_decl, &new_decl.type, &has_const)
+			tail^ = new_decl
+			tail = &new_decl.next
 		}
 	}
 
@@ -466,7 +483,21 @@ write_decls :: proc(decls: ^Decl, out: ^strings.Builder)
 					}
 					write_type(out, decl.type, 0)
 					fmt.sbprint(out, "\n")
-				case PointerType, ArrayType, PrimitiveType, StructType, CustomType:
+				case StructType:
+					if len(name) == 0 {
+						continue
+					}
+					if !type.has_body && runtime.string_eq(name, type.name) {
+						fmt.sbprintf(out, "%v :: struct {{}}\n", sanitize_ident(name))
+					} else {
+						fmt.sbprintf(out, "%v :: ", sanitize_ident(name))
+						write_type(out, decl.type, 0)
+						fmt.sbprint(out, "\n")
+					}
+				case PointerType, ArrayType, PrimitiveType, CustomType:
+					if len(name) == 0 {
+						continue
+					}
 					fmt.sbprintf(out, "%v :: ", sanitize_ident(name))
 					write_type(out, decl.type, 0)
 					fmt.sbprint(out, "\n")
@@ -596,6 +627,7 @@ write_decls :: proc(decls: ^Decl, out: ^strings.Builder)
 					case .UIntptr: name = "uintptr"
 					case .Bool: name = "bool"
 					case .String: name = "string"
+					case .Buffer: name = "[]u8"
 					case: name = "(unknown)"
 				}
 				fmt.sbprintf(out, "%v", name)
@@ -608,28 +640,40 @@ write_decls :: proc(decls: ^Decl, out: ^strings.Builder)
 				}
 			case ArrayType:
 				if in_proc_param {
-					fmt.sbprintf(out, "[^]")
-				} else {
+					fmt.sbprint(out, "[^]")
+				} else if len(t.length) > 0 {
 					fmt.sbprintf(out, "[%v]", t.length)
+				} else {
+					fmt.sbprint(out, "[0]")
 				}
 				write_type(out, t.of^, indent_level)
 			case ProcType:
 				write_proc_type(out, t, indent_level)
 			case StructType:
-				bitfield_type := "u8" // TODO: PROPER BITFIELD TYPE
-				if t.is_bitfield {
-					fmt.sbprintf(out, "bit_field %v\n", bitfield_type)
-				} else if t.is_union {
-					fmt.sbprintf(out, "struct #raw_union\n");
+				if  strings.has_prefix(t.name, "ID2D1") ||
+					strings.has_prefix(t.name, "IDWrite") ||
+					strings.has_prefix(t.name, "ID3D11") {
+					fmt.sbprint(out, "struct {}")
+				} else if !t.has_body {
+					fmt.sbprintf(out, "%v", t.name)
 				} else {
-					fmt.sbprintf(out, "struct\n");
-				}
-				write_indentation(out, indent_level)
-				indent_level := indent_level+1
-				fmt.sbprint(out, "{\n")
-				for decl in t.fields {
-					for it := decl; it != nil; it = it.next {
+					bitfield_type := "u8" // TODO: PROPER BITFIELD TYPE
+					if t.is_bitfield {
+						fmt.sbprintf(out, "bit_field %v\n", bitfield_type)
+					} else if t.is_union {
+						fmt.sbprintf(out, "struct #raw_union\n");
+					} else {
+						fmt.sbprintf(out, "struct\n");
+					}
+					write_indentation(out, indent_level)
+					indent_level := indent_level+1
+					fmt.sbprint(out, "{\n")
+					for it := t.fields; it != nil; it = it.next {
 						write_indentation(out, indent_level)
+						if len(it.alignment_req) > 0 {
+							fmt.sbprintf(out, "_: struct #align(%v) {{}},\n", it.alignment_req)
+							write_indentation(out, indent_level)
+						}
 						if len(it.name) > 0 {
 							fmt.sbprintf(out, "%v: ", sanitize_ident(it.name))
 						} else {
@@ -641,10 +685,10 @@ write_decls :: proc(decls: ^Decl, out: ^strings.Builder)
 						}
 						fmt.sbprintf(out, ",\n")
 					}
+					indent_level -= 1
+					write_indentation(out, indent_level)
+					fmt.sbprintf(out, "}")
 				}
-				indent_level -= 1
-				write_indentation(out, indent_level)
-				fmt.sbprintf(out, "}")
 			case EnumType:
 				fmt.sbprintf(out, "enum ")
 				write_type(out, t.underlying_type, indent_level)

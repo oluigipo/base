@@ -99,8 +99,8 @@ struct R3_ContextInfo
 	uint32 max_dispatch_z;
 	uint32 max_anisotropy_level;
 
-	uint64 supported_texture_formats      [(R3_Format__Count+63) / 64];
-	uint64 supported_render_target_formats[(R3_Format__Count+63) / 64];
+	uint64 supported_texture_formats      [2];
+	uint64 supported_render_target_formats[2];
 	
 	bool has_instancing;
 	bool has_base_vertex;
@@ -111,15 +111,16 @@ struct R3_ContextInfo
 typedef R3_ContextInfo;
 
 struct R3_Context typedef R3_Context;
-struct OS_D3D11Api;
-struct OS_OpenGLApi;
 
-typedef void* R4_OpenGLLoaderProc(char const*);
-typedef void R4_OpenGLPresentProc(R3_Context* ctx);
+struct R3_ContextDesc
+{
+	struct OS_Window* window;
+}
+typedef R3_ContextDesc;
 
-API R3_Context* R3_D3D11_MakeContext(Arena* arena, struct OS_D3D11Api const* d3d11_api);
-API R3_Context* R3_GL_MakeContext   (Arena* arena, struct OS_OpenGLApi const* ogl_api);
-API R3_Context* R3_MGL_MakeContext  (Arena* arena, R4_OpenGLLoaderProc* loader_proc, R4_OpenGLPresentProc* present_proc);
+API R3_Context* R3_D3D11_MakeContext(Arena* arena, R3_ContextDesc const* desc);
+API R3_Context* R3_GL_MakeContext   (Arena* arena, R3_ContextDesc const* desc);
+API R3_Context* R3_MGL_MakeContext  (Arena* arena, R3_ContextDesc const* desc);
 //API void R3_D3D11_RecoverDevice(R3_Context* ctx, OS_D3D11Api const* d3d11_api);
 //API void R3_GL_RecoverDevice(R3_Context* ctx, OS_OpenGLApi const* ogl_api);
 API R3_ContextInfo R3_QueryInfo(R3_Context* ctx);

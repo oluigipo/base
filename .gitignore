@@ -3,6 +3,7 @@
 
 # Public tools
 !/common/
+!/common_odin/
 !/gamepad_db_gen/
 !/header2odin/
 !/hlsl2glsl/
@@ -11,6 +12,8 @@
 !/render3/
 !/render4/
 !/steam/
+!/test_odin/
+!/test_render4/
 !/third_party/
 !/.gitattributes
 !/.gitignore

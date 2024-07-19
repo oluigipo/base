@@ -387,20 +387,14 @@ enum AllocatorError
 }
 typedef AllocatorError;
 
-struct AllocatorResult
-{
-	void* ptr;
-	AllocatorError error;
-}
-typedef AllocatorResult;
-
-typedef AllocatorResult AllocatorProc(void* instance, AllocatorMode mode, intsize size, intsize alignment, void* old_ptr, intsize old_size);
+struct Allocator typedef Allocator;
+typedef void* AllocatorProc(Allocator* allocator, AllocatorMode mode, intsize size, intsize alignment, void* old_ptr, intsize old_size, AllocatorError* out_err);
 struct Allocator
 {
 	AllocatorProc* proc;
 	void* instance;
-}
-typedef Allocator;
+	void* odin_proc;
+};
 
 #define INTSIZE_MAX PTRDIFF_MAX
 #define INTSIZE_MIN PTRDIFF_MIN
@@ -2296,13 +2290,20 @@ static inline void*
 ArenaEnd(Arena* arena)
 { return arena->memory + arena->offset; }
 
-static AllocatorResult
-ArenaAllocatorProc(void* instance, AllocatorMode mode, intsize size, intsize alignment, void* old_ptr, intsize old_size)
+static void*
+ArenaAllocatorProc(Allocator* allocator, AllocatorMode mode, intsize size, intsize alignment, void* old_ptr, intsize old_size, AllocatorError* out_err)
 {
 	Trace();
 	void* result = NULL;
 	AllocatorError error = AllocatorError_Ok;
-	Arena* arena = (Arena*)instance;
+	Arena* arena = (Arena*)allocator->instance;
+
+	if (!alignment || (alignment & alignment-1) != 0)
+	{
+		if (out_err)
+			*out_err = AllocatorError_InvalidArgument;
+		return NULL;
+	}
 
 	switch (mode)
 	{
@@ -2322,6 +2323,14 @@ ArenaAllocatorProc(void* instance, AllocatorMode mode, intsize size, intsize ali
 		} break;
 		case AllocatorMode_Resize:
 		{
+			if (!old_ptr)
+			{
+				result = ArenaPushAligned(arena, size, alignment);
+				if (!result)
+					error = AllocatorError_OutOfMemory;
+				break;
+			}
+
 			intsize old_offset = (uint8*)old_ptr - arena->memory;
 			if (old_offset + old_size == arena->offset)
 			{
@@ -2364,10 +2373,9 @@ ArenaAllocatorProc(void* instance, AllocatorMode mode, intsize size, intsize ali
 		} break;
 	}
 
-	return (AllocatorResult) {
-		.ptr = result,
-		.error = error,
-	};
+	if (out_err)
+		*out_err = error;
+	return result;
 }
 
 static inline Allocator

@@ -122,9 +122,10 @@ target = None
 outdir = None
 middir = None
 output_name = None
+windows_subsystem = "console"
 
 def main():
-    global project, is_debug, force_rebuild, target, outdir, middir, output_name
+    global project, is_debug, force_rebuild, target, outdir, middir, output_name, windows_subsystem
     
     ap = argparse.ArgumentParser()
     ap.add_argument('project')
@@ -246,7 +247,7 @@ def main():
                 libdirs.append(path)
             case ['odin', *flags]:
                 odin = {
-                    'input': f'src/{project}',
+                    'input': f'{project}',
                     'output': make_outpath(project+'.obj', middir),
                     'flags': flags,
                 }
@@ -254,6 +255,8 @@ def main():
                     'type': 'obj',
                     'output': odin['output'],
                 })
+            case ['subsystem', subsystem]:
+                windows_subsystem = subsystem
             case ['root']:
                 is_root = True
     
@@ -342,7 +345,7 @@ def build_win64(objs, libs, defines, incdirs, libdirs, asan, ubsan):
 
     cflags    = ['-Icommon', '-I.', '-Ithird_party_include', '-I'+middir, '-std=c11',   *CFLAGS_WARNINGS, *cflags_platform]
     cxxflags  = ['-Icommon', '-I.', '-Ithird_party_include', '-I'+middir, '-std=c++14', *CFLAGS_WARNINGS, *cflags_platform]
-    linkflags = ['-fuse-ld=lld', '-Wl,/incremental:no,/opt:ref', '-Lthird_party_lib', *[f'-l{x}' for x in libs]]
+    linkflags = ['-fuse-ld=lld', f'-Wl,/incremental:no,/opt:ref,/subsystem:{windows_subsystem}', '-Lthird_party_lib', *[f'-l{x}' for x in libs]]
     if is_debug:
         cflags.extend(cflags_debug)
         cxxflags.extend(cflags_debug)
@@ -472,11 +475,10 @@ def build_odin(odin):
     output = odin['output']
     flags = [
         '-build-mode:obj',
-        '-collection:src=src',
+        '-collection:src=.',
         '-export-dependencies:make',
         f'-export-dependencies-file:{output}.d',
-        f'-target:{target_triple}',
-        '-no-entry-point',
+        f'-target:{target_triple}'
     ]
     flags.extend(odin['flags'])
     if is_debug:

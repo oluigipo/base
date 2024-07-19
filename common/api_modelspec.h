@@ -1,6 +1,8 @@
 #ifndef API_MODELSPEC_H
 #define API_MODELSPEC_H
 
+#include "common.h"
+
 enum MDL_HeaderFlags
 {
 	MDL_HeaderFlags_AttribPosition = 0x0001,  // float32[3]

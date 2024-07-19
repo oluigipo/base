@@ -1,0 +1,5 @@
+odin -no-entry-point
+c os/os_win32.c
+c render3/render3_d3d11.c
+
+output test_odin

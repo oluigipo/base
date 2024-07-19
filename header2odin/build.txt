@@ -1,0 +1,6 @@
+odin
+
+@win64 lib shell32
+
+root
+output header2odin

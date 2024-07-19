@@ -4,6 +4,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #define COBJMACROS
+#define INITGUID
 #include <dxgi1_2.h>
 #include <d3d11_1.h>
 
@@ -136,14 +137,22 @@ D3d11UsageToD3dUsage_(R3_Usage usage)
 
 //------------------------------------------------------------------------
 API R3_Context*
-R3_D3D11_MakeContext(Arena* output_arena, OS_D3D11Api const* d3d11_api)
+R3_D3D11_MakeContext(Arena* output_arena, R3_ContextDesc const* desc)
 {
 	Trace();
 	R3_Context* ctx = ArenaPushStruct(output_arena, R3_Context);
 	if (!ctx)
 		return NULL;
 
-	ctx->api = *d3d11_api;
+	bool ok = OS_MakeD3D11Api(&ctx->api, &(OS_D3D11ApiDesc) {
+		.window = *desc->window,
+	});
+	if (!ok)
+	{
+		ArenaPop(output_arena, ctx);
+		return NULL;
+	}
+
 	ctx->feature_level = ID3D11Device_GetFeatureLevel(ctx->api.device);
 
 	return ctx;
