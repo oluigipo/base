@@ -7,6 +7,9 @@ enum STM_Result
     STM_Result_Ok = 0,
     STM_Result_Failed,
     STM_Result_ShouldReopenThroughSteam,
+    STM_Result_InvalidParam,
+    STM_Result_Ignored,
+    STM_Result_LimitExceeded,
 }
 typedef STM_Result;
 
@@ -74,12 +77,12 @@ struct STM_Event
         struct
         {
             uint64 friend_id;
-            Buffer connect;
+            uint8 connect[256];
         } game_rich_presence_join_request;
     };
 };
 
-API STM_Event* STM_PollEvents(Arena* output_arena);
+API STM_Event* STM_PollEvents(Allocator allocator);
 
 // ===========================================================================
 // ===========================================================================
@@ -105,7 +108,7 @@ struct STM_NetworkingMessageData
 {
     void const* buffer;
     intsize buffer_size;
-    uint64 time_received;
+    int64 time_received;
     STM_NetConnection connection;
     STM_NetworkingIdentity identity;
     uint32 send_message_to_conn_flags;

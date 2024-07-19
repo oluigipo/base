@@ -394,6 +394,83 @@ struct Allocator
 	AllocatorProc* proc;
 	void* instance;
 	void* odin_proc;
+	
+#ifdef __cplusplus
+	template <typename T = void>
+	inline T*
+	Call(AllocatorMode mode, intsize size, intsize alignment, T* old_ptr, intsize old_size, AllocatorError* out_err)
+	{
+		return (T*)proc(this, mode, size, alignment, old_ptr, old_size, out_err);
+	}
+
+	template <typename T = void>
+	inline T*
+	Alloc(intsize size, intsize alignment, AllocatorError* out_err)
+	{
+		return (T*)proc(this, AllocatorMode_Alloc, size, alignment, NULL, 0, out_err);
+	}
+
+	template <typename T = void>
+	inline T*
+	Resize(intsize size, intsize alignment, T* old_ptr, intsize old_size, AllocatorError* out_err)
+	{
+		return (T*)proc(this, AllocatorMode_Resize, size, alignment, old_ptr, old_size, out_err);
+	}
+
+	template <typename T = void>
+	inline T*
+	AllocNonZeroed(intsize size, intsize alignment, AllocatorError* out_err)
+	{
+		return (T*)proc(this, AllocatorMode_AllocNonZeroed, size, alignment, NULL, 0, out_err);
+	}
+
+	template <typename T = void>
+	inline T*
+	ResizeNonZeroed(intsize size, intsize alignment, T* old_ptr, intsize old_size, AllocatorError* out_err)
+	{
+		return (T*)proc(this, AllocatorMode_ResizeNonZeroed, size, alignment, old_ptr, old_size, out_err);
+	}
+
+	inline void
+	Free(void* ptr, intsize size, AllocatorError* out_err)
+	{
+		proc(this, AllocatorMode_Free, 0, 0, ptr, size, out_err);
+	}
+
+	inline void
+	FreeAll(AllocatorError* out_err)
+	{
+		proc(this, AllocatorMode_FreeAll, 0, 0, 0, 0, out_err);
+	}
+
+	template <typename T>
+	inline T*
+	New(AllocatorError* out_err)
+	{
+		return (T*)proc(this, AllocatorMode_Alloc, sizeof(T), alignof(T), NULL, 0, out_err);
+	}
+
+	template <typename T>
+	inline void
+	Delete(T* ptr, AllocatorError* out_err)
+	{
+		proc(this, AllocatorMode_Free, 0, alignof(T), ptr, sizeof(T), out_err);
+	}
+
+	template <typename T>
+	inline T*
+	NewArray(intsize count, AllocatorError* out_err)
+	{
+		return (T*)proc(this, AllocatorMode_Alloc, sizeof(T)*count, alignof(T), NULL, 0, out_err);
+	}
+
+	template <typename T>
+	inline void
+	DeleteArray(T* ptr, intsize count, AllocatorError* out_err)
+	{
+		proc(this, AllocatorMode_Free, 0, alignof(T), ptr, sizeof(T)*count, out_err);
+	}
+#endif
 };
 
 #define INTSIZE_MAX PTRDIFF_MAX
@@ -531,7 +608,7 @@ static inline void* ArenaPushMemory(Arena* arena, void const* buf, uintsize size
 static inline void* ArenaPushMemoryAligned(Arena* arena, void const* buf, uintsize size, uintsize alignment);
 static inline String ArenaPushString(Arena* arena, String str);
 static inline String ArenaPushStringAligned(Arena* arena, String str, uintsize alignment);
-static inline char const* ArenaPushCString(Arena* arena, String str);
+static inline char* ArenaPushCString(Arena* arena, String str);
 static inline String ArenaVPrintf(Arena* arena, const char* fmt, va_list args);
 static inline String ArenaPrintf(Arena* arena, const char* fmt, ...);
 static inline void  ArenaPop(Arena* arena, void* ptr);
@@ -547,6 +624,8 @@ static inline FORCE_INLINE uint64 HashInt64(uint64 x);
 static inline FORCE_INLINE int32  HashMsi(uint32 log2_of_cap, uint64 hash, int32 index);
 
 static inline Allocator AllocatorFromArena(Arena* arena);
+static inline Allocator NullAllocator(void);
+static inline bool IsNullAllocator(Allocator allocator);
 
 //~ API Implementation
 #ifdef CONFIG_ARCH_X86FAMILY
@@ -2206,7 +2285,7 @@ ArenaSave(Arena* arena)
 	return ret;
 }
 
-static inline char const*
+static inline char*
 ArenaPushCString(Arena* arena, String str)
 {
 	char* buffer = (char*)ArenaPushDirtyAligned(arena, str.size + 1, 1);
@@ -2385,6 +2464,26 @@ AllocatorFromArena(Arena* arena)
 		.proc = ArenaAllocatorProc,
 		.instance = arena,
 	};
+}
+
+static void*
+NullAllocatorProc(Allocator* allocator, AllocatorMode mode, intsize size, intsize alignment, void* old_ptr, intsize old_size, AllocatorError* out_err)
+{
+	if (out_err)
+		*out_err = AllocatorError_OutOfMemory;
+	return NULL;
+}
+
+static inline Allocator
+NullAllocator(void)
+{
+	return (Allocator) { NullAllocatorProc };
+}
+
+static inline bool
+IsNullAllocator(Allocator allocator)
+{
+	return allocator.proc == NullAllocatorProc;
 }
 
 // NOTE(ljre): FNV-1a implementation.
