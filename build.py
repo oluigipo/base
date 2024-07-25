@@ -343,7 +343,7 @@ def build_win64(objs, libs, defines, incdirs, libdirs, asan, ubsan):
     cflags_opt      = [*CFLAGS_OPT,   '-O2', '-flto']
     linkflags_debug = ['-g']
 
-    cflags    = ['-Icommon', '-I.', '-Ithird_party_include', '-I'+middir, '-std=c11',   *CFLAGS_WARNINGS, *cflags_platform]
+    cflags    = ['-Icommon', '-I.', '-Ithird_party_include', '-I'+middir, '-std=c2x',   *CFLAGS_WARNINGS, *cflags_platform]
     cxxflags  = ['-Icommon', '-I.', '-Ithird_party_include', '-I'+middir, '-std=c++14', *CFLAGS_WARNINGS, *cflags_platform]
     linkflags = ['-fuse-ld=lld', f'-Wl,/incremental:no,/opt:ref,/subsystem:{windows_subsystem}', '-Lthird_party_lib/x86_64-windows', *[f'-l{x}' for x in libs]]
     if is_debug:

@@ -236,6 +236,17 @@ extern const unsigned char name ## _end[];
 #	endif
 #endif
 
+//~ COMPILER CAPS
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202000
+#	define CONFIG_HAS_ENHANCED_ENUMS 1
+#endif
+
+#ifdef CONFIG_HAS_ENHANCED_ENUMS
+#	define CONFIG_IF_ENHANCED_ENUMS(...) __VA_ARGS__
+#else
+#	define CONFIG_IF_ENHANCED_ENUMS(...)
+#endif
+
 //~ ASSERT
 #ifndef Assert_IsDebuggerPresent_
 #	ifdef _WIN32
@@ -357,21 +368,34 @@ struct ArenaSavepoint
 typedef ArenaSavepoint;
 
 enum AllocatorMode
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202000
+#ifdef CONFIG_HAS_ENHANCED_ENUMS
 	: uint8
 #endif
 {
+	// requires (size, alignment), returns a valid pointer
 	AllocatorMode_Alloc,
+	// requires (old_ptr, old_size), returns NULL
 	AllocatorMode_Free,
+	// requires (), returns NULL
 	AllocatorMode_FreeAll,
+	// requires (size, alignment, old_ptr, old_size), returns a valid pointer
 	AllocatorMode_Resize,
+	// requires(old_ptr), returns NULL
+	// NOTE(ljre): old_ptr needs to be a valid pointer to a uint32
 	AllocatorMode_QueryFeatures,
 	AllocatorMode_QueryInfo,
+	// same as Alloc
 	AllocatorMode_AllocNonZeroed,
+	// same as Resize
 	AllocatorMode_ResizeNonZeroed,
+	// requires (old_ptr), returns NULL
+	// NOTE(ljre): this is valid for arena allocators, where one can call Alloc(0, 0) to receive a pointer
+	//             to the end of the arena and then call Pop(ptr) to free all allocations made after the
+	//             call to Alloc.
+	AllocatorMode_Pop,
 };
 
-#if defined(__cplusplus) || __STDC_VERSION__ >= 202000
+#ifdef CONFIG_HAS_ENHANCED_ENUMS
 typedef enum AllocatorMode AllocatorMode;
 #else
 typedef uint8 AllocatorMode;
@@ -394,83 +418,6 @@ struct Allocator
 	AllocatorProc* proc;
 	void* instance;
 	void* odin_proc;
-	
-#ifdef __cplusplus
-	template <typename T = void>
-	inline T*
-	Call(AllocatorMode mode, intsize size, intsize alignment, T* old_ptr, intsize old_size, AllocatorError* out_err)
-	{
-		return (T*)proc(this, mode, size, alignment, old_ptr, old_size, out_err);
-	}
-
-	template <typename T = void>
-	inline T*
-	Alloc(intsize size, intsize alignment, AllocatorError* out_err)
-	{
-		return (T*)proc(this, AllocatorMode_Alloc, size, alignment, NULL, 0, out_err);
-	}
-
-	template <typename T = void>
-	inline T*
-	Resize(intsize size, intsize alignment, T* old_ptr, intsize old_size, AllocatorError* out_err)
-	{
-		return (T*)proc(this, AllocatorMode_Resize, size, alignment, old_ptr, old_size, out_err);
-	}
-
-	template <typename T = void>
-	inline T*
-	AllocNonZeroed(intsize size, intsize alignment, AllocatorError* out_err)
-	{
-		return (T*)proc(this, AllocatorMode_AllocNonZeroed, size, alignment, NULL, 0, out_err);
-	}
-
-	template <typename T = void>
-	inline T*
-	ResizeNonZeroed(intsize size, intsize alignment, T* old_ptr, intsize old_size, AllocatorError* out_err)
-	{
-		return (T*)proc(this, AllocatorMode_ResizeNonZeroed, size, alignment, old_ptr, old_size, out_err);
-	}
-
-	inline void
-	Free(void* ptr, intsize size, AllocatorError* out_err)
-	{
-		proc(this, AllocatorMode_Free, 0, 0, ptr, size, out_err);
-	}
-
-	inline void
-	FreeAll(AllocatorError* out_err)
-	{
-		proc(this, AllocatorMode_FreeAll, 0, 0, 0, 0, out_err);
-	}
-
-	template <typename T>
-	inline T*
-	New(AllocatorError* out_err)
-	{
-		return (T*)proc(this, AllocatorMode_Alloc, sizeof(T), alignof(T), NULL, 0, out_err);
-	}
-
-	template <typename T>
-	inline void
-	Delete(T* ptr, AllocatorError* out_err)
-	{
-		proc(this, AllocatorMode_Free, 0, alignof(T), ptr, sizeof(T), out_err);
-	}
-
-	template <typename T>
-	inline T*
-	NewArray(intsize count, AllocatorError* out_err)
-	{
-		return (T*)proc(this, AllocatorMode_Alloc, sizeof(T)*count, alignof(T), NULL, 0, out_err);
-	}
-
-	template <typename T>
-	inline void
-	DeleteArray(T* ptr, intsize count, AllocatorError* out_err)
-	{
-		proc(this, AllocatorMode_Free, 0, alignof(T), ptr, sizeof(T)*count, out_err);
-	}
-#endif
 };
 
 #define INTSIZE_MAX PTRDIFF_MAX
@@ -1308,6 +1255,8 @@ StringSubstr(String str, intsize index, intsize size)
 	
 	if (size < 0)
 		size = str.size + size + 1;
+	if (size < 0)
+		str.size = 0;
 	else if (size < str.size)
 		str.size = size;
 	
@@ -2377,31 +2326,38 @@ ArenaAllocatorProc(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 	AllocatorError error = AllocatorError_Ok;
 	Arena* arena = (Arena*)allocator->instance;
 
-	if (!alignment || (alignment & alignment-1) != 0)
-	{
-		if (out_err)
-			*out_err = AllocatorError_InvalidArgument;
-		return NULL;
-	}
+	bool is_invalid_alignment = (!alignment || (alignment & alignment-1) != 0);
 
 	switch (mode)
 	{
 		case AllocatorMode_Alloc:
 		{
+			if (is_invalid_alignment)
+			{
+				error = AllocatorError_InvalidArgument;
+				break;
+			}
 			result = ArenaPushAligned(arena, size, alignment);
 			if (!result)
 				error = AllocatorError_OutOfMemory;
 		} break;
 		case AllocatorMode_Free:
 		{
+			if (!old_ptr)
+				break; // free(NULL) has to be noop?
+			SafeAssert((uint8*)old_ptr >= arena->memory && (uint8*)old_ptr < arena->memory + arena->offset);
 			intsize old_offset = (uint8*)old_ptr - arena->memory;
 			if (old_offset + old_size == arena->offset)
 				ArenaPop(arena, old_ptr);
-			else
-				error = AllocatorError_InvalidArgument;
 		} break;
 		case AllocatorMode_Resize:
 		{
+			SafeAssert((uint8*)old_ptr >= arena->memory && (uint8*)old_ptr < arena->memory + arena->offset);
+			if (is_invalid_alignment)
+			{
+				error = AllocatorError_InvalidArgument;
+				break;
+			}
 			if (!old_ptr)
 			{
 				result = ArenaPushAligned(arena, size, alignment);
@@ -2420,7 +2376,19 @@ ArenaAllocatorProc(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 				result = old_ptr;
 			}
 			else
-				error = AllocatorError_InvalidArgument;
+			{
+				// welp, this is really sad
+				result = ArenaPushDirtyAligned(arena, size, alignment);
+				if (!result)
+				{
+					error = AllocatorError_OutOfMemory;
+					break;
+				}
+				intsize amount_to_copy = Min(size, old_size);
+				MemoryCopy(result, old_ptr, amount_to_copy);
+				if (size > old_size)
+					MemoryZero((uint8*)result + old_size, size - old_size);
+			}
 		} break;
 		case AllocatorMode_FreeAll:
 		{
@@ -2428,12 +2396,23 @@ ArenaAllocatorProc(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 		} break;
 		case AllocatorMode_AllocNonZeroed:
 		{
+			if (is_invalid_alignment)
+			{
+				error = AllocatorError_InvalidArgument;
+				break;
+			}
 			result = ArenaPushDirtyAligned(arena, size, alignment);
 			if (!result)
 				error = AllocatorError_OutOfMemory;
 		} break;
 		case AllocatorMode_ResizeNonZeroed:
 		{
+			SafeAssert((uint8*)old_ptr >= arena->memory && (uint8*)old_ptr < arena->memory + arena->offset);
+			if (is_invalid_alignment)
+			{
+				error = AllocatorError_InvalidArgument;
+				break;
+			}
 			intsize old_offset = (uint8*)old_ptr - arena->memory;
 			if (old_offset + old_size == arena->offset)
 			{
@@ -2444,7 +2423,36 @@ ArenaAllocatorProc(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 				result = old_ptr;
 			}
 			else
-				error = AllocatorError_InvalidArgument;
+			{
+				// also sad
+				result = ArenaPushDirtyAligned(arena, size, alignment);
+				if (!result)
+				{
+					error = AllocatorError_OutOfMemory;
+					break;
+				}
+				intsize amount_to_copy = Min(size, old_size);
+				MemoryCopy(result, old_ptr, amount_to_copy);
+			}
+		} break;
+		case AllocatorMode_QueryFeatures:
+		{
+			SafeAssert(old_ptr && ((uintptr)old_ptr & sizeof(uint32)-1) == 0);
+			uint32* features_ptr = (uint32*)old_ptr;
+			*features_ptr =
+				AllocatorMode_Alloc |
+				AllocatorMode_AllocNonZeroed |
+				AllocatorMode_Resize |
+				AllocatorMode_ResizeNonZeroed |
+				AllocatorMode_Free |
+				AllocatorMode_FreeAll |
+				AllocatorMode_Pop |
+				AllocatorMode_QueryFeatures;
+		} break;
+		case AllocatorMode_Pop:
+		{
+			SafeAssert((uint8*)old_ptr >= arena->memory && (uint8*)old_ptr < arena->memory + arena->offset);
+			ArenaPop(arena, old_ptr);
 		} break;
 		default:
 		{
@@ -2485,6 +2493,160 @@ IsNullAllocator(Allocator allocator)
 {
 	return allocator.proc == NullAllocatorProc;
 }
+
+static inline void*
+AllocatorAlloc(Allocator* allocator, intsize size, intsize alignment, AllocatorError* out_err)
+{
+	return allocator->proc(allocator, AllocatorMode_Alloc, size, alignment, NULL, 0, out_err);
+}
+
+static inline void*
+AllocatorResize(Allocator* allocator, intsize size, intsize alignment, void* old_ptr, intsize old_size, AllocatorError* out_err)
+{
+	return allocator->proc(allocator, AllocatorMode_Resize, size, alignment, old_ptr, old_size, out_err);
+}
+
+static inline void*
+AllocatorAllocNonZeroed(Allocator* allocator, intsize size, intsize alignment, AllocatorError* out_err)
+{
+	return allocator->proc(allocator, AllocatorMode_AllocNonZeroed, size, alignment, NULL, 0, out_err);
+}
+
+static inline void*
+AllocatorResizeNonZeroed(Allocator* allocator, intsize size, intsize alignment, void* old_ptr, intsize old_size, AllocatorError* out_err)
+{
+	return allocator->proc(allocator, AllocatorMode_ResizeNonZeroed, size, alignment, old_ptr, old_size, out_err);
+}
+
+static inline void
+AllocatorFree(Allocator* allocator, void* old_ptr, intsize old_size, AllocatorError* out_err)
+{
+	allocator->proc(allocator, AllocatorMode_Free, 0, 0, old_ptr, old_size, out_err);
+}
+
+static inline void
+AllocatorFreeAll(Allocator* allocator, AllocatorError* out_err)
+{
+	allocator->proc(allocator, AllocatorMode_FreeAll, 0, 0, NULL, 0, out_err);
+}
+
+static inline void
+AllocatorPop(Allocator* allocator, void* old_ptr, AllocatorError* out_err)
+{
+	allocator->proc(allocator, AllocatorMode_Pop, 0, 0, old_ptr, 0, out_err);
+}
+
+static inline bool
+AllocatorResizeOk(Allocator* allocator, intsize size, intsize alignment, void* inout_ptr, intsize old_size, AllocatorError* out_err)
+{
+	void* new_ptr = allocator->proc(allocator, AllocatorMode_Resize, size, alignment, *(void**)inout_ptr, old_size, out_err);
+	if (new_ptr || size == 0)
+	{
+		*(void**)inout_ptr = new_ptr;
+		return true;
+	}
+	return false;
+}
+
+static inline bool
+AllocatorResizeNonZeroedOk(Allocator* allocator, intsize size, intsize alignment, void* inout_ptr, intsize old_size, AllocatorError* out_err)
+{
+	void* new_ptr = allocator->proc(allocator, AllocatorMode_ResizeNonZeroed, size, alignment, *(void**)inout_ptr, old_size, out_err);
+	if (new_ptr || size == 0)
+	{
+		*(void**)inout_ptr = new_ptr;
+		return true;
+	}
+	return false;
+}
+
+static inline void*
+AllocatorAllocArray(Allocator* allocator, intsize count, intsize size, intsize alignment, AllocatorError* out_err)
+{
+	SafeAssert(!size || count <= INTSIZE_MAX / size);
+	return allocator->proc(allocator, AllocatorMode_Alloc, count*size, alignment, NULL, 0, out_err);
+}
+
+static inline void*
+AllocatorResizeArray(Allocator* allocator, intsize count, intsize size, intsize alignment, void* old_ptr, intsize old_count, AllocatorError* out_err)
+{
+	SafeAssert(!size || (count <= INTSIZE_MAX / size && old_count <= INTSIZE_MAX / size));
+	return allocator->proc(allocator, AllocatorMode_Resize, count*size, alignment, old_ptr, old_count*size, out_err);
+}
+
+static inline bool
+AllocatorResizeArrayOk(Allocator* allocator, intsize count, intsize size, intsize alignment, void* inout_ptr, intsize old_count, AllocatorError* out_err)
+{
+	SafeAssert(!size || (count <= INTSIZE_MAX / size && old_count <= INTSIZE_MAX / size));
+	void* new_ptr = allocator->proc(allocator, AllocatorMode_Resize, count*size, alignment, *(void**)inout_ptr, old_count*size, out_err);
+	if (new_ptr || !size)
+	{
+		*(void**)inout_ptr = new_ptr;
+		return true;
+	}
+	return false;
+}
+
+static inline void
+AllocatorFreeArray(Allocator* allocator, intsize size, void* old_ptr, intsize old_count, AllocatorError* out_err)
+{
+	SafeAssert(!size || old_count <= INTSIZE_MAX / size);
+	allocator->proc(allocator, AllocatorMode_Free, 0, 0, old_ptr, old_count*size, out_err);
+}
+
+#ifdef __cplusplus
+template <typename T>
+static inline T*
+AllocatorNew(Allocator* allocator, AllocatorError* out_err)
+{
+	return (T*)allocator->proc(allocator, AllocatorMode_Alloc, sizeof(T), alignof(T), NULL, 0, out_err);
+}
+
+template <typename T>
+static inline T*
+AllocatorNewArray(Allocator* allocator, intsize count, AllocatorError* out_err)
+{
+	SafeAssert(count <= INTSIZE_MAX / sizeof(T));
+	return (T*)allocator->proc(allocator, AllocatorMode_Alloc, count*sizeof(T), alignof(T), NULL, 0, out_err);
+}
+
+template <typename T>
+static inline void
+AllocatorDelete(Allocator* allocator, T* ptr, AllocatorError* out_err)
+{
+	allocator->proc(allocator, AllocatorMode_Free, 0, 0, ptr, sizeof(T), out_err);
+}
+
+template <typename T>
+static inline void
+AllocatorDeleteArray(Allocator* allocator, T* ptr, intsize count, AllocatorError* out_err)
+{
+	SafeAssert(count <= INTSIZE_MAX / sizeof(T));
+	allocator->proc(allocator, AllocatorMode_Free, 0, 0, ptr, count*sizeof(T), out_err);
+}
+
+template <typename T>
+static inline T*
+AllocatorResizeArray(Allocator* allocator, intsize count, T* ptr, intsize old_count, AllocatorError* out_err)
+{
+	SafeAssert(count <= INTSIZE_MAX / sizeof(T));
+	return (T*)allocator->proc(allocator, AllocatorMode_Resize, count * sizeof(T), alignof(T), ptr, old_count * sizeof(T), out_err);
+}
+
+template <typename T>
+static inline bool
+AllocatorResizeArrayOk(Allocator* allocator, intsize count, T** ptr, intsize old_count, AllocatorError* out_err)
+{
+	SafeAssert(count <= INTSIZE_MAX / sizeof(T));
+	T* result = (T*)allocator->proc(allocator, AllocatorMode_Resize, count * sizeof(T), alignof(T), ptr, old_count * sizeof(T), out_err);
+	if (result || !count)
+	{
+		*ptr = result;
+		return true;
+	}
+	return false;
+}
+#endif
 
 // NOTE(ljre): FNV-1a implementation.
 static inline FORCE_INLINE uint64

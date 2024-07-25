@@ -148,7 +148,8 @@ SteamCallbacks_::LobbyGameCreated(LobbyGameCreated_t* param)
 {
 	Trace();
 	OS_LogErr("[INFO] steam: Callback: LobbyGameCreated\n");
-	STM_Event* event = g_steam.pollevents_allocator.New<STM_Event>(NULL);
+	AllocatorError err;
+	STM_Event* event = AllocatorNew<STM_Event>(&g_steam.pollevents_allocator, &err);
 	if (event)
 	{
 		*g_steam.pollevents_event_list_tail = event;
@@ -166,7 +167,8 @@ SteamCallbacks_::GameLobbyJoinRequested(GameLobbyJoinRequested_t* param)
 {
 	Trace();
 	OS_LogErr("[INFO] steam: Callback: GameLobbyJoinRequested\n");
-	STM_Event* event = g_steam.pollevents_allocator.New<STM_Event>(NULL);
+	AllocatorError err;
+	STM_Event* event = AllocatorNew<STM_Event>(&g_steam.pollevents_allocator, &err);
 	if (event)
 	{
 		*g_steam.pollevents_event_list_tail = event;
@@ -182,7 +184,8 @@ SteamCallbacks_::GameRichPresenceJoinRequested(GameRichPresenceJoinRequested_t* 
 {
 	Trace();
 	OS_LogErr("[INFO] steam: Callback: GameRichPresenceJoinRequested\n");
-	STM_Event* event = g_steam.pollevents_allocator.New<STM_Event>(NULL);
+	AllocatorError err;
+	STM_Event* event = AllocatorNew<STM_Event>(&g_steam.pollevents_allocator, &err);
 	if (event)
 	{
 		*g_steam.pollevents_event_list_tail = event;
@@ -202,7 +205,8 @@ SteamCallbacks_::AvatarImageLoaded(AvatarImageLoaded_t* param)
 {
 	Trace();
 	OS_LogErr("[INFO] launcher_steam: Callback: AvatarImageLoaded\n");
-	STM_Event* event = g_steam.pollevents_allocator.New<STM_Event>(NULL);
+	AllocatorError err;
+	STM_Event* event = AllocatorNew<STM_Event>(&g_steam.pollevents_allocator, &err);
 	if (event)
 	{
 		*g_steam.pollevents_event_list_tail = event;
