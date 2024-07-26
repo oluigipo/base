@@ -1,5 +1,11 @@
+@win64 fxc game_rts/shader_quad.hlsl vs_4_0 Vertex
+@win64 fxc game_rts/shader_quad.hlsl ps_4_0 Pixel
+@win64 c render3/render3_d3d11.c
+
 odin -no-entry-point
-c os/os_win32.c
-c render3/render3_d3d11.c
+
+@win64 define CONFIG_WINDOWS_SUBSYSTEM
+@win64 subsystem windows
+@win64 c os/os_win32.c
 
 output test_odin

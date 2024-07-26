@@ -1,6 +1,7 @@
 package common_odin
 
 import "base:runtime"
+import "core:mem"
 
 vec2 :: [2]f32
 vec3 :: [3]f32
@@ -52,7 +53,7 @@ ArenaPushData :: proc "c"(arena: ^Arena, data: ^$T) -> ^T
 }
 ArenaPushArray :: proc "c"(arena: ^Arena, $T: typeid, count: int) -> []T
 {
-	ptr := cast([^]T) ArenaPushAligned(arena, size_of(T) * count, align_of(T))
+	ptr := cast([^]T) ArenaPushAligned(arena, cast(uint) (size_of(T) * count), align_of(T))
 	return ptr[:count]
 }
 ArenaPushArrayData :: proc "c"(arena: ^Arena, data: []$T) -> []T
@@ -63,6 +64,16 @@ ArenaPushArrayData :: proc "c"(arena: ^Arena, data: []$T) -> []T
 		copy(slice, data)
 	}
 	return slice
+}
+ArenaBeginArray :: proc "c"(arena: ^Arena, $T: typeid) -> [^]T
+{
+	return cast([^]T) ArenaEndAligned(arena, align_of(T))
+}
+ArenaEndArray :: proc "c"(arena: ^Arena, begin_ptr: [^]$T) -> []T
+{
+	end_ptr := cast([^]T) (arena.memory + arena.offset)
+	length := mem.ptr_sub(end_ptr, begin_ptr)
+	return begin_ptr[:length]
 }
 
 ArenaFromMemory :: proc "c"(memory: rawptr, size: uint) -> Arena
@@ -78,7 +89,7 @@ ArenaFromMemory :: proc "c"(memory: rawptr, size: uint) -> Arena
 ArenaEndAligned :: proc "c"(arena: ^Arena, alignment: uint) -> rawptr
 {
 	context = runtime.default_context()
-	assert(alignment != 0 && ((alignment & alignment-1) == 0))
+	assert(alignment != 0 && (alignment & (alignment-1) == 0))
 	target_offset := AlignUp(arena.memory + arena.offset, cast(uintptr)alignment-1) - arena.memory
 	arena.offset = target_offset
 	return auto_cast (arena.memory + arena.offset)
@@ -86,7 +97,7 @@ ArenaEndAligned :: proc "c"(arena: ^Arena, alignment: uint) -> rawptr
 ArenaPushDirtyAligned :: proc "c"(arena: ^Arena, size: uint, alignment: uint) -> rawptr
 {
 	context = runtime.default_context()
-	assert(alignment != 0 && ((alignment & alignment-1) == 0))
+	assert(alignment != 0 && (alignment & (alignment-1) == 0))
 	assert(cast(int)size > 0)
 
 	target_offset := AlignUp(arena.memory + arena.offset, cast(uintptr)alignment-1) - arena.memory

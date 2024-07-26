@@ -291,7 +291,7 @@ def main():
                 })
 
         output_json = list(set(json.dumps(d) for d in output_json))
-        write_file_if_changed(commands_file, f'[{','.join(output_json)}]')
+        write_file_if_changed(commands_file, f'[{",".join(output_json)}]')
 
     if retcode == 0 and is_root:
         if target == 'win64':
@@ -476,6 +476,7 @@ def build_odin(odin):
     flags = [
         '-build-mode:obj',
         '-collection:src=.',
+        f'-collection:builddir={middir}',
         '-export-dependencies:make',
         f'-export-dependencies-file:{output}.d',
         f'-target:{target_triple}'

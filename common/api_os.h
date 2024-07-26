@@ -464,6 +464,8 @@ API bool  OS_VirtualFree   (void* address, uintsize size);
 API bool  OS_ArenaCommitMemoryProc(Arena* arena, uintsize needed_size);
 API Arena OS_VirtualAllocArena(uintsize total_reserved_size);
 
+API Allocator OS_HeapAllocator(void);
+
 struct OS_FileInfo
 {
 	bool exists;

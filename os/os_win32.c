@@ -512,7 +512,7 @@ D3d11PresentProc_(OS_D3D11Api* d3d11_api)
 {
 	Trace();
 	
-	IDXGISwapChain1_Present(d3d11_api->swapchain1, 0, 0);
+	IDXGISwapChain1_Present(d3d11_api->swapchain1, 1, 0);
 }
 
 static void
@@ -4494,6 +4494,126 @@ OS_DebugLog(const char* fmt, ...)
 	}
 }
 #endif //CONFIG_DEBUG
+
+// Heap Allocator
+static void*
+HeapAllocatorProc_(Allocator* allocator, AllocatorMode mode, intsize size, intsize alignment, void* old_ptr, intsize old_size, AllocatorError* out_err)
+{
+	Trace();
+	void* result = NULL;
+	AllocatorError error = AllocatorError_Ok;
+
+	bool is_invalid_alignment = (!alignment || (alignment & alignment-1) != 0);
+	if (alignment < sizeof(void*))
+		alignment = sizeof(void*);
+
+	switch (mode)
+	{
+		case AllocatorMode_Alloc:
+		{
+			if (is_invalid_alignment)
+			{
+				error = AllocatorError_InvalidArgument;
+				break;
+			}
+			result = _aligned_malloc(size, alignment);
+			if (!result)
+				error = AllocatorError_OutOfMemory;
+			else
+				MemoryZero(result, size);
+		} break;
+		case AllocatorMode_Free:
+		{
+			if (!old_ptr)
+				break; // free(NULL) has to be noop?
+			free(old_ptr);
+		} break;
+		case AllocatorMode_Resize:
+		{
+			if (is_invalid_alignment)
+			{
+				error = AllocatorError_InvalidArgument;
+				break;
+			}
+			if (!old_ptr)
+			{
+				result = _aligned_malloc(size, alignment);
+				if (!result)
+					error = AllocatorError_OutOfMemory;
+				else
+					MemoryZero(result, size);
+				break;
+			}
+
+			result = _aligned_realloc(old_ptr, size, alignment);
+			if (!result)
+				error = AllocatorError_OutOfMemory;
+			else if (size > old_size)
+				MemoryZero((uint8*)result + old_size, size - old_size);
+		} break;
+		case AllocatorMode_AllocNonZeroed:
+		{
+			if (is_invalid_alignment)
+			{
+				error = AllocatorError_InvalidArgument;
+				break;
+			}
+			result = _aligned_malloc(size, alignment);
+			if (!result)
+				error = AllocatorError_OutOfMemory;
+		} break;
+		case AllocatorMode_ResizeNonZeroed:
+		{
+			if (is_invalid_alignment)
+			{
+				error = AllocatorError_InvalidArgument;
+				break;
+			}
+			if (!old_ptr)
+			{
+				result = _aligned_malloc(size, alignment);
+				if (!result)
+					error = AllocatorError_OutOfMemory;
+				else
+					MemoryZero(result, size);
+				break;
+			}
+
+			result = _aligned_realloc(old_ptr, size, alignment);
+			if (!result)
+				error = AllocatorError_OutOfMemory;
+		} break;
+		case AllocatorMode_QueryFeatures:
+		{
+			SafeAssert(old_ptr && ((uintptr)old_ptr & sizeof(uint32)-1) == 0);
+			uint32* features_ptr = (uint32*)old_ptr;
+			*features_ptr =
+				AllocatorMode_Alloc |
+				AllocatorMode_AllocNonZeroed |
+				AllocatorMode_Resize |
+				AllocatorMode_ResizeNonZeroed |
+				AllocatorMode_Free |
+				AllocatorMode_QueryFeatures;
+		} break;
+		default:
+		{
+			error = AllocatorError_ModeNotImplemented;
+		} break;
+	}
+
+	if (out_err)
+		*out_err = error;
+	return result;
+}
+
+API Allocator
+OS_HeapAllocator(void)
+{
+	return (Allocator) {
+		.proc = HeapAllocatorProc_,
+		.instance = NULL,
+	};
+}
 
 //~ NOTE(ljre): COM GUIDs
 DisableWarnings();
