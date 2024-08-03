@@ -1,4 +1,4 @@
-#include "common.h"
+#include "common.hpp"
 #include "api_os.h"
 
 #define WIN32_LEAN_AND_MEAN

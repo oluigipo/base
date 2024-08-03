@@ -159,7 +159,6 @@ extern const unsigned char name ## _end[];
 #define ArrayLength(x) ((intsize)(sizeof(x) / sizeof(x)[0]))
 #define Min(x,y) ((x) < (y) ? (x) : (y))
 #define Max(x,y) ((x) > (y) ? (x) : (y))
-// NOTE(ljre): I had a dream where I was crying to my mom because Min/Max were confusing.
 #define ClampMax Min
 #define ClampMin Max
 #define Clamp(x,min,max) ((x) < (min) ? (min) : (x) > (max) ? (max) : (x))
@@ -176,6 +175,7 @@ extern const unsigned char name ## _end[];
 #	define ReenableWarnings() \
 	_Pragma("clang diagnostic pop")
 #	define FORCE_INLINE __attribute__((always_inline))
+#	define FORCE_NOINLINE __attribute__((noinline))
 #	define Alignas(x) __attribute__((aligned(x)))
 #elif defined(_MSC_VER)
 #	define Assume(...) __assume(__VA_ARGS__)
@@ -188,6 +188,7 @@ extern const unsigned char name ## _end[];
 #	define ReenableWarnings() \
 	__pragma(warning(pop))
 #    define FORCE_INLINE __forceinline
+#    define FORCE_INLINE __declspec(noinline)
 #	define Alignas(x) __declspec(align(x))
 #elif defined(__GNUC__)
 #	define Assume(...) do { if (!(__VA_ARGS__)) __builtin_unreachable(); } while (0)
@@ -202,6 +203,7 @@ extern const unsigned char name ## _end[];
 #	define ReenableWarnings() \
 	_Pragma("GCC diagnostic pop")
 #	define FORCE_INLINE __attribute__((always_inline))
+#	define FORCE_NOINLINE __attribute__((noipa))
 #	define Alignas(x) __attribute__((aligned(x)))
 #else
 #	define Assume(...) ((void)0)
@@ -212,11 +214,8 @@ extern const unsigned char name ## _end[];
 #	define DisableWarnings()
 #	define ReenableWarnings()
 #	define FORCE_INLINE
+#	define FORCE_NOINLINE
 #	define Alignas(x)
-#endif
-
-#if 0 // NOTE(ljre): Ignore this.
-#define NULL
 #endif
 
 #ifdef __cplusplus
@@ -367,10 +366,7 @@ struct ArenaSavepoint
 }
 typedef ArenaSavepoint;
 
-enum AllocatorMode
-#ifdef CONFIG_HAS_ENHANCED_ENUMS
-	: uint8
-#endif
+enum AllocatorMode CONFIG_IF_ENHANCED_ENUMS(: uint8)
 {
 	// requires (size, alignment), returns a valid pointer
 	AllocatorMode_Alloc,
@@ -423,6 +419,9 @@ struct Allocator
 #define INTSIZE_MAX PTRDIFF_MAX
 #define INTSIZE_MIN PTRDIFF_MIN
 #define UINTSIZE_MAX SIZE_MAX
+#define INTZ_MAX PTRDIFF_MAX
+#define INTZ_MIN PTRDIFF_MIN
+#define UINTZ_MAX SIZE_MAX
 
 #ifndef __cplusplus
 #	define Buf(x) (Buffer) BufInit(x)
@@ -475,23 +474,6 @@ struct Allocator
 #   define ArenaPushStructInit(arena, Type, ...) \
 		((Type*)ArenaPushMemoryAligned(arena, &(Type const&) Type __VA_ARGS__, sizeof(Type), alignof(Type)))
 #endif //__cplusplus
-
-static inline FORCE_INLINE int32 AtomicLoadI32(int32 volatile* ptr);
-static inline FORCE_INLINE int64 AtomicLoadI64(int64 volatile* ptr);
-static inline FORCE_INLINE void* AtomicLoadPtr(void* volatile* ptr);
-static inline FORCE_INLINE void AtomicStoreI32(int32 volatile* ptr, int32 value);
-static inline FORCE_INLINE void AtomicStoreI64(int64 volatile* ptr, int64 value);
-static inline FORCE_INLINE void AtomicStorePtr(void* volatile* ptr, void* value);
-static inline FORCE_INLINE int32 AtomicExchangeI32(int32 volatile* ptr, int32 value);
-static inline FORCE_INLINE int64 AtomicExchangeI64(int64 volatile* ptr, int64 value);
-static inline FORCE_INLINE void* AtomicExchangePtr(void* volatile* ptr, void* value);
-static inline FORCE_INLINE bool AtomicCompareExchangeI32(int32 volatile* ptr, int32* expected, int32 value);
-static inline FORCE_INLINE bool AtomicCompareExchangeI64(int64 volatile* ptr, int64* expected, int64 value);
-static inline FORCE_INLINE bool AtomicCompareExchangePtr(void* volatile* ptr, void** expected, void* value);
-static inline FORCE_INLINE void AtomicFence(int32 order);
-static inline FORCE_INLINE int32 AtomicAddI32(int32 volatile* ptr, int32 value);
-static inline FORCE_INLINE int64 AtomicAddI64(int64 volatile* ptr, int64 value);
-static inline FORCE_INLINE void* AtomicAddPtr(void* volatile* ptr, intptr value);
 
 static inline FORCE_INLINE int32 BitCtz64(uint64 i);
 static inline FORCE_INLINE int32 BitCtz32(uint32 i);
@@ -578,125 +560,12 @@ static inline bool IsNullAllocator(Allocator allocator);
 #ifdef CONFIG_ARCH_X86FAMILY
 #   include <immintrin.h>
 #endif
-#if !defined(__clang__) && defined(_MSC_VER)
-#   include <intrin0.h> // __iso_volatile_(load|store) decls
-#   include <intrin.h> // __movsb & friends
-#endif
 
 #ifndef CONFIG_ARENA_DEFAULT_ALIGNMENT
 #	define CONFIG_ARENA_DEFAULT_ALIGNMENT 16
 #endif
 
 static_assert(CONFIG_ARENA_DEFAULT_ALIGNMENT != 0 && IsPowerOf2(CONFIG_ARENA_DEFAULT_ALIGNMENT), "Default Arena alignment should always be non-zero and a power of two");
-
-#if defined(__GNUC__) || defined(__clang__)
-static inline FORCE_INLINE int32 AtomicLoadI32(int32 volatile* ptr)
-{ return __atomic_load_n(ptr, __ATOMIC_SEQ_CST); }
-static inline FORCE_INLINE int64 AtomicLoadI64(int64 volatile* ptr)
-{ return __atomic_load_n(ptr, __ATOMIC_SEQ_CST); }
-static inline FORCE_INLINE void* AtomicLoadPtr(void* volatile* ptr)
-{ return __atomic_load_n(ptr, __ATOMIC_SEQ_CST); }
-
-static inline FORCE_INLINE void AtomicStoreI32(int32 volatile* ptr, int32 value)
-{ __atomic_store_n(ptr, value, __ATOMIC_SEQ_CST); }
-static inline FORCE_INLINE void AtomicStoreI64(int64 volatile* ptr, int64 value)
-{ __atomic_store_n(ptr, value, __ATOMIC_SEQ_CST); }
-static inline FORCE_INLINE void AtomicStorePtr(void* volatile* ptr, void* value)
-{ __atomic_store_n(ptr, value, __ATOMIC_SEQ_CST); }
-
-static inline FORCE_INLINE int32 AtomicExchangeI32(int32 volatile* ptr, int32 value)
-{ return __atomic_exchange_n(ptr, value, __ATOMIC_SEQ_CST); }
-static inline FORCE_INLINE int64 AtomicExchangeI64(int64 volatile* ptr, int64 value)
-{ return __atomic_exchange_n(ptr, value, __ATOMIC_SEQ_CST); }
-static inline FORCE_INLINE void* AtomicExchangePtr(void* volatile* ptr, void* value)
-{ return __atomic_exchange_n(ptr, value, __ATOMIC_SEQ_CST); }
-
-static inline FORCE_INLINE bool AtomicCompareExchangeI32(int32 volatile* ptr, int32* expected, int32 value)
-{ return __atomic_compare_exchange_n(ptr, expected, value, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }
-static inline FORCE_INLINE bool AtomicCompareExchangeI64(int64 volatile* ptr, int64* expected, int64 value)
-{ return __atomic_compare_exchange_n(ptr, expected, value, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }
-static inline FORCE_INLINE bool AtomicCompareExchangePtr(void* volatile* ptr, void** expected, void* value)
-{ return __atomic_compare_exchange_n(ptr, expected, value, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }
-
-static inline FORCE_INLINE void AtomicFence(int32 order)
-{ __atomic_thread_fence((int)order); }
-
-static inline FORCE_INLINE int32 AtomicAddI32(int32 volatile* ptr, int32 value)
-{ return __atomic_add_fetch(ptr, value, __ATOMIC_SEQ_CST); }
-static inline FORCE_INLINE int64 AtomicAddI64(int64 volatile* ptr, int64 value)
-{ return __atomic_add_fetch(ptr, value, __ATOMIC_SEQ_CST); }
-static inline FORCE_INLINE void* AtomicAddPtr(void* volatile* ptr, intptr value)
-{ return __atomic_add_fetch(ptr, value, __ATOMIC_SEQ_CST); }
-#elif defined(_MSC_VER)
-
-void* _InterlockedExchangePointer(void* volatile*, void*);
-void* _InterlockedCompareExchangePointer(void* volatile*, void*, void*);
-
-#if CONFIG_SIZEOF_PTR == 8
-#   define VolatileLoadPtr_(x) (void*)__iso_volatile_load64((__int64 volatile*)(x))
-#   define VolatileStorePtr_(x, y) __iso_volatile_store64((__int64 volatile*)(x), (__int64)(y))
-#   define VolatileAddPtr_(x, y) (void*)_InterlockedAdd64((__int64 volatile*)(x), (__int64)(y))
-#elif CONFIG_SIZEOF_PTR == 4
-#   define VolatileLoadPtr_(x) (void*)__iso_volatile_load32((__int32 volatile*)(x))
-#   define VolatileStorePtr_(x, y) __iso_volatile_store32((__int32 volatile*)(x), (__int32)(y))
-#   define VolatileAddPtr_(x, y) (void*)_InterlockedAdd((long volatile*)(x), (long)(y))
-#else
-#   error "CONFIG_SIZEOF_PTR not set"
-#endif
-
-static inline FORCE_INLINE int32 AtomicLoadI32(int32 volatile* ptr)
-{ return __iso_volatile_load32(ptr); }
-static inline FORCE_INLINE int64 AtomicLoadI64(int64 volatile* ptr)
-{ return __iso_volatile_load64(ptr); }
-static inline FORCE_INLINE void* AtomicLoadPtr(void* volatile* ptr)
-{ return VolatileLoadPtr_(ptr); }
-
-static inline FORCE_INLINE void AtomicStoreI32(int32 volatile* ptr, int32 value)
-{ __iso_volatile_store32(ptr, value); }
-static inline FORCE_INLINE void AtomicStoreI64(int64 volatile* ptr, int64 value)
-{ __iso_volatile_store64(ptr, value); }
-static inline FORCE_INLINE void AtomicStorePtr(void* volatile* ptr, void* value)
-{ VolatileStorePtr_(ptr, value); }
-
-static inline FORCE_INLINE int32 AtomicExchangeI32(int32 volatile* ptr, int32 value)
-{ return _InterlockedExchange((long volatile*)ptr, value); }
-static inline FORCE_INLINE int64 AtomicExchangeI64(int64 volatile* ptr, int64 value)
-{ return _InterlockedExchange64((__int64 volatile*)ptr, value); }
-static inline FORCE_INLINE void* AtomicExchangePtr(void* volatile* ptr, void* value)
-{ return _InterlockedExchangePointer(ptr, value); }
-
-static inline FORCE_INLINE bool AtomicCompareExchangeI32(int32 volatile* ptr, int32* value, int32 expected)
-{
-	long v = _InterlockedCompareExchange((long volatile*)ptr, (long)*value, (long)expected);
-	*value = (int32)v;
-	return v != (long)expected;
-}
-static inline FORCE_INLINE bool AtomicCompareExchangeI64(int64 volatile* ptr, int64* value, int64 expected)
-{
-	__int64 v = _InterlockedCompareExchange64((__int64 volatile*)ptr, (__int64)*value, (__int64)expected);
-	*value = (__int64)v;
-	return v != (__int64)expected;
-}
-static inline FORCE_INLINE bool AtomicCompareExchangePtr(void* volatile* ptr, void** value, void* expected)
-{
-	void* v = _InterlockedCompareExchangePointer(ptr, *value, expected);
-	*value = v;
-	return v != expected;
-}
-
-static inline FORCE_INLINE void AtomicFence(int32 order)
-{ _ReadWriteBarrier(); }
-
-static inline FORCE_INLINE int32 AtomicAddI32(int32 volatile* ptr, int32 value)
-{ return _InterlockedAdd((long volatile*)ptr, (long)value); }
-static inline FORCE_INLINE int64 AtomicAddI64(int64 volatile* ptr, int64 value)
-{ return _InterlockedAdd64((__int64 volatile*)ptr, (__int64)value); }
-static inline FORCE_INLINE void* AtomicAddPtr(void* volatile* ptr, intptr value)
-{ return VolatileAddPtr_(ptr, value); }
-#undef VolatileAddPtr_
-#undef VolatileStorePtr_
-#undef VolatileLoadPtr_
-#endif //defined(_MSC_VER)
 
 //-
 #if defined(_MSC_VER) && !defined(__clang__)
@@ -2332,12 +2201,17 @@ ArenaAllocatorProc(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 	{
 		case AllocatorMode_Alloc:
 		{
-			if (is_invalid_alignment)
+			if (size == 0)
+				result = alignment ? ArenaEndAligned(arena, alignment) : ArenaEnd(arena);
+			else
 			{
-				error = AllocatorError_InvalidArgument;
-				break;
+				if (is_invalid_alignment)
+				{
+					error = AllocatorError_InvalidArgument;
+					break;
+				}
+				result = ArenaPushAligned(arena, size, alignment);
 			}
-			result = ArenaPushAligned(arena, size, alignment);
 			if (!result)
 				error = AllocatorError_OutOfMemory;
 		} break;
@@ -2345,14 +2219,13 @@ ArenaAllocatorProc(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 		{
 			if (!old_ptr)
 				break; // free(NULL) has to be noop?
-			SafeAssert((uint8*)old_ptr >= arena->memory && (uint8*)old_ptr < arena->memory + arena->offset);
+			SafeAssert((uint8*)old_ptr >= arena->memory && (uint8*)old_ptr <= arena->memory + arena->offset);
 			intsize old_offset = (uint8*)old_ptr - arena->memory;
 			if (old_offset + old_size == arena->offset)
 				ArenaPop(arena, old_ptr);
 		} break;
 		case AllocatorMode_Resize:
 		{
-			SafeAssert((uint8*)old_ptr >= arena->memory && (uint8*)old_ptr < arena->memory + arena->offset);
 			if (is_invalid_alignment)
 			{
 				error = AllocatorError_InvalidArgument;
@@ -2365,6 +2238,7 @@ ArenaAllocatorProc(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 					error = AllocatorError_OutOfMemory;
 				break;
 			}
+			SafeAssert((uint8*)old_ptr >= arena->memory && (uint8*)old_ptr <= arena->memory + arena->offset);
 
 			intsize old_offset = (uint8*)old_ptr - arena->memory;
 			if (old_offset + old_size == arena->offset)
@@ -2396,23 +2270,35 @@ ArenaAllocatorProc(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 		} break;
 		case AllocatorMode_AllocNonZeroed:
 		{
-			if (is_invalid_alignment)
+			if (size == 0)
+				result = alignment ? ArenaEndAligned(arena, alignment) : ArenaEnd(arena);
+			else
 			{
-				error = AllocatorError_InvalidArgument;
-				break;
+				if (is_invalid_alignment)
+				{
+					error = AllocatorError_InvalidArgument;
+					break;
+				}
+				result = ArenaPushDirtyAligned(arena, size, alignment);
 			}
-			result = ArenaPushDirtyAligned(arena, size, alignment);
 			if (!result)
 				error = AllocatorError_OutOfMemory;
 		} break;
 		case AllocatorMode_ResizeNonZeroed:
 		{
-			SafeAssert((uint8*)old_ptr >= arena->memory && (uint8*)old_ptr < arena->memory + arena->offset);
 			if (is_invalid_alignment)
 			{
 				error = AllocatorError_InvalidArgument;
 				break;
 			}
+			if (!old_ptr)
+			{
+				result = ArenaPushDirtyAligned(arena, size, alignment);
+				if (!result)
+					error = AllocatorError_OutOfMemory;
+				break;
+			}
+			SafeAssert((uint8*)old_ptr >= arena->memory && (uint8*)old_ptr <= arena->memory + arena->offset);
 			intsize old_offset = (uint8*)old_ptr - arena->memory;
 			if (old_offset + old_size == arena->offset)
 			{
@@ -2451,7 +2337,7 @@ ArenaAllocatorProc(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 		} break;
 		case AllocatorMode_Pop:
 		{
-			SafeAssert((uint8*)old_ptr >= arena->memory && (uint8*)old_ptr < arena->memory + arena->offset);
+			SafeAssert((uint8*)old_ptr >= arena->memory && (uint8*)old_ptr <= arena->memory + arena->offset);
 			ArenaPop(arena, old_ptr);
 		} break;
 		default:
@@ -2563,21 +2449,21 @@ AllocatorResizeNonZeroedOk(Allocator* allocator, intsize size, intsize alignment
 static inline void*
 AllocatorAllocArray(Allocator* allocator, intsize count, intsize size, intsize alignment, AllocatorError* out_err)
 {
-	SafeAssert(!size || count <= INTSIZE_MAX / size);
+	SafeAssert(!size || count >= 0 && count <= INTSIZE_MAX / size);
 	return allocator->proc(allocator, AllocatorMode_Alloc, count*size, alignment, NULL, 0, out_err);
 }
 
 static inline void*
 AllocatorResizeArray(Allocator* allocator, intsize count, intsize size, intsize alignment, void* old_ptr, intsize old_count, AllocatorError* out_err)
 {
-	SafeAssert(!size || (count <= INTSIZE_MAX / size && old_count <= INTSIZE_MAX / size));
+	SafeAssert(!size || (count >= 0 && count <= INTSIZE_MAX / size && old_count >= 0 && old_count <= INTSIZE_MAX / size));
 	return allocator->proc(allocator, AllocatorMode_Resize, count*size, alignment, old_ptr, old_count*size, out_err);
 }
 
 static inline bool
 AllocatorResizeArrayOk(Allocator* allocator, intsize count, intsize size, intsize alignment, void* inout_ptr, intsize old_count, AllocatorError* out_err)
 {
-	SafeAssert(!size || (count <= INTSIZE_MAX / size && old_count <= INTSIZE_MAX / size));
+	SafeAssert(!size || (count >= 0 && count <= INTSIZE_MAX / size && old_count >= 0 && old_count <= INTSIZE_MAX / size));
 	void* new_ptr = allocator->proc(allocator, AllocatorMode_Resize, count*size, alignment, *(void**)inout_ptr, old_count*size, out_err);
 	if (new_ptr || !size)
 	{
@@ -2590,63 +2476,9 @@ AllocatorResizeArrayOk(Allocator* allocator, intsize count, intsize size, intsiz
 static inline void
 AllocatorFreeArray(Allocator* allocator, intsize size, void* old_ptr, intsize old_count, AllocatorError* out_err)
 {
-	SafeAssert(!size || old_count <= INTSIZE_MAX / size);
+	SafeAssert(!size || old_count >= 0 && old_count <= INTSIZE_MAX / size);
 	allocator->proc(allocator, AllocatorMode_Free, 0, 0, old_ptr, old_count*size, out_err);
 }
-
-#ifdef __cplusplus
-template <typename T>
-static inline T*
-AllocatorNew(Allocator* allocator, AllocatorError* out_err)
-{
-	return (T*)allocator->proc(allocator, AllocatorMode_Alloc, sizeof(T), alignof(T), NULL, 0, out_err);
-}
-
-template <typename T>
-static inline T*
-AllocatorNewArray(Allocator* allocator, intsize count, AllocatorError* out_err)
-{
-	SafeAssert(count <= INTSIZE_MAX / sizeof(T));
-	return (T*)allocator->proc(allocator, AllocatorMode_Alloc, count*sizeof(T), alignof(T), NULL, 0, out_err);
-}
-
-template <typename T>
-static inline void
-AllocatorDelete(Allocator* allocator, T* ptr, AllocatorError* out_err)
-{
-	allocator->proc(allocator, AllocatorMode_Free, 0, 0, ptr, sizeof(T), out_err);
-}
-
-template <typename T>
-static inline void
-AllocatorDeleteArray(Allocator* allocator, T* ptr, intsize count, AllocatorError* out_err)
-{
-	SafeAssert(count <= INTSIZE_MAX / sizeof(T));
-	allocator->proc(allocator, AllocatorMode_Free, 0, 0, ptr, count*sizeof(T), out_err);
-}
-
-template <typename T>
-static inline T*
-AllocatorResizeArray(Allocator* allocator, intsize count, T* ptr, intsize old_count, AllocatorError* out_err)
-{
-	SafeAssert(count <= INTSIZE_MAX / sizeof(T));
-	return (T*)allocator->proc(allocator, AllocatorMode_Resize, count * sizeof(T), alignof(T), ptr, old_count * sizeof(T), out_err);
-}
-
-template <typename T>
-static inline bool
-AllocatorResizeArrayOk(Allocator* allocator, intsize count, T** ptr, intsize old_count, AllocatorError* out_err)
-{
-	SafeAssert(count <= INTSIZE_MAX / sizeof(T));
-	T* result = (T*)allocator->proc(allocator, AllocatorMode_Resize, count * sizeof(T), alignof(T), ptr, old_count * sizeof(T), out_err);
-	if (result || !count)
-	{
-		*ptr = result;
-		return true;
-	}
-	return false;
-}
-#endif
 
 // NOTE(ljre): FNV-1a implementation.
 static inline FORCE_INLINE uint64
