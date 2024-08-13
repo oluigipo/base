@@ -21,6 +21,12 @@ IncludeBinary(g_shader_dxps, "shader_ps.dxil");
 IncludeBinary(g_shader_spvs, "shader_vs.spirv");
 IncludeBinary(g_shader_spps, "shader_ps.spirv");
 
+struct Vertex
+{
+	float32 pos[3];
+	float32 color[3];
+};
+	
 API int32
 EntryPoint(int32 argc, const char* const* argv)
 {
@@ -87,11 +93,6 @@ EntryPoint(int32 argc, const char* const* argv)
 		.size = 128 << 20,
 	});
 
-	struct Vertex
-	{
-		float32 pos[3];
-		float32 color[3];
-	};
 	struct Vertex vertices[3] = {
 		{ 0.0, 0.5, 0.0, 1.0, 0.0, 0.0 },
 		{ 0.5,-0.5, 0.0, 0.0, 1.0, 0.0 },
@@ -181,11 +182,14 @@ EntryPoint(int32 argc, const char* const* argv)
 		},
 	});
 
+	intsize frame_count = 0;
 	intsize image_index = 0;
 	bool running = true;
 	bool first_frame = true;
 	while (running)
 	{
+		if (++frame_count == 500)
+			Debugbreak();
 		ArenaSavepoint scratch = ArenaSave(OS_ScratchArena(NULL, 0));
 		intsize event_count;
 		OS_Event* events = OS_PollEvents(false, scratch.arena, &event_count);

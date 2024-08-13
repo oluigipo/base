@@ -414,6 +414,7 @@ enum R3_PrimitiveType
 {
 	R3_PrimitiveType_TriangleList = 0,
 	R3_PrimitiveType_TriangleStrip,
+	R3_PrimitiveType_TriangleFan,
 	R3_PrimitiveType_LineList,
 	R3_PrimitiveType_LineStrip,
 	R3_PrimitiveType_PointList,

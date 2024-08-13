@@ -520,6 +520,7 @@ static inline String StringSliceEnd(String str, intsize count);
 static inline String StringFromCString(char const* cstr);
 static inline intsize StringIndexOf(String str, uint8 ch, intsize start_index);
 static inline intsize StringIndexOfSubstr(String str, String substr, intsize start_index);
+static inline String StringFromFixedBuffer(Buffer buf);
 
 static inline uintsize StringVPrintfBuffer(char* buf, uintsize len, const char* fmt, va_list args);
 static inline uintsize StringPrintfBuffer(char* buf, uintsize len, const char* fmt, ...);
@@ -1210,6 +1211,19 @@ StringIndexOfSubstr(String str, String substr, intsize start_index)
 	}
 	
 	return -1;
+}
+
+static inline String
+StringFromFixedBuffer(Buffer buf)
+{
+	if (!buf.size)
+		return StrNull;
+
+	uint8 const* zero = (uint8 const*)MemoryFindByte(buf.data, 0, buf.size);
+	String result = buf;
+	if (zero)
+		result.size = zero - buf.data;
+	return result;
 }
 
 static inline FORCE_INLINE uintsize StringPrintfFunc_(char* buf, uintsize buf_size, const char* restrict fmt, va_list args);

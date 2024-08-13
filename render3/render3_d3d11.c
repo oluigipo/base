@@ -576,7 +576,7 @@ R3_MakePipeline(R3_Context* ctx, R3_PipelineDesc const* desc)
 		vs = desc->dx50.vs;
 		ps = desc->dx50.ps;
 	}
-	else if (desc->dx40.vs.size && ctx->feature_level >= D3D_FEATURE_LEVEL_11_0)
+	else if (desc->dx40.vs.size && ctx->feature_level >= D3D_FEATURE_LEVEL_10_0)
 	{
 		vs = desc->dx40.vs;
 		ps = desc->dx40.ps;

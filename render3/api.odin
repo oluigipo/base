@@ -434,6 +434,60 @@ FontDesc :: struct
 	pt: f32,
 }
 
+UpdateBufferSlice :: proc(ctx: ^Context, buffer: ^Buffer, data: []$T) {
+	size := len(data) * size_of(data[0])
+	assert(size >= 0 && size <= cast(int) max(u32))
+	UpdateBuffer_(ctx, buffer, raw_data(data), cast(u32) size)
+}
+UpdateBufferStruct :: proc(ctx: ^Context, buffer: ^Buffer, data: ^$T) {
+	UpdateBuffer_(ctx, buffer, data, cast(u32) size_of(data^))
+}
+UpdateBufferPtr :: proc(ctx: ^Context, buffer: ^Buffer, data: rawptr, size: int) {
+	assert(size >= 0 && size <= cast(int) max(u32))
+	UpdateBuffer_(ctx, buffer, data, cast(u32) size)
+}
+
+UpdateBuffer :: proc {
+	UpdateBufferSlice,
+	UpdateBufferStruct,
+	UpdateBufferPtr,
+}
+
+UpdateTexture :: proc(ctx: ^Context, texture: ^Texture, data: []$T, #any_int slice: int) {
+	size := len(data) * sizeof(data[0])
+	assert(size >= 0 && size <= max(u32))
+	assert(slice >= 0 && slice <= max(u32))
+	UpdateTexture_(ctx, texture, raw_data(data), cast(u32) size, cast(u32) slice)
+}
+
+SetViewports :: proc(ctx: ^Context, viewports: []Viewport) {
+	SetViewports_(ctx, len(viewports), raw_data(viewports))
+}
+
+SetUniformBuffers :: proc(ctx: ^Context, buffers: []UniformBuffer) {
+	SetUniformBuffers_(ctx, len(buffers), raw_data(buffers))
+}
+
+SetResourceViews :: proc(ctx: ^Context, views: []ResourceView) {
+	SetResourceViews_(ctx, len(views), raw_data(views))
+}
+
+SetSamplers :: proc(ctx: ^Context, samplers: []^Sampler) {
+	SetSamplers_(ctx, len(samplers), raw_data(samplers))
+}
+
+SetComputeUniformBuffers :: proc(ctx: ^Context, buffers: []UniformBuffer) {
+	SetComputeUniformBuffers_(ctx, len(buffers), raw_data(buffers))
+}
+
+SetComputeResourceViews :: proc(ctx: ^Context, views: []ResourceView) {
+	SetComputeResourceViews_(ctx, len(views), raw_data(views))
+}
+
+SetComputeUnorderedViews :: proc(ctx: ^Context, views: []UnorderedView) {
+	SetComputeUnorderedViews_(ctx, len(views), raw_data(views))
+}
+
 @(default_calling_convention="c", link_prefix="R3_")
 foreign {
 	D3D11_MakeContext :: proc "c"(arena: ^c.Arena, #by_ptr desc: ContextDesc) -> ^Context ---;
@@ -453,8 +507,10 @@ foreign {
 	MakeComputePipeline :: proc "c"(ctx: ^Context, #by_ptr desc: ComputePipelineDesc) -> ComputePipeline ---;
 	MakeSampler :: proc "c"(ctx: ^Context, #by_ptr desc: SamplerDesc) -> Sampler ---;
 	
-	UpdateBuffer :: proc "c"(ctx: ^Context, buffer: ^Buffer, memory: rawptr, size: u32) ---;
-	UpdateTexture :: proc "c"(ctx: ^Context, texture: ^Texture, memory: rawptr, size: u32, slice: u32) ---;
+	@(link_name="R3_UpdateBuffer")
+	UpdateBuffer_ :: proc "c"(ctx: ^Context, buffer: ^Buffer, memory: rawptr, size: u32) ---;
+	@(link_name="R3_UpdateTexture")
+	UpdateTexture_ :: proc "c"(ctx: ^Context, texture: ^Texture, memory: rawptr, size: u32, slice: u32) ---;
 	
 	FreeTexture :: proc "c"(ctx: ^Context, texture: ^Texture) ---;
 	FreeBuffer :: proc "c"(ctx: ^Context, buffer: ^Buffer) ---;
@@ -463,22 +519,29 @@ foreign {
 	FreeComputePipeline :: proc "c"(ctx: ^Context, pipeline: ^ComputePipeline) ---;
 	FreeSampler :: proc "c"(ctx: ^Context, sampler: ^Sampler) ---;
 	
-	SetViewports :: proc "c"(ctx: ^Context, count: int, viewports: [^]Viewport) ---;
+	@(link_name="R3_SetViewports")
+	SetViewports_ :: proc "c"(ctx: ^Context, count: int, viewports: [^]Viewport) ---;
 	SetPipeline :: proc "c"(ctx: ^Context, pipeline: ^Pipeline) ---;
 	SetRenderTarget :: proc "c"(ctx: ^Context, rendertarget: ^RenderTarget) ---;
 	SetVertexInputs :: proc "c"(ctx: ^Context, #by_ptr desc: VertexInputs) ---;
-	SetUniformBuffers :: proc "c"(ctx: ^Context, count: int, buffers: [^]UniformBuffer) ---;
-	SetResourceViews :: proc "c"(ctx: ^Context, count: int, views: [^]ResourceView) ---;
-	SetSamplers :: proc "c"(ctx: ^Context, count: int, samplers: [^]^Sampler) ---;
+	@(link_name="R3_SetUniformBuffers")
+	SetUniformBuffers_ :: proc "c"(ctx: ^Context, count: int, buffers: [^]UniformBuffer) ---;
+	@(link_name="R3_SetResourceViews")
+	SetResourceViews_ :: proc "c"(ctx: ^Context, count: int, views: [^]ResourceView) ---;
+	@(link_name="R3_SetSamplers")
+	SetSamplers_ :: proc "c"(ctx: ^Context, count: int, samplers: [^]^Sampler) ---;
 	SetPrimitiveType :: proc "c"(ctx: ^Context, type: PrimitiveType) ---;
 	
 	Clear :: proc "c"(ctx: ^Context, #by_ptr desc: ClearDesc) ---;
 	Draw :: proc "c"(ctx: ^Context, start_vertex: u32, vertex_count: u32, start_instance: u32, instance_count: u32) ---;
 	DrawIndexed :: proc "c"(ctx: ^Context, start_index: u32, index_count: u32, start_instance: u32, instance_count: u32, base_vertex: i32) ---;
 	SetComputePipeline :: proc "c"(ctx: ^Context, pipeline: ^ComputePipeline) ---;
-	SetComputeUniformBuffers :: proc "c"(ctx: ^Context, count: int, buffers: [^]UniformBuffer) ---;
-	SetComputeResourceViews :: proc "c"(ctx: ^Context, count: int, views: [^]ResourceView) ---;
-	SetComputeUnorderedViews :: proc "c"(ctx: ^Context, count: int, views: [^]UnorderedView) ---;
+	@(link_name="R3_SetComputeUniformBuffers")
+	SetComputeUniformBuffers_ :: proc "c"(ctx: ^Context, count: int, buffers: [^]UniformBuffer) ---;
+	@(link_name="R3_SetComputeResourceViews")
+	SetComputeResourceViews_ :: proc "c"(ctx: ^Context, count: int, views: [^]ResourceView) ---;
+	@(link_name="R3_SetComputeUnorderedViews")
+	SetComputeUnorderedViews_ :: proc "c"(ctx: ^Context, count: int, views: [^]UnorderedView) ---;
 	Dispatch :: proc "c"(ctx: ^Context, x: u32, y: u32, z: u32) ---;
 	
 	MakeVideoDecoder :: proc "c"(ctx: ^Context, #by_ptr desc: VideoDecoderDesc) -> VideoDecoder ---;

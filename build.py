@@ -132,7 +132,7 @@ def main():
     ap.add_argument('-debug', action='store_true')
     ap.add_argument('-rebuild', action='store_true')
     ap.add_argument('-target', choices=['win64', 'android'], default='win64')
-    ap.add_argument('-gen-compile-commands', action='store_true')
+    ap.add_argument('-no-compile-commands', action='store_true')
     ap.add_argument('-asan', action='store_true')
     ap.add_argument('-ubsan', action='store_true')
     args = ap.parse_args()
@@ -141,7 +141,7 @@ def main():
     is_debug = args.debug
     force_rebuild = args.rebuild
     target = args.target
-    gen_compile_commands = args.gen_compile_commands
+    gen_compile_commands = not args.no_compile_commands
     asan = args.asan
     ubsan = args.ubsan
 

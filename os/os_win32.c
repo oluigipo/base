@@ -1828,14 +1828,18 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 			}
 		} break;
 		
-		case WM_CHAR:
+		case WM_UNICHAR:
 		{
+			if (wparam == UNICODE_NOCHAR)
+			{
+				result = TRUE;
+				break;
+			}
 			if ((wparam < 32 && wparam != '\r' && wparam != '\t' && wparam != '\b') || (wparam > 0x7f && wparam <= 0xa0))
 				break;
 			
 			uint32 codepoint = (uint32)wparam;
 			int32 repeat_count = (lparam & 0xffff);
-			(void)repeat_count;
 			
 			os_event.kind = OS_EventKind_WindowTyping;
 			os_event.window_typing.codepoint = codepoint;
@@ -4001,11 +4005,11 @@ OS_MakeD3D11Api(OS_D3D11Api* out_api, OS_D3D11ApiDesc const* args)
 	flags |= D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 	
 	D3D_FEATURE_LEVEL feature_levels[] = {
-		D3D_FEATURE_LEVEL_12_1,
-		D3D_FEATURE_LEVEL_12_0,
-		D3D_FEATURE_LEVEL_11_1,
-		D3D_FEATURE_LEVEL_11_0,
-		D3D_FEATURE_LEVEL_10_1,
+		// D3D_FEATURE_LEVEL_12_1,
+		// D3D_FEATURE_LEVEL_12_0,
+		// D3D_FEATURE_LEVEL_11_1,
+		// D3D_FEATURE_LEVEL_11_0,
+		// D3D_FEATURE_LEVEL_10_1,
 		D3D_FEATURE_LEVEL_10_0,
 		D3D_FEATURE_LEVEL_9_3,
 		D3D_FEATURE_LEVEL_9_2,

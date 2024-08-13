@@ -72,7 +72,7 @@ ArenaBeginArray :: proc "c"(arena: ^Arena, $T: typeid) -> [^]T
 ArenaEndArray :: proc "c"(arena: ^Arena, begin_ptr: [^]$T) -> []T
 {
 	end_ptr := cast([^]T) (arena.memory + arena.offset)
-	length := mem.ptr_sub(end_ptr, begin_ptr)
+	length := mem.ptr_sub(cast(^T) end_ptr, cast(^T) begin_ptr)
 	return begin_ptr[:length]
 }
 
@@ -107,7 +107,7 @@ ArenaPushDirtyAligned :: proc "c"(arena: ^Arena, size: uint, alignment: uint) ->
 		if arena.commit_memory_proc == nil || !arena.commit_memory_proc(arena, needed) {
 			return nil
 		}
-		assert(needed >= arena.size)
+		assert(needed <= arena.size)
 	}
 
 	result := cast(rawptr)(arena.memory + arena.offset)

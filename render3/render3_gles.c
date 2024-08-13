@@ -3,17 +3,38 @@
 #include "api_os_opengl.h"
 #include "api_render3.h"
 
+struct VertexAttrib_
+{
+	bool is_enabled;
+	bool is_normalized;
+	bool is_float;
+	GLenum type;
+	uint32 elem_count; // 1, 2, 3, or 4
+	uint32 offset;
+	uint32 divisor;
+	uint32 buffer_slot;
+}
+typedef VertexAttrib_;
+
 struct R3_Context
 {
     OS_OpenGLApi api;
 	int32 glversion;
 	R3_ContextInfo info;
-    R3_LayoutDesc layout[16];
 	bool has_framebuffer;
 	bool has_texstorage;
 	bool has_explicit_attrib_location;
 	bool has_uniformbuffer;
 	bool has_anisotropy;
+
+	uint32 global_vao;
+	uint32 curr_program;
+	int32 ubo_indices[16];
+	int32 texture_indices[16];
+
+	GLenum curr_prim;
+	GLenum curr_index_type;
+	VertexAttrib_ curr_attribs[16];
 };
 
 static void APIENTRY
@@ -94,14 +115,46 @@ OglFormatToGLEnum_(R3_Format format, GLenum* out_unsized_format, GLenum* out_dat
 	return result;
 }
 
+static void
+OglRebindTextures_(R3_Context* ctx)
+{
+	for (intz i = 0; i < 16; ++i)
+	{
+		char name[64] = {};
+		String prefix = StrInit("uTexture");
+		SafeAssert(prefix.size+3 < sizeof(name));
+		MemoryCopy(name, prefix.data, prefix.size);
+		if (i == 0)
+			name[prefix.size] = '0';
+		else if (i < 10)
+			name[prefix.size] = '0' + i;
+		else
+		{
+			name[prefix.size+0] = '0' + i/10;
+			name[prefix.size+1] = '0' + i%10;
+		}
+
+		int32 location = ctx->api.glGetUniformLocation(ctx->curr_program, name);
+		if (location)
+			ctx->api.glUniform1i(location, i);
+	}
+}
+
 //------------------------------------------------------------------------
 API R3_Context*
-R3_GL_MakeContext(Arena* arena, OS_OpenGLApi const* ogl_api)
+R3_GL_MakeContext(Arena* arena, R3_ContextDesc const* desc)
 {
     R3_Context* ctx = ArenaPushStruct(arena, R3_Context);
     if (!ctx)
         return NULL;
-    ctx->api = *ogl_api;
+    if (!OS_MakeOpenGLApi(&ctx->api, &(OS_OpenGLApiDesc) {
+	    	.window = *desc->window,
+	    	.swap_interval = 1
+    	}))
+    {
+    	ArenaPop(arena, ctx);
+    	return NULL;
+    }
     
     //------------------------------------------------------------------------
 	// Setup
@@ -283,8 +336,10 @@ R3_GL_MakeContext(Arena* arena, OS_OpenGLApi const* ogl_api)
 	SafeAssert(
 		ctx->has_uniformbuffer &&
 		ctx->has_explicit_attrib_location &&
-		ctx->has_framebuffer &&
-		true);
+		ctx->has_framebuffer);
+
+	ctx->api.glGenVertexArrays(1, &ctx->global_vao);
+	ctx->api.glBindVertexArray(ctx->global_vao);
 
     return ctx;
 }
@@ -327,10 +382,11 @@ R3_MakeTexture(R3_Context* ctx, R3_TextureDesc const* desc)
 	GLenum unsized_format, datatype;
 	GLenum format = OglFormatToGLEnum_(desc->format, &unsized_format, &datatype);
 	SafeAssert(format && unsized_format && datatype);
-	bool can_be_renderbuffer = (unsized_format == GL_DEPTH_COMPONENT || unsized_format == GL_DEPTH_STENCIL)
-		&& !(desc->binding_flags & R3_BindingFlag_ShaderResource)
-		&& (desc->binding_flags & R3_BindingFlag_RenderTarget)
-		&& !desc->initial_data;
+	bool can_be_renderbuffer =
+		 (unsized_format == GL_DEPTH_COMPONENT || unsized_format == GL_DEPTH_STENCIL) &&
+		!(desc->binding_flags & R3_BindingFlag_ShaderResource) &&
+		 (desc->binding_flags & R3_BindingFlag_DepthStencil) &&
+		!desc->initial_data;
 
 	if (can_be_renderbuffer)
 	{
@@ -635,6 +691,8 @@ API void
 R3_FreeComputePipeline(R3_Context* ctx, R3_ComputePipeline* pipeline)
 {
 	Trace();
+	if (pipeline->gl_program)
+		ctx->api.glDeleteProgram(pipeline->gl_program);
 
 	*pipeline = (R3_ComputePipeline) {};
 }
@@ -650,7 +708,7 @@ R3_FreeSampler(R3_Context* ctx, R3_Sampler* sampler)
 }
 
 API void
-R3_UpdateBuffer (R3_Context* ctx, R3_Buffer* buffer, void const* memory, uint32 size)
+R3_UpdateBuffer(R3_Context* ctx, R3_Buffer* buffer, void const* memory, uint32 size)
 {
 	Trace();
 
@@ -663,8 +721,13 @@ API void
 R3_UpdateTexture(R3_Context* ctx, R3_Texture* texture, void const* memory, uint32 size, uint32 slice)
 {
 	Trace();
+	GLenum unsized_format;
+	GLenum type;
+	OglFormatToGLEnum_(texture->format, &unsized_format, &type);
 
-	
+	ctx->api.glBindTexture(GL_TEXTURE_2D, texture->gl_id);
+	ctx->api.glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, texture->width, texture->height, unsized_format, type, memory);
+	ctx->api.glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 API void
@@ -687,43 +750,191 @@ R3_SetViewports(R3_Context* ctx, intsize count, R3_Viewport viewports[])
 API void
 R3_SetPipeline(R3_Context* ctx, R3_Pipeline* pipeline)
 {
+	ctx->api.glUseProgram(pipeline->gl_program);
+	ctx->curr_program = pipeline->gl_program;
+	for (intz i = 0; i < ArrayLength(ctx->ubo_indices); ++i)
+	{
+		char name[64] = {};
+		String prefix = StrInit("type_UniformBuffer");
+		SafeAssert(prefix.size+3 < sizeof(name));
+		MemoryCopy(name, prefix.data, prefix.size);
+		if (i == 0)
+			name[prefix.size] = '0';
+		else if (i < 10)
+			name[prefix.size] = '0' + i;
+		else
+		{
+			name[prefix.size+0] = '0' + i/10;
+			name[prefix.size+1] = '0' + i%10;
+		}
 
+		int32 block_id = ctx->api.glGetUniformBlockIndex(ctx->curr_program, name);
+		ctx->ubo_indices[i] = block_id;
+	}
+	OglRebindTextures_(ctx);
+	for (intz i = 0; i < ArrayLength(pipeline->gl_layout); ++i)
+	{
+		R3_LayoutDesc const* layout = &pipeline->gl_layout[i];
+		if (!layout->format)
+			ctx->curr_attribs[i].is_enabled = false;
+		else
+		{
+			uint32 elem_count = 0;
+			bool is_normalized = false;
+			bool is_float = false;
+			GLenum datatype = 0;
+
+			switch (layout->format)
+			{
+				case R3_Format_F32x1: elem_count = 1; datatype = GL_FLOAT; is_float = true; break;
+				case R3_Format_F32x2: elem_count = 2; datatype = GL_FLOAT; is_float = true; break;
+				case R3_Format_F32x3: elem_count = 3; datatype = GL_FLOAT; is_float = true; break;
+				case R3_Format_F32x4: elem_count = 4; datatype = GL_FLOAT; is_float = true; break;
+				case R3_Format_F16x2: elem_count = 2; datatype = GL_HALF_FLOAT; is_float = true; break;
+				case R3_Format_F16x4: elem_count = 4; datatype = GL_HALF_FLOAT; is_float = true; break;
+				case R3_Format_I16x2: elem_count = 2; datatype = GL_SHORT; break;
+				case R3_Format_I16x4: elem_count = 4; datatype = GL_SHORT; break;
+
+				default: SafeAssert(false);
+			}
+
+			ctx->curr_attribs[i] = (VertexAttrib_) {
+				.is_enabled = true,
+				.is_normalized = is_normalized,
+				.is_float = is_float,
+				.divisor = layout->divisor,
+				.buffer_slot = layout->buffer_slot,
+				.offset = layout->offset,
+				.elem_count = elem_count,
+				.type = datatype,
+			};
+		}
+	}
+	if (!pipeline->gl_blend)
+		ctx->api.glDisable(GL_BLEND);
+	else
+	{
+		ctx->api.glEnable(GL_BLEND);
+		ctx->api.glBlendFuncSeparate(pipeline->gl_src, pipeline->gl_dst, pipeline->gl_src_alpha, pipeline->gl_dst_alpha);
+		ctx->api.glBlendEquationSeparate(pipeline->gl_op, pipeline->gl_op_alpha);
+	}
+	ctx->api.glFrontFace(pipeline->gl_frontface);
+	if (!pipeline->gl_cullface)
+		ctx->api.glDisable(GL_CULL_FACE);
+	else
+	{
+		ctx->api.glEnable(GL_CULL_FACE);
+		ctx->api.glCullFace(pipeline->gl_cull_mode);
+	}
+	ctx->api.glFrontFace(pipeline->gl_frontface);
+	if (!pipeline->gl_depthtest)
+		ctx->api.glDisable(GL_DEPTH_TEST);
+	else
+		ctx->api.glEnable(GL_DEPTH_TEST);
 }
 
 API void
 R3_SetRenderTarget(R3_Context* ctx, R3_RenderTarget* rendertarget)
 {
-
+	Trace();
+	uint32 fbo = 0;
+	if (rendertarget)
+		fbo = rendertarget->gl_id;
+	ctx->api.glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 }
 
 API void
 R3_SetVertexInputs(R3_Context* ctx, R3_VertexInputs const* desc)
 {
-	
+	Trace();
+	if (desc->ibuffer)
+	{
+		ctx->api.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, desc->ibuffer->gl_id);
+		ctx->curr_index_type = (desc->index_format == R3_Format_U32x1) ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
+	}
+	else
+		ctx->api.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+	for (intz i = 0; i < ArrayLength(ctx->curr_attribs); ++i)
+	{
+		VertexAttrib_ const* attrib = &ctx->curr_attribs[i];
+		if (!attrib->is_enabled)
+		{
+			ctx->api.glDisableVertexAttribArray(i);
+			continue;
+		}
+		intz buffer_slot = attrib->buffer_slot;
+		SafeAssert(buffer_slot < ArrayLength(desc->vbuffers));
+
+		uint32 buffer_id = (desc->vbuffers[buffer_slot].buffer) ? desc->vbuffers[buffer_slot].buffer->gl_id : 0;
+		uint32 stride = desc->vbuffers[buffer_slot].stride;
+		uint32 base_offset = desc->vbuffers[buffer_slot].offset;
+		ctx->api.glBindBuffer(GL_ARRAY_BUFFER, buffer_id);
+		ctx->api.glEnableVertexAttribArray(i);
+		ctx->api.glVertexAttribDivisor(i, attrib->divisor);
+		if (attrib->is_normalized || attrib->is_float)
+			ctx->api.glVertexAttribPointer(i, attrib->elem_count, attrib->type, attrib->is_normalized, stride, (void*)(base_offset + attrib->offset));
+		else
+			ctx->api.glVertexAttribIPointer(i, attrib->elem_count, attrib->type, stride, (void*)(base_offset + attrib->offset));
+	}
 }
 
 API void
 R3_SetUniformBuffers(R3_Context* ctx, intsize count, R3_UniformBuffer buffers[])
 {
-
+	Trace();
+	SafeAssert(count <= ArrayLength(ctx->ubo_indices));
+	for (intz i = 0; i < count; ++i)
+	{
+		int32 block_id = ctx->ubo_indices[i];
+		SafeAssert(block_id != -1);
+		if (!buffers[i].offset && !buffers[i].size)
+			ctx->api.glBindBufferBase(GL_UNIFORM_BUFFER, i, buffers[i].buffer->gl_id);
+		else
+			ctx->api.glBindBufferRange(GL_UNIFORM_BUFFER, i, buffers[i].buffer->gl_id, buffers[i].offset, buffers[i].size);
+		ctx->api.glUniformBlockBinding(ctx->curr_program, block_id, i);
+	}
 }
 
 API void
 R3_SetResourceViews(R3_Context* ctx, intsize count, R3_ResourceView views[])
 {
-
+	Trace();
+	for (intz i = 0; i < count; ++i)
+	{
+		if (views[i].buffer)
+			ctx->api.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, views[i].buffer->gl_id);
+		else
+		{
+			ctx->api.glActiveTexture(GL_TEXTURE0 + i);
+			ctx->api.glBindTexture(GL_TEXTURE_2D, views[i].texture->gl_id);
+		}
+	}
+	ctx->api.glActiveTexture(GL_TEXTURE0);
 }
 
 API void
 R3_SetSamplers(R3_Context* ctx, intsize count, R3_Sampler* samplers[])
 {
-
+	Trace();
+	for (intz i = 0; i < count; ++i)
+		ctx->api.glBindSampler(i, samplers[i] ? samplers[i]->gl_sampler : 0);
 }
 
 API void
 R3_SetPrimitiveType(R3_Context* ctx, R3_PrimitiveType type)
 {
-
+	Trace();
+	switch (type)
+	{
+		case R3_PrimitiveType_TriangleList: ctx->curr_prim = GL_TRIANGLES; break;
+		case R3_PrimitiveType_TriangleStrip: ctx->curr_prim = GL_TRIANGLE_STRIP; break;
+		case R3_PrimitiveType_TriangleFan: ctx->curr_prim = GL_TRIANGLE_FAN; break;
+		case R3_PrimitiveType_LineList: ctx->curr_prim = GL_LINES; break;
+		case R3_PrimitiveType_LineStrip: ctx->curr_prim = GL_LINE_STRIP; break;
+		case R3_PrimitiveType_PointList: ctx->curr_prim = GL_POINTS; break;
+		default: SafeAssert(false);
+	}
 }
 
 API void
@@ -768,9 +979,9 @@ R3_DrawIndexed(R3_Context* ctx, uint32 start_index, uint32 index_count, uint32 s
 {
 	Trace();
 	SafeAssert(start_instance == 0);
-	GLenum type = GL_UNSIGNED_INT;
-	GLenum prim = GL_TRIANGLES;
-	uintptr offset = start_index * 4;
+	GLenum type = ctx->curr_index_type;
+	GLenum prim = ctx->curr_prim;
+	uintptr offset = start_index * (type == GL_UNSIGNED_INT ? 4 : 2);
 
 	if (instance_count)
 	{
@@ -792,25 +1003,60 @@ R3_DrawIndexed(R3_Context* ctx, uint32 start_index, uint32 index_count, uint32 s
 API void
 R3_SetComputePipeline(R3_Context* ctx, R3_ComputePipeline* pipeline)
 {
+	Trace();
+	ctx->api.glUseProgram(pipeline->gl_program);
+	ctx->curr_program = pipeline->gl_program;
+	for (intz i = 0; i < ArrayLength(ctx->ubo_indices); ++i)
+	{
+		char name[64] = {};
+		String prefix = StrInit("type_UniformBuffer");
+		SafeAssert(prefix.size+3 < sizeof(name));
+		MemoryCopy(name, prefix.data, prefix.size);
+		if (i == 0)
+			name[prefix.size] = '0';
+		else if (i < 10)
+			name[prefix.size] = '0' + i;
+		else if (i < 100)
+		{
+			name[prefix.size+0] = '0' + i/10;
+			name[prefix.size+1] = '0' + i%10;
+		}
+		else
+			SafeAssert(!"are you really binding 100 uniform buffers?");
 
+		int32 block_id = ctx->api.glGetUniformBlockIndex(ctx->curr_program, name);
+		ctx->ubo_indices[i] = block_id;
+	}
+	OglRebindTextures_(ctx);
 }
 
 API void
 R3_SetComputeUniformBuffers(R3_Context* ctx, intsize count, R3_UniformBuffer buffers[])
 {
-
+	Trace();
+	R3_SetUniformBuffers(ctx, count, buffers);
 }
 
 API void
 R3_SetComputeResourceViews(R3_Context* ctx, intsize count, R3_ResourceView views[])
 {
-
+	Trace();
+	R3_SetResourceViews(ctx, count, views);
 }
 
 API void
 R3_SetComputeUnorderedViews(R3_Context* ctx, intsize count, R3_UnorderedView views[])
 {
-
+	Trace();
+	intz max_view_count = 16;
+	SafeAssert(count < max_view_count);
+	for (intz i = 0; i < count; ++i)
+	{
+		if (views[i].buffer)
+			ctx->api.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i+max_view_count, views[i].buffer->gl_id);
+		else
+			ctx->api.glBindImageTexture(i+max_view_count, views[i].texture->gl_id, 0, GL_FALSE, 0, GL_READ_WRITE, OglFormatToGLEnum_(views[i].texture->format, NULL, NULL));
+	}
 }
 
 API void
@@ -818,5 +1064,5 @@ R3_Dispatch(R3_Context* ctx, uint32 x, uint32 y, uint32 z)
 {
 	Trace();
 	ctx->api.glDispatchCompute(x, y, z);
+	ctx->api.glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 }
-
