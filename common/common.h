@@ -162,6 +162,7 @@ extern const unsigned char name ## _end[];
 #define ClampMax Min
 #define ClampMin Max
 #define Clamp(x,min,max) ((x) < (min) ? (min) : (x) > (max) ? (max) : (x))
+#define SignedSizeof(x) ((intz)sizeof(x))
 
 #if defined(__clang__)
 #	define Assume(...) __builtin_assume(__VA_ARGS__)
@@ -338,31 +339,31 @@ static_assert(ATOMIC_SEQ_CST == __ATOMIC_SEQ_CST, "must be same");
 struct Buffer
 {
 	uint8 const* data;
-	uintsize size;
+	intz size;
 }
 typedef Buffer;
 
 typedef Buffer String;
 
 struct Arena typedef Arena;
-typedef bool ArenaCommitMemoryProc(Arena* arena, uintsize needed_size);
+typedef bool ArenaCommitMemoryProc(Arena* arena, intz needed_size);
 
 struct Arena
 {
-	uintsize size;
-	uintsize offset;
+	intz size;
+	intz offset;
 	uint8* memory;
 	
 	// NOTE(ljre): Commit-as-you-go arena style.
 	//             commit_memory_proc() function should return true if the specified needed_size is commited
-	uintsize reserved;
+	intz reserved;
 	ArenaCommitMemoryProc* commit_memory_proc;
 };
 
 struct ArenaSavepoint
 {
 	Arena* arena;
-	uintsize offset;
+	intz offset;
 }
 typedef ArenaSavepoint;
 
@@ -408,7 +409,7 @@ enum AllocatorError
 typedef AllocatorError;
 
 struct Allocator typedef Allocator;
-typedef void* AllocatorProc(Allocator* allocator, AllocatorMode mode, intsize size, intsize alignment, void* old_ptr, intsize old_size, AllocatorError* out_err);
+typedef void* AllocatorProc(Allocator* allocator, AllocatorMode mode, intz size, intz alignment, void* old_ptr, intz old_size, AllocatorError* out_err);
 struct Allocator
 {
 	AllocatorProc* proc;
@@ -426,26 +427,26 @@ struct Allocator
 #ifndef __cplusplus
 #	define Buf(x) (Buffer) BufInit(x)
 #	define BufNull (Buffer) { 0 }
-#	define BufMake(size, data) (Buffer) { (const uint8*)(data), (uintsize)(size) }
+#	define BufMake(size, data) (Buffer) { (const uint8*)(data), (intz)(size) }
 #	define BufRange(begin, end) (Buffer) BufInitRange(begin, end)
 #	define Str(x) (String) StrInit(x)
 #	define StrNull (String) { 0 }
-#	define StrMake(size,data) (String) { (const uint8*)(data), (uintsize)(size) }
+#	define StrMake(size,data) (String) { (const uint8*)(data), (intz)(size) }
 #	define StrRange(begin, end) (String) StrInitRange(begin, end)
 #else //__cplusplus
 #	define Buf(x) Buffer BufInit(x)
 #	define BufNull Buffer {}
-#	define BufMake(size, data) Buffer { (const uint8*)(data), (uintsize)(size) }
+#	define BufMake(size, data) Buffer { (const uint8*)(data), (intz)(size) }
 #	define BufRange(begin, end) Buffer BufInitRange(begin, end)
 #	define Str(x) String StrInit(x)
 #	define StrNull String {}
-#	define StrMake(size, data) String { (const uint8*)(data), (uintsize)(size) }
+#	define StrMake(size, data) String { (const uint8*)(data), (intz)(size) }
 #	define StrRange(begin, end) String StrInitRange(begin, end)
 #endif //__cplusplus
-#define BufInit(x) { (const uint8*)(x), sizeof(x) }
-#define BufInitRange(begin, end) { (const uint8*)(begin), (uintsize)((end) - (begin)) }
-#define StrInit(x) { (const uint8*)(x), sizeof(x) - 1 }
-#define StrInitRange(begin, end) { (const uint8*)(begin), (uintsize)((end) - (begin)) }
+#define BufInit(x) { (const uint8*)(x), SignedSizeof(x) }
+#define BufInitRange(begin, end) { (const uint8*)(begin), (intz)((end) - (begin)) }
+#define StrInit(x) { (const uint8*)(x), SignedSizeof(x) - 1 }
+#define StrInitRange(begin, end) { (const uint8*)(begin), (intz)((end) - (begin)) }
 #define StrFmt(x) (x).size, (char*)(x).data
 #define StrMacro_(x) #x
 #define StrMacro(x) StrMacro_(x)
@@ -454,25 +455,25 @@ struct Allocator
 #define StringPrintfLocal(size, ...) StringPrintf((char[size]) { 0 }, size, __VA_ARGS__)
 
 #define ArenaPushStruct(arena, Type) \
-	((Type*)ArenaPushAligned(arena, sizeof(Type), alignof(Type)))
+	((Type*)ArenaPushAligned(arena, SignedSizeof(Type), alignof(Type)))
 #define ArenaPushStructData(arena, Type, ...) \
-	((Type*)MemoryCopy(ArenaPushDirtyAligned(arena, sizeof(Type), alignof(Type)), __VA_ARGS__, sizeof(Type)))
+	((Type*)MemoryCopy(ArenaPushDirtyAligned(arena, SignedSizeof(Type), alignof(Type)), __VA_ARGS__, SignedSizeof(Type)))
 #define ArenaPushArray(arena, Type, count) \
-	((Type*)ArenaPushAligned(arena, sizeof(Type)*(count), alignof(Type)))
+	((Type*)ArenaPushAligned(arena, SignedSizeof(Type)*(count), alignof(Type)))
 #define ArenaPushArrayData(arena, Type, data, count) \
-	((Type*)MemoryCopy(ArenaPushDirtyAligned(arena, sizeof(Type)*(count), alignof(Type)), data, sizeof(Type)*(count)))
+	((Type*)MemoryCopy(ArenaPushDirtyAligned(arena, SignedSizeof(Type)*(count), alignof(Type)), data, SignedSizeof(Type)*(count)))
 #define ArenaPushData(arena, data) \
-	MemoryCopy(ArenaPushDirtyAligned(arena, sizeof*(data), 1), data, sizeof*(data))
+	MemoryCopy(ArenaPushDirtyAligned(arena, SignedSizeof(*(data)), 1), data, SignedSizeof(*(data)))
 #define ArenaPushDataArray(arena, data, count) \
-	MemoryCopy(ArenaPushDirtyAligned(arena, sizeof*(data)*(count), 1), data, sizeof*(data)*(count))
+	MemoryCopy(ArenaPushDirtyAligned(arena, SignedSizeof(*(data))*(count), 1), data, SignedSizeof(*(data))*(count))
 #define ArenaTempScope(arena_) \
 	(ArenaSavepoint _temp__ = { arena_, (arena_)->offset }; _temp__.arena; _temp__.arena->offset = _temp__.offset, _temp__.arena = NULL)
 #ifndef __cplusplus
 #   define ArenaPushStructInit(arena, Type, ...) \
-		((Type*)ArenaPushMemoryAligned(arena, &(Type) __VA_ARGS__, sizeof(Type), alignof(Type)))
+		((Type*)ArenaPushMemoryAligned(arena, &(Type) __VA_ARGS__, SignedSizeof(Type), alignof(Type)))
 #else //__cplusplus
 #   define ArenaPushStructInit(arena, Type, ...) \
-		((Type*)ArenaPushMemoryAligned(arena, &(Type const&) Type __VA_ARGS__, sizeof(Type), alignof(Type)))
+		((Type*)ArenaPushMemoryAligned(arena, &(Type const&) Type __VA_ARGS__, SignedSizeof(Type), alignof(Type)))
 #endif //__cplusplus
 
 static inline FORCE_INLINE int32 BitCtz64(uint64 i);
@@ -492,24 +493,24 @@ static inline FORCE_INLINE uint32 ByteSwap32(uint32 x);
 static inline FORCE_INLINE uint16 ByteSwap16(uint16 x);
 static inline FORCE_INLINE uint16  EncodeF16(float32 x);
 static inline FORCE_INLINE float32 DecodeF16(uint16 x);
-static inline uintsize MemoryStrlen(const char* restrict cstr);
-static inline uintsize MemoryStrnlen(const char* restrict cstr, uintsize limit);
+static inline intz MemoryStrlen(const char* restrict cstr);
+static inline intz MemoryStrnlen(const char* restrict cstr, intz limit);
 static inline int32 MemoryStrcmp(const char* left, const char* right);
-static inline int32 MemoryStrncmp(const char* left, const char* right, uintsize limit);
+static inline int32 MemoryStrncmp(const char* left, const char* right, intz limit);
 static inline char* MemoryStrstr(const char* left, const char* right);
-static inline char* MemoryStrnstr(const char* left, const char* right, uintsize limit);
-static inline void const* MemoryFindByte(const void* buffer, uint8 byte, uintsize size);
-static inline void* MemoryZeroSafe(void* restrict dst, uintsize size);
-static inline FORCE_INLINE void* MemoryZero(void* restrict dst, uintsize size);
-static inline FORCE_INLINE void* MemoryCopy(void* restrict dst, const void* restrict src, uintsize size);
-static inline FORCE_INLINE void* MemoryMove(void* dst, const void* src, uintsize size);
-static inline FORCE_INLINE void* MemorySet(void* restrict dst, uint8 byte, uintsize size);
-static inline FORCE_INLINE int32 MemoryCompare(const void* left_, const void* right_, uintsize size);
+static inline char* MemoryStrnstr(const char* left, const char* right, intz limit);
+static inline void const* MemoryFindByte(const void* buffer, uint8 byte, intz size);
+static inline void* MemoryZeroSafe(void* restrict dst, intz size);
+static inline FORCE_INLINE void* MemoryZero(void* restrict dst, intz size);
+static inline FORCE_INLINE void* MemoryCopy(void* restrict dst, const void* restrict src, intz size);
+static inline FORCE_INLINE void* MemoryMove(void* dst, const void* src, intz size);
+static inline FORCE_INLINE void* MemorySet(void* restrict dst, uint8 byte, intz size);
+static inline FORCE_INLINE int32 MemoryCompare(const void* left_, const void* right_, intz size);
 
 static inline uint32 StringDecode(String str, intsize* index);
-static inline uint32 StringEncodedCodepointSize(uint32 codepoint);
-static inline uintsize StringEncode(uint8* buffer, uintsize size, uint32 codepoint);
-static inline uintsize StringDecodedLength(String str);
+static inline intz StringEncodedCodepointSize(uint32 codepoint);
+static inline intz StringEncode(uint8* buffer, intz size, uint32 codepoint);
+static inline intz StringDecodedLength(String str);
 static inline int32 StringCompare(String a, String b);
 static inline bool StringEquals(String a, String b);
 static inline bool StringEndsWith(String check, String s);
@@ -522,27 +523,27 @@ static inline intsize StringIndexOf(String str, uint8 ch, intsize start_index);
 static inline intsize StringIndexOfSubstr(String str, String substr, intsize start_index);
 static inline String StringFromFixedBuffer(Buffer buf);
 
-static inline uintsize StringVPrintfBuffer(char* buf, uintsize len, const char* fmt, va_list args);
-static inline uintsize StringPrintfBuffer(char* buf, uintsize len, const char* fmt, ...);
-static inline String StringVPrintf(char* buf, uintsize len, const char* fmt, va_list args);
-static inline String StringPrintf(char* buf, uintsize len, const char* fmt, ...);
-static inline uintsize StringVPrintfSize(const char* fmt, va_list args);
-static inline uintsize StringPrintfSize(const char* fmt, ...);
+static inline intz StringVPrintfBuffer(char* buf, intz len, const char* fmt, va_list args);
+static inline intz StringPrintfBuffer(char* buf, intz len, const char* fmt, ...);
+static inline String StringVPrintf(char* buf, intz len, const char* fmt, va_list args);
+static inline String StringPrintf(char* buf, intz len, const char* fmt, ...);
+static inline intz StringVPrintfSize(const char* fmt, va_list args);
+static inline intz StringPrintfSize(const char* fmt, ...);
 
-static inline Arena ArenaFromMemory(void* memory, uintsize size);
-static inline void* ArenaPush(Arena* arena, uintsize size);
-static inline void* ArenaPushDirty(Arena* arena, uintsize size);
-static inline void* ArenaPushAligned(Arena* arena, uintsize size, uintsize alignment);
-static inline void* ArenaPushDirtyAligned(Arena* arena, uintsize size, uintsize alignment);
-static inline void* ArenaPushMemory(Arena* arena, void const* buf, uintsize size);
-static inline void* ArenaPushMemoryAligned(Arena* arena, void const* buf, uintsize size, uintsize alignment);
+static inline Arena ArenaFromMemory(void* memory, intz size);
+static inline void* ArenaPush(Arena* arena, intz size);
+static inline void* ArenaPushDirty(Arena* arena, intz size);
+static inline void* ArenaPushAligned(Arena* arena, intz size, intz alignment);
+static inline void* ArenaPushDirtyAligned(Arena* arena, intz size, intz alignment);
+static inline void* ArenaPushMemory(Arena* arena, void const* buf, intz size);
+static inline void* ArenaPushMemoryAligned(Arena* arena, void const* buf, intz size, intz alignment);
 static inline String ArenaPushString(Arena* arena, String str);
-static inline String ArenaPushStringAligned(Arena* arena, String str, uintsize alignment);
+static inline String ArenaPushStringAligned(Arena* arena, String str, intz alignment);
 static inline char* ArenaPushCString(Arena* arena, String str);
 static inline String ArenaVPrintf(Arena* arena, const char* fmt, va_list args);
 static inline String ArenaPrintf(Arena* arena, const char* fmt, ...);
 static inline void  ArenaPop(Arena* arena, void* ptr);
-static inline void* ArenaEndAligned(Arena* arena, uintsize alignment);
+static inline void* ArenaEndAligned(Arena* arena, intz alignment);
 static inline void  ArenaClear(Arena* arena);
 static inline void* ArenaEnd(Arena* arena);
 static inline ArenaSavepoint ArenaSave(Arena* arena);
@@ -551,7 +552,7 @@ static inline void           ArenaRestore(ArenaSavepoint savepoint);
 static inline FORCE_INLINE uint64 HashString(String memory);
 static inline FORCE_INLINE uint32 HashInt32(uint32 x);
 static inline FORCE_INLINE uint64 HashInt64(uint64 x);
-static inline FORCE_INLINE int32  HashMsi(uint32 log2_of_cap, uint64 hash, int32 index);
+static inline FORCE_INLINE intz   HashMsi(uint32 log2_of_cap, uint64 hash, intz index);
 
 static inline Allocator AllocatorFromArena(Arena* arena);
 static inline Allocator NullAllocator(void);
@@ -573,7 +574,7 @@ static_assert(CONFIG_ARENA_DEFAULT_ALIGNMENT != 0 && IsPowerOf2(CONFIG_ARENA_DEF
 #	pragma optimize("", off)
 #endif
 static inline void*
-MemoryZeroSafe(void* restrict dst, uintsize size)
+MemoryZeroSafe(void* restrict dst, intz size)
 {
 	MemoryZero(dst, size);
 #if defined(__GNUC__) || defined(__clang__)
@@ -905,59 +906,82 @@ MemoryCopyX16(void* restrict dst, const void* restrict src)
 #include <string.h>
 
 static inline FORCE_INLINE void*
-MemoryCopy(void* restrict dst, const void* restrict src, uintsize size)
-{ Trace(); return memcpy(dst, src, size); }
+MemoryCopy(void* restrict dst, const void* restrict src, intz size)
+{ Trace(); Assert(size >= 0); return memcpy(dst, src, (size_t)size); }
 
 static inline FORCE_INLINE void*
-MemoryMove(void* dst, const void* src, uintsize size)
-{ Trace(); return memmove(dst, src, size); }
+MemoryMove(void* dst, const void* src, intz size)
+{ Trace(); Assert(size >= 0); return memmove(dst, src, (size_t)size); }
 
 static inline FORCE_INLINE void*
-MemorySet(void* restrict dst, uint8 byte, uintsize size)
-{ Trace(); return memset(dst, byte, size); }
+MemorySet(void* restrict dst, uint8 byte, intz size)
+{ Trace(); Assert(size >= 0); return memset(dst, byte, (size_t)size); }
 
 static inline FORCE_INLINE int32
-MemoryCompare(const void* left_, const void* right_, uintsize size)
-{ Trace(); return memcmp(left_, right_, size); }
+MemoryCompare(const void* left_, const void* right_, intz size)
+{ Trace(); Assert(size >= 0); return memcmp(left_, right_, (size_t)size); }
 
-static inline uintsize
+static inline intz
 MemoryStrlen(const char* restrict cstr)
-{ Trace(); return strlen(cstr); }
+{
+	Trace();
+	size_t result = strlen(cstr);
+	Assert(result <= INTZ_MAX);
+	return (intz)result;
+}
 
-static inline uintsize
-MemoryStrnlen(const char* restrict cstr, uintsize limit)
-{ Trace(); return strnlen(cstr, limit); }
+static inline intz
+MemoryStrnlen(const char* restrict cstr, intz limit)
+{
+	Trace();
+	Assert(limit >= 0);
+	size_t result = strnlen(cstr, (size_t)limit);
+	Assert(result <= INTZ_MAX);
+	return (intz)result;
+}
 
 static inline int32
 MemoryStrcmp(const char* left, const char* right)
 { Trace(); return strcmp(left, right); }
 
 static inline int32
-MemoryStrncmp(const char* left, const char* right, uintsize limit)
-{ Trace(); return strncmp(left, right, limit); }
+MemoryStrncmp(const char* left, const char* right, intz limit)
+{
+	Trace();
+	Assert(limit >= 0);
+	return strncmp(left, right, (size_t)limit);
+}
 
 static inline char*
 MemoryStrstr(const char* left, const char* right)
 { Trace(); return (char*)strstr(left, right); }
 
 static inline const void*
-MemoryFindByte(const void* buffer, uint8 byte, uintsize size)
-{ Trace(); return memchr(buffer, byte, size); }
+MemoryFindByte(const void* buffer, uint8 byte, intz size)
+{
+	Trace();
+	Assert(size >= 0);
+	return memchr(buffer, byte, (size_t)size);
+}
 
 static inline FORCE_INLINE void*
-MemoryZero(void* restrict dst, uintsize size)
-{ Trace(); return memset(dst, 0, size); }
+MemoryZero(void* restrict dst, intz size)
+{
+	Trace();
+	Assert(size >= 0);
+	return memset(dst, 0, (size_t)size);
+}
 
 static inline char*
-MemoryStrnstr(const char* left, const char* right, uintsize limit)
+MemoryStrnstr(const char* left, const char* right, intz limit)
 {
 	Trace();
 	
-	for (; *left && limit; ++left)
+	for (; *left && limit > 0; ++left)
 	{
 		const char* it_left = left;
 		const char* it_right = right;
-		uintsize local_limit = limit--;
+		intz local_limit = limit--;
 		while (*it_left == *it_right)
 		{
 			if (!*it_left)
@@ -973,7 +997,7 @@ MemoryStrnstr(const char* left, const char* right, uintsize limit)
 }
 
 static inline uint32
-StringDecode(String str, intsize* index)
+StringDecode(String str, intz* index)
 {
 	const uint8* head = str.data + *index;
 	const uint8* const end = str.data + str.size;
@@ -1008,7 +1032,7 @@ StringDecode(String str, intsize* index)
 	return result;
 }
 
-static inline uint32
+static inline intz
 StringEncodedCodepointSize(uint32 codepoint)
 {
 	if (codepoint < 128)
@@ -1020,10 +1044,10 @@ StringEncodedCodepointSize(uint32 codepoint)
 	return 4;
 }
 
-static inline uintsize
-StringEncode(uint8* buffer, uintsize size, uint32 codepoint)
+static inline intz
+StringEncode(uint8* buffer, intz size, uint32 codepoint)
 {
-	uint32 needed = StringEncodedCodepointSize(codepoint);
+	intz needed = StringEncodedCodepointSize(codepoint);
 	if (size < needed)
 		return 0;
 	
@@ -1059,12 +1083,12 @@ StringEncode(uint8* buffer, uintsize size, uint32 codepoint)
 }
 
 // TODO(ljre): make this better (?)
-static inline uintsize
+static inline intz
 StringDecodedLength(String str)
 {
-	uintsize len = 0;
+	intz len = 0;
 	
-	intsize it = 0;
+	intz it = 0;
 	while (StringDecode(str, &it))
 		++len;
 	
@@ -1115,7 +1139,7 @@ StringStartsWith(String check, String s)
 }
 
 static inline String
-StringSubstr(String str, intsize index, intsize size)
+StringSubstr(String str, intz index, intz size)
 {
 	if (index >= str.size)
 		return StrNull;
@@ -1140,17 +1164,17 @@ StringFromCString(char const* cstr)
 }
 
 static inline String
-StringSlice(String str, intsize begin, intsize end)
+StringSlice(String str, intz begin, intz end)
 {
 	if (begin < 0)
-		begin = (intsize)str.size + begin + 1;
+		begin = (intz)str.size + begin + 1;
 	if (end < 0)
-		end = (intsize)str.size + end + 1;
+		end = (intz)str.size + end + 1;
 	if (begin >= end)
 		return StrNull;
 	
-	begin = ClampMax(begin, (intsize)str.size);
-	end   = ClampMax(end,   (intsize)str.size);
+	begin = ClampMax(begin, (intz)str.size);
+	end   = ClampMax(end,   (intz)str.size);
 	
 	str.data += begin;
 	str.size = end - begin;
@@ -1158,26 +1182,26 @@ StringSlice(String str, intsize begin, intsize end)
 }
 
 static inline String
-StringSliceEnd(String str, intsize count)
+StringSliceEnd(String str, intz count)
 {
-	count = ClampMax(count, (intsize)str.size);
-	str.data += (intsize)str.size - count;
+	count = ClampMax(count, (intz)str.size);
+	str.data += (intz)str.size - count;
 	str.size = count;
 	return str;
 }
 
-static inline intsize
-StringIndexOf(String str, uint8 ch, intsize start_index)
+static inline intz
+StringIndexOf(String str, uint8 ch, intz start_index)
 {
 	if (start_index < 0)
 		start_index = 0;
-	if (start_index >= (intsize)str.size)
+	if (start_index >= (intz)str.size)
 		return -1;
 	if (!str.size)
 		return -1;
 	
 	uint8 const* data = str.data + start_index;
-	uintsize size = str.size - start_index;
+	intz size = str.size - start_index;
 	uint8 const* found_ch = (uint8 const*)MemoryFindByte(data, ch, size);
 	if (found_ch)
 		return found_ch - data;
@@ -1197,8 +1221,8 @@ StringIndexOfSubstr(String str, String substr, intsize start_index)
 		return -1;
 	
 	uint8 const* data = str.data;
-	uintsize size = str.size;
-	uintsize min_allowed_size = size - substr.size;
+	intz size = str.size;
+	intz min_allowed_size = size - substr.size;
 	
 	for (intsize offset = start_index; offset < min_allowed_size; ++offset)
 	{
@@ -1226,32 +1250,32 @@ StringFromFixedBuffer(Buffer buf)
 	return result;
 }
 
-static inline FORCE_INLINE uintsize StringPrintfFunc_(char* buf, uintsize buf_size, const char* restrict fmt, va_list args);
+static inline FORCE_INLINE intz StringPrintfFunc_(char* buf, intz buf_size, const char* restrict fmt, va_list args);
 
-static inline uintsize
-StringVPrintfBuffer(char* buf, uintsize len, const char* fmt, va_list args)
+static inline intz
+StringVPrintfBuffer(char* buf, intz len, const char* fmt, va_list args)
 {
-	Assert(buf && len);
+	Assert(buf && len >= 0);
 	
 	return StringPrintfFunc_(buf, len, fmt, args);
 }
 
-static inline uintsize
-StringPrintfBuffer(char* buf, uintsize len, const char* fmt, ...)
+static inline intz
+StringPrintfBuffer(char* buf, intz len, const char* fmt, ...)
 {
-	Assert(buf && len);
+	Assert(buf && len >= 0);
 	
 	va_list args;
 	va_start(args, fmt);
 	
-	uintsize result = StringPrintfFunc_(buf, len, fmt, args);
+	intz result = StringPrintfFunc_(buf, len, fmt, args);
 	
 	va_end(args);
 	return result;
 }
 
 static inline String
-StringVPrintf(char* buf, uintsize len, const char* fmt, va_list args)
+StringVPrintf(char* buf, intz len, const char* fmt, va_list args)
 {
 	Assert(buf && len);
 	
@@ -1264,7 +1288,7 @@ StringVPrintf(char* buf, uintsize len, const char* fmt, va_list args)
 }
 
 static inline String
-StringPrintf(char* buf, uintsize len, const char* fmt, ...)
+StringPrintf(char* buf, intz len, const char* fmt, ...)
 {
 	Assert(buf && len);
 	
@@ -1281,19 +1305,19 @@ StringPrintf(char* buf, uintsize len, const char* fmt, ...)
 	return result;
 }
 
-static inline uintsize
+static inline intz
 StringVPrintfSize(const char* fmt, va_list args)
 {
 	return StringPrintfFunc_(NULL, 0, fmt, args);
 }
 
-static inline uintsize
+static inline intz
 StringPrintfSize(const char* fmt, ...)
 {
 	va_list args;
 	va_start(args, fmt);
 	
-	uintsize result = StringPrintfFunc_(NULL, 0, fmt, args);
+	intz result = StringPrintfFunc_(NULL, 0, fmt, args);
 	
 	va_end(args);
 	return result;
@@ -1304,7 +1328,7 @@ StringPrintfSize(const char* fmt, ...)
 static inline int32 String_stbsp__real_to_str(char const** start, uint32* len, char* out, int32* decimal_pos, float64 value, uint32 frac_digits);
 
 static inline FORCE_INLINE void
-StringWriteBuf_(char** p, char* end, uintsize* count, const char* restrict buf, intsize bufsize)
+StringWriteBuf_(char** p, char* end, intz* count, const char* restrict buf, intsize bufsize)
 {
 	Assert(bufsize >= 0);
 	
@@ -1322,7 +1346,7 @@ StringWriteBuf_(char** p, char* end, uintsize* count, const char* restrict buf, 
 }
 
 static inline FORCE_INLINE void
-StringFillBuf_(char** p, char* end, uintsize* count, char fill, intsize fillsize)
+StringFillBuf_(char** p, char* end, intz* count, char fill, intsize fillsize)
 {
 	Assert(fillsize >= 0);
 	
@@ -1339,13 +1363,13 @@ StringFillBuf_(char** p, char* end, uintsize* count, char fill, intsize fillsize
 	}
 }
 
-static inline FORCE_INLINE uintsize
-StringPrintfFunc_(char* buf, uintsize buf_size, const char* restrict fmt, va_list args)
+static inline FORCE_INLINE intz
+StringPrintfFunc_(char* buf, intz buf_size, const char* restrict fmt, va_list args)
 {
-	uintsize count = 0;
+	intz count = 0;
 	const char* fmt_end = fmt + MemoryStrlen(fmt);
 	
-	SafeAssert(!buf ? buf_size == 0 : true);
+	SafeAssert(!buf ? buf_size <= 0 : true);
 	
 	char* p = buf;
 	char* p_end = buf + buf_size;
@@ -1409,7 +1433,7 @@ StringPrintfFunc_(char* buf, uintsize buf_size, const char* restrict fmt, va_lis
 		//- Parse format specifier
 		char tmpbuf[128] = { 0 };
 		const char* write_buf = tmpbuf;
-		intsize write_count = 0;
+		intz write_count = 0;
 		
 		bool handled_write = false;
 		char prefix_char = 0;
@@ -1471,7 +1495,7 @@ StringPrintfFunc_(char* buf, uintsize buf_size, const char* restrict fmt, va_lis
 					arg /= 10;
 				}
 				
-				write_count = sizeof(tmpbuf) - index;
+				write_count = SignedSizeof(tmpbuf) - index;
 				write_buf = tmpbuf + index;
 			} break;
 			
@@ -1502,7 +1526,7 @@ StringPrintfFunc_(char* buf, uintsize buf_size, const char* restrict fmt, va_lis
 					arg /= 10;
 				}
 				
-				write_count = sizeof(tmpbuf) - index;
+				write_count = SignedSizeof(tmpbuf) - index;
 				write_buf = tmpbuf + index;
 			} break;
 			
@@ -1534,14 +1558,14 @@ StringPrintfFunc_(char* buf, uintsize buf_size, const char* restrict fmt, va_lis
 					arg >>= 4;
 				}
 				
-				write_count = sizeof(tmpbuf) - index;
+				write_count = SignedSizeof(tmpbuf) - index;
 				write_buf = tmpbuf + index;
 			} break;
 			
 			case 's':
 			{
 				const char* arg = va_arg(args, const char*);
-				uintsize len;
+				intz len;
 				
 				if (!arg)
 				{
@@ -1588,12 +1612,13 @@ StringPrintfFunc_(char* buf, uintsize buf_size, const char* restrict fmt, va_lis
 					trailling_padding = 8;
 				
 				char* start;
-				uint32 length;
+				uint32 length_;
 				int32 decimal_pos;
 				
 				static_assert(sizeof(tmpbuf) > 64 + 32, "stbsp__real_to_str takes just the final 64 bytes of the buffer because we might need to add a prefix to the string");
 				
-				bool negative = String_stbsp__real_to_str((const char**)&start, &length, tmpbuf+sizeof(tmpbuf)-64, &decimal_pos, arg, trailling_padding);
+				bool negative = String_stbsp__real_to_str((const char**)&start, &length_, tmpbuf+sizeof(tmpbuf)-64, &decimal_pos, arg, (uint32)trailling_padding);
+				intz length = (intz)length_;
 				
 				if (decimal_pos == String_STDSP_SPECIAL)
 				{
@@ -1890,7 +1915,7 @@ String_stbsp__real_to_str(char const** start, uint32* len, char out[64], int32* 
 	
 	if (expo == 2047) // is nan or inf?
 	{
-		*start = (bits & ((((uint64)1) << 52) - 1)) ? "NaN" : "Inf";
+		*start = ((uint64)bits & ((((uint64)1) << 52) - 1)) ? "NaN" : "Inf";
 		*decimal_pos = String_STDSP_SPECIAL;
 		*len = 3;
 		return ng;
@@ -1936,7 +1961,7 @@ String_stbsp__real_to_str(char const** start, uint32* len, char out[64], int32* 
 	}
 	
 	// now do the rounding in integer land
-	frac_digits = (frac_digits & 0x80000000) ? ((frac_digits & 0x7ffffff) + 1) : (tens + frac_digits);
+	frac_digits = (frac_digits & 0x80000000) ? ((frac_digits & 0x7ffffff) + 1) : ((uint32)tens + frac_digits);
 	if ((frac_digits < 24)) {
 		uint32 dg = 1;
 		if ((uint64)bits >= stbsp__powten[9])
@@ -1949,11 +1974,11 @@ String_stbsp__real_to_str(char const** start, uint32* len, char out[64], int32* 
 		if (frac_digits < dg) {
 			uint64 r;
 			// add 0.5 at the right position and round
-			e = dg - frac_digits;
+			e = (int32)(dg - frac_digits);
 			if ((uint32)e >= 24)
 				goto noround;
 			r = stbsp__powten[e];
-			bits = bits + (r / 2);
+			bits = bits + (int64)(r / 2);
 			if ((uint64)bits >= stbsp__powten[dg])
 				++tens;
 			bits /= r;
@@ -2013,16 +2038,16 @@ String_stbsp__real_to_str(char const** start, uint32* len, char out[64], int32* 
 	
 	*decimal_pos = tens;
 	*start = out;
-	*len = e;
+	*len = (uint32)e;
 	return ng;
 }
 
 #undef String_STDSP_SPECIAL
 
 static inline Arena
-ArenaFromMemory(void* memory, uintsize size)
+ArenaFromMemory(void* memory, intz size)
 {
-	Assert(((uintptr)memory & ~(CONFIG_ARENA_DEFAULT_ALIGNMENT-1)) == (uintptr)memory);
+	Assert(((uintptr)memory & (uintptr)~(CONFIG_ARENA_DEFAULT_ALIGNMENT-1)) == (uintptr)memory);
 	
 	Arena result = {
 		.size = size,
@@ -2034,23 +2059,23 @@ ArenaFromMemory(void* memory, uintsize size)
 }
 
 static inline void*
-ArenaEndAligned(Arena* arena, uintsize alignment)
+ArenaEndAligned(Arena* arena, intz alignment)
 {
 	Assert(alignment != 0 && IsPowerOf2(alignment));
 	
-	uintptr target_offset = AlignUp((uintptr)arena->memory + arena->offset, alignment-1) - (uintptr)arena->memory;
+	intptr target_offset = AlignUp((intptr)arena->memory + arena->offset, alignment-1) - (intptr)arena->memory;
 	arena->offset = target_offset;
 	return arena->memory + arena->offset;
 }
 
 static inline void*
-ArenaPushDirtyAligned(Arena* arena, uintsize size, uintsize alignment)
+ArenaPushDirtyAligned(Arena* arena, intz size, intz alignment)
 {
 	Assert(alignment != 0 && IsPowerOf2(alignment));
 	SafeAssert((intsize)size > 0);
 	
-	uintptr target_offset = AlignUp((uintptr)arena->memory + arena->offset, alignment-1) - (uintptr)arena->memory;
-	uintsize needed = target_offset + size;
+	intptr target_offset = AlignUp((intptr)arena->memory + arena->offset, alignment-1) - (intptr)arena->memory;
+	intz needed = target_offset + size;
 	
 	if (Unlikely(needed > arena->size))
 	{
@@ -2071,7 +2096,7 @@ ArenaPop(Arena* arena, void* ptr)
 	uint8* p = (uint8*)ptr;
 	SafeAssert(p >= arena->memory && p <= arena->memory + arena->offset);
 	
-	uintsize new_offset = p - arena->memory;
+	intz new_offset = p - arena->memory;
 	arena->offset = new_offset;
 }
 
@@ -2081,7 +2106,7 @@ ArenaVPrintf(Arena* arena, char const* fmt, va_list args)
 	va_list args2;
 	va_copy(args2, args);
 	
-	uintsize size = StringVPrintfSize(fmt, args2);
+	intz size = StringVPrintfSize(fmt, args2);
 	uint8* data = (uint8*)ArenaPushDirtyAligned(arena, size, 1);
 	String result = { 0 };
 	
@@ -2134,11 +2159,11 @@ ArenaRestore(ArenaSavepoint savepoint)
 { savepoint.arena->offset = savepoint.offset; }
 
 static inline void*
-ArenaPushDirty(Arena* arena, uintsize size)
+ArenaPushDirty(Arena* arena, intz size)
 { return ArenaPushDirtyAligned(arena, size, CONFIG_ARENA_DEFAULT_ALIGNMENT); }
 
 static inline void*
-ArenaPushAligned(Arena* arena, uintsize size, uintsize alignment)
+ArenaPushAligned(Arena* arena, intz size, intz alignment)
 {
 	void* data = ArenaPushDirtyAligned(arena, size, alignment);
 	if (data)
@@ -2147,7 +2172,7 @@ ArenaPushAligned(Arena* arena, uintsize size, uintsize alignment)
 }
 
 static inline void*
-ArenaPush(Arena* arena, uintsize size)
+ArenaPush(Arena* arena, intz size)
 {
 	void* data = ArenaPushDirtyAligned(arena, size, CONFIG_ARENA_DEFAULT_ALIGNMENT);
 	if (data)
@@ -2156,7 +2181,7 @@ ArenaPush(Arena* arena, uintsize size)
 }
 
 static inline void*
-ArenaPushMemory(Arena* arena, const void* buf, uintsize size)
+ArenaPushMemory(Arena* arena, const void* buf, intz size)
 {
 	void* data = ArenaPushDirtyAligned(arena, size, 1);
 	if (data)
@@ -2165,7 +2190,7 @@ ArenaPushMemory(Arena* arena, const void* buf, uintsize size)
 }
 
 static inline void*
-ArenaPushMemoryAligned(Arena* arena, const void* buf, uintsize size, uintsize alignment)
+ArenaPushMemoryAligned(Arena* arena, const void* buf, intz size, intz alignment)
 {
 	void* data = ArenaPushDirtyAligned(arena, size, alignment);
 	if (data)
@@ -2184,7 +2209,7 @@ ArenaPushString(Arena* arena, String str)
 }
 
 static inline String
-ArenaPushStringAligned(Arena* arena, String str, uintsize alignment)
+ArenaPushStringAligned(Arena* arena, String str, intz alignment)
 {
 	void* data = ArenaPushDirtyAligned(arena, str.size, alignment);
 	String result = { 0 };
@@ -2541,8 +2566,8 @@ HashInt64(uint64 x)
 
 // NOTE(ljre): This is a implementation of "MSI hash table".
 //             https://nullprogram.com/blog/2022/08/08/
-static inline FORCE_INLINE int32
-HashMsi(uint32 log2_of_cap, uint64 hash, int32 index)
+static inline FORCE_INLINE intz
+HashMsi(uint32 log2_of_cap, uint64 hash, intz index)
 {
 	uint32 exp = log2_of_cap;
 	uint32 mask = (1u << exp) - 1;

@@ -15,13 +15,19 @@ struct R4_Context
 typedef R4_Context;
 
 API R4_Context*
-R4_MTL_MakeContext(Arena* arena, R4_ContextDesc const* desc)
+R4_MTL_MakeContext(Allocator allocator, R4_ContextDesc const* desc)
 {
 	id<MTLDevice> device = MTLCreateSystemDefaultDevice();
 
-	return ArenaPushStructInit(arena, R4_Context, {
+	AllocatorError err;
+	R4_Context* result = AllocatorAlloc(&allocator, sizeof(R4_Context), alignof(R4_Context), &err);
+	if (!result)
+		goto lbl_error;
+	
+	*result = (R4_Context) {
 		.device = device,
-	});
+	};
+	return result;
 
 lbl_error:
 	[device release];

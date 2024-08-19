@@ -91,13 +91,13 @@ struct R3_ContextInfo
 	String driver_adapter;
 	String driver_version;
 	
-	uint32 max_texture_size;
-	uint32 max_render_target_textures;
-	uint32 max_textures_per_drawcall;
-	uint32 max_dispatch_x;
-	uint32 max_dispatch_y;
-	uint32 max_dispatch_z;
-	uint32 max_anisotropy_level;
+	int32 max_texture_size;
+	int32 max_render_target_textures;
+	int32 max_textures_per_drawcall;
+	int32 max_dispatch_x;
+	int32 max_dispatch_y;
+	int32 max_dispatch_z;
+	int32 max_anisotropy_level;
 
 	uint64 supported_texture_formats      [2];
 	uint64 supported_render_target_formats[2];

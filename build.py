@@ -9,7 +9,7 @@ CFLAGS_WARNINGS = [
     '-Wall', '-Werror-implicit-function-declaration', '-Wno-logical-op-parentheses',
     '-Wno-missing-braces', '-Wsizeof-array-decay', '-Wno-assume', '-Wno-unused-command-line-argument',
     '-Wno-int-to-void-pointer-cast', '-Wno-void-pointer-to-int-cast', '-Wno-unsafe-buffer-usage',
-    '-Wno-static-in-inline'
+    '-Wno-static-in-inline', '-Wsign-conversion',
 ]
 CFLAGS_DEBUG = ['-DCONFIG_DEBUG']
 CFLAGS_OPT   = ['-fno-math-errno', '-fno-strict-aliasing']
@@ -273,7 +273,7 @@ def main():
         case _:
             retcode = 1
 
-    if retcode == 0 and gen_compile_commands:
+    if gen_compile_commands:
         commands_file = Path('compile_commands.json')
         output_json = read_entire_file(commands_file)
         if output_json:

@@ -443,8 +443,8 @@ API void OS_SetGamepadMappings(OS_GamepadMapping const* mappings, intsize mappin
 
 //------------------------------------------------------------------------
 // Memory & file stuff
-API void* OS_HeapAlloc  (uintsize size);
-API void* OS_HeapRealloc(void* ptr, uintsize size);
+API void* OS_HeapAlloc  (intz size);
+API void* OS_HeapRealloc(void* ptr, intz size);
 API void  OS_HeapFree   (void* ptr);
 
 enum
@@ -457,12 +457,12 @@ enum
 	OS_VirtualFlags_ExecuteOnly = 0x0004,
 };
 
-API void* OS_VirtualAlloc  (void* address, uintsize size, uint32 flags);
-API bool  OS_VirtualCommit (void* address, uintsize size);
-API bool  OS_VirtualProtect(void* address, uintsize size, uint32 flags);
-API bool  OS_VirtualFree   (void* address, uintsize size);
-API bool  OS_ArenaCommitMemoryProc(Arena* arena, uintsize needed_size);
-API Arena OS_VirtualAllocArena(uintsize total_reserved_size);
+API void* OS_VirtualAlloc  (void* address, intz size, uint32 flags);
+API bool  OS_VirtualCommit (void* address, intz size);
+API bool  OS_VirtualProtect(void* address, intz size, uint32 flags);
+API bool  OS_VirtualFree   (void* address, intz size);
+API bool  OS_ArenaCommitMemoryProc(Arena* arena, intz needed_size);
+API Arena OS_VirtualAllocArena(intz total_reserved_size);
 
 API Allocator OS_HeapAllocator(void);
 
@@ -476,8 +476,8 @@ struct OS_FileInfo
 }
 typedef OS_FileInfo;
 
-API bool        OS_ReadEntireFile (String path, Arena* output_arena, void** out_data, uintsize* out_size, OS_Error* out_err);
-API bool        OS_WriteEntireFile(String path, void const* data, uintsize size, OS_Error* out_err);
+API bool        OS_ReadEntireFile (String path, Arena* output_arena, void** out_data, intz* out_size, OS_Error* out_err);
+API bool        OS_WriteEntireFile(String path, void const* data, intz size, OS_Error* out_err);
 API OS_FileInfo OS_GetFileInfoFromPath(String path, OS_Error* out_err);
 API bool        OS_CopyFile       (String from, String to, OS_Error* out_err);
 API bool        OS_DeleteFile     (String path, OS_Error* out_err);
@@ -524,7 +524,7 @@ API bool        OS_IsFilePipe (OS_File file);
 struct OS_FileMapping
 { void* ptr; }
 typedef OS_FileMapping;
-API OS_FileMapping OS_MapFileForReading(OS_File file, void const** out_buffer, uintsize* out_size, OS_Error* out_err);
+API OS_FileMapping OS_MapFileForReading(OS_File file, void const** out_buffer, intz* out_size, OS_Error* out_err);
 API void           OS_UnmapFile        (OS_FileMapping mapping);
 
 //------------------------------------------------------------------------

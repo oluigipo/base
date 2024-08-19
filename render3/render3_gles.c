@@ -9,7 +9,7 @@ struct VertexAttrib_
 	bool is_normalized;
 	bool is_float;
 	GLenum type;
-	uint32 elem_count; // 1, 2, 3, or 4
+	int32 elem_count; // 1, 2, 3, or 4
 	uint32 offset;
 	uint32 divisor;
 	uint32 buffer_slot;
@@ -194,14 +194,14 @@ R3_GL_MakeContext(Arena* arena, R3_ContextDesc const* desc)
 		info.driver_version = StringFromCString((char const*)version_cstr);
 	
 	// TODO(ljre): Fill in supported texture formats
-	info.supported_texture_formats[0] |= (1 << R3_Format_U8x1Norm);
-	info.supported_texture_formats[0] |= (1 << R3_Format_U8x1Norm_ToAlpha);
-	info.supported_texture_formats[0] |= (1 << R3_Format_U8x4Norm);
+	info.supported_texture_formats[0] |= (1U << R3_Format_U8x1Norm);
+	info.supported_texture_formats[0] |= (1U << R3_Format_U8x1Norm_ToAlpha);
+	info.supported_texture_formats[0] |= (1U << R3_Format_U8x4Norm);
 
 	if (!ctx->api.is_es)
 	{
 		info.backend_api = Str("OpenGL");
-		info.supported_texture_formats[0] |= (1 << R3_Format_D16);
+		info.supported_texture_formats[0] |= (1U << R3_Format_D16);
 		SafeAssert(ctx->glversion >= 20);
 
 		if (ctx->glversion >= 20)
@@ -217,11 +217,11 @@ R3_GL_MakeContext(Arena* arena, R3_ContextDesc const* desc)
 		if (ctx->glversion >= 30)
 		{
 			ctx->has_framebuffer = true;
-			info.supported_texture_formats[0] |= (1 << R3_Format_U8x1Norm);
-			info.supported_texture_formats[0] |= (1 << R3_Format_U8x2Norm);
-			info.supported_texture_formats[0] |= (1 << R3_Format_D24S8);
-			info.supported_texture_formats[0] |= (1 << R3_Format_F16x2);
-			info.supported_texture_formats[0] |= (1 << R3_Format_F16x4);
+			info.supported_texture_formats[0] |= (1U << R3_Format_U8x1Norm);
+			info.supported_texture_formats[0] |= (1U << R3_Format_U8x2Norm);
+			info.supported_texture_formats[0] |= (1U << R3_Format_D24S8);
+			info.supported_texture_formats[0] |= (1U << R3_Format_F16x2);
+			info.supported_texture_formats[0] |= (1U << R3_Format_F16x4);
 		}
 
 		if (ctx->glversion >= 31)
@@ -274,10 +274,10 @@ R3_GL_MakeContext(Arena* arena, R3_ContextDesc const* desc)
 		{
 			info.has_instancing = true;
 			info.has_32bit_index = true;
-			info.supported_texture_formats[0] |= (1 << R3_Format_D16);
-			info.supported_texture_formats[0] |= (1 << R3_Format_D24S8);
-			info.supported_texture_formats[0] |= (1 << R3_Format_U8x1Norm);
-			info.supported_texture_formats[0] |= (1 << R3_Format_U8x2Norm);
+			info.supported_texture_formats[0] |= (1U << R3_Format_D16);
+			info.supported_texture_formats[0] |= (1U << R3_Format_D24S8);
+			info.supported_texture_formats[0] |= (1U << R3_Format_U8x1Norm);
+			info.supported_texture_formats[0] |= (1U << R3_Format_U8x2Norm);
 			ctx->has_texstorage = true;
 			ctx->has_uniformbuffer = true; // This is why our baseline is 3.0
 			ctx->has_explicit_attrib_location = true;
@@ -310,7 +310,7 @@ R3_GL_MakeContext(Arena* arena, R3_ContextDesc const* desc)
 	ctx->api.glGetIntegerv(GL_NUM_EXTENSIONS, &extension_count);
 	for (int32 i = 0; i < extension_count; ++i)
 	{
-		GLubyte const* name_cstr = ctx->api.glGetStringi(GL_EXTENSIONS, i);
+		GLubyte const* name_cstr = ctx->api.glGetStringi(GL_EXTENSIONS, (uint32)i);
 		String name = StringFromCString((char const*)name_cstr);
 
 		if (StringEquals(name, Str("GL_ARB_texture_storage")))
@@ -406,11 +406,11 @@ R3_MakeTexture(R3_Context* ctx, R3_TextureDesc const* desc)
 				ctx->api.glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, desc->width, desc->height, unsized_format, datatype, desc->initial_data);
 		}
 		else
-			ctx->api.glTexImage2D(GL_TEXTURE_2D, 0, format, desc->width, desc->height, 0, unsized_format, datatype, desc->initial_data);
+			ctx->api.glTexImage2D(GL_TEXTURE_2D, 0, (int32)format, desc->width, desc->height, 0, unsized_format, datatype, desc->initial_data);
 		ctx->api.glBindTexture(GL_TEXTURE_2D, 0);
 	}
 
-	out.format = format;
+	out.format = desc->format;
 	out.width = desc->width;
 	out.height = desc->height;
 	out.depth = desc->depth;
@@ -768,8 +768,9 @@ R3_SetPipeline(R3_Context* ctx, R3_Pipeline* pipeline)
 			name[prefix.size+1] = '0' + i%10;
 		}
 
-		int32 block_id = ctx->api.glGetUniformBlockIndex(ctx->curr_program, name);
-		ctx->ubo_indices[i] = block_id;
+		uint32 block_id = ctx->api.glGetUniformBlockIndex(ctx->curr_program, name);
+		SafeAssert(block_id < INT32_MAX || block_id == UINT32_MAX);
+		ctx->ubo_indices[i] = (int32)block_id;
 	}
 	OglRebindTextures_(ctx);
 	for (intz i = 0; i < ArrayLength(pipeline->gl_layout); ++i)
@@ -779,7 +780,7 @@ R3_SetPipeline(R3_Context* ctx, R3_Pipeline* pipeline)
 			ctx->curr_attribs[i].is_enabled = false;
 		else
 		{
-			uint32 elem_count = 0;
+			int32 elem_count = 0;
 			bool is_normalized = false;
 			bool is_float = false;
 			GLenum datatype = 0;
@@ -867,7 +868,7 @@ R3_SetVertexInputs(R3_Context* ctx, R3_VertexInputs const* desc)
 		SafeAssert(buffer_slot < ArrayLength(desc->vbuffers));
 
 		uint32 buffer_id = (desc->vbuffers[buffer_slot].buffer) ? desc->vbuffers[buffer_slot].buffer->gl_id : 0;
-		uint32 stride = desc->vbuffers[buffer_slot].stride;
+		intz stride = desc->vbuffers[buffer_slot].stride;
 		uint32 base_offset = desc->vbuffers[buffer_slot].offset;
 		ctx->api.glBindBuffer(GL_ARRAY_BUFFER, buffer_id);
 		ctx->api.glEnableVertexAttribArray(i);
@@ -888,11 +889,12 @@ R3_SetUniformBuffers(R3_Context* ctx, intsize count, R3_UniformBuffer buffers[])
 	{
 		int32 block_id = ctx->ubo_indices[i];
 		SafeAssert(block_id != -1);
+		SafeAssert(block_id >= 0);
 		if (!buffers[i].offset && !buffers[i].size)
 			ctx->api.glBindBufferBase(GL_UNIFORM_BUFFER, i, buffers[i].buffer->gl_id);
 		else
 			ctx->api.glBindBufferRange(GL_UNIFORM_BUFFER, i, buffers[i].buffer->gl_id, buffers[i].offset, buffers[i].size);
-		ctx->api.glUniformBlockBinding(ctx->curr_program, block_id, i);
+		ctx->api.glUniformBlockBinding(ctx->curr_program, (uint32)block_id, i);
 	}
 }
 
@@ -954,7 +956,8 @@ R3_Clear(R3_Context* ctx, R3_ClearDesc const* desc)
 	}
 	if (desc->flag_stencil)
 	{
-		ctx->api.glClearStencil(desc->stencil);
+		SafeAssert(desc->stencil <= INT32_MAX);
+		ctx->api.glClearStencil((int32)desc->stencil);
 		flags |= GL_STENCIL_BUFFER_BIT;
 	}
 

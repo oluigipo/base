@@ -1,9 +1,8 @@
 
-// #define USE_VULKAN
+#define USE_VULKAN
 
 #include "common.h"
 #include "api_os.h"
-#include "api_os_win32.h"
 #ifndef USE_VULKAN
 #include "api_render4.h"
 #else
@@ -11,7 +10,7 @@
 #	undef API
 #	define API static inline
 #	include "api_render4.h"
-#   include "render4_vulkan.c"
+#   include "render4/render4_vulkan.c"
 #	undef API
 #	define API
 #endif
@@ -26,7 +25,7 @@ struct Vertex
 	float32 pos[3];
 	float32 color[3];
 };
-	
+
 API int32
 EntryPoint(int32 argc, const char* const* argv)
 {
@@ -54,9 +53,9 @@ EntryPoint(int32 argc, const char* const* argv)
 		},
 	};
 #ifdef USE_VULKAN
-	R4_Context* r4 = R4_VK_MakeContext(&arena, &ctx_desc);
+	R4_Context* r4 = R4_VK_MakeContext(AllocatorFromArena(&arena), &ctx_desc);
 #else
-	R4_Context* r4 = R4_D3D12_MakeContext(&arena, &ctx_desc);
+	R4_Context* r4 = R4_D3D12_MakeContext(AllocatorFromArena(&arena), &ctx_desc);
 #endif
 	if (!r4)
 	{
@@ -79,10 +78,21 @@ EntryPoint(int32 argc, const char* const* argv)
 		R4_MakeCommandList(r4, R4_CommandListKind_Graphics, &allocators[1]),
 		R4_MakeCommandList(r4, R4_CommandListKind_Graphics, &allocators[2]),
 	};
-	R4_Resource swapchain_images[3] = {};
+	
+	R4_Image swapchain_images[3] = {};
 	R4_GetSwapchainBuffers(r4, &swapchain, ArrayLength(swapchain_images), swapchain_images);
-	R4_RenderTargetView rtvs[3] = {};
-	R4_CreateRenderTargetViewsFromResources(r4, R4_Format_R8G8B8A8_UNorm, ArrayLength(rtvs), swapchain_images, rtvs);
+
+	R4_ViewHeap view_heap = R4_MakeViewHeap(r4, &(R4_ViewHeapDesc) {
+		.rtv_count = 3,
+	});
+	R4_ImageView swapchain_views[3] = {};
+	for (intz i = 0; i < ArrayLength(swapchain_images); ++i)
+	{
+		swapchain_views[i] = R4_MakeImageViewAt(r4, &view_heap, i, &(R4_ImageViewDesc) {
+			.image = &swapchain_images[i],
+			.format = R4_Format_R8G8B8A8_UNorm,
+		});
+	}
 
 	R4_Heap upload_heap = R4_MakeHeap(r4, &(R4_HeapDesc) {
 		.kind = R4_HeapKind_Upload,
@@ -99,31 +109,29 @@ EntryPoint(int32 argc, const char* const* argv)
 		{-0.5,-0.5, 0.0, 0.0, 0.0, 1.0 },
 	};
 
-	R4_Resource vbuf_upload = R4_MakePlacedResource(r4, &(R4_PlacedResourceDesc) {
+	R4_Buffer vbuf_upload = R4_MakePlacedBuffer(r4, &(R4_PlacedBufferDesc) {
 		.heap = &upload_heap,
 		.initial_state = R4_ResourceState_GenericRead,
 		.heap_offset = 0,
-		.resource_desc = {
-			.kind = R4_ResourceKind_Buffer,
-			.width = sizeof(vertices),
+		.buffer_desc = {
+			.size = sizeof(vertices),
 			.usage = R4_ResourceUsageFlag_TransferSrc,
 		},
 	});
-	R4_Resource vbuf = R4_MakePlacedResource(r4, &(R4_PlacedResourceDesc) {
+	R4_Buffer vbuf = R4_MakePlacedBuffer(r4, &(R4_PlacedBufferDesc) {
 		.heap = &default_heap,
 		.initial_state = R4_ResourceState_CopyDest,
 		.heap_offset = 0,
-		.resource_desc = {
-			.kind = R4_ResourceKind_Buffer,
-			.width = sizeof(vertices),
+		.buffer_desc = {
+			.size = sizeof(vertices),
 			.usage = R4_ResourceUsageFlag_VertexBuffer | R4_ResourceUsageFlag_TransferDst,
 		},
 	});
 
 	void* mem = NULL;
-	R4_MapResource(r4, &vbuf_upload, 0, sizeof(vertices), &mem);
+	R4_MapResource(r4, R4_BufferResource(&vbuf_upload), 0, sizeof(vertices), &mem);
 	memcpy(mem, vertices, sizeof(vertices));
-	R4_UnmapResource(r4, &vbuf_upload, 0);
+	R4_UnmapResource(r4, R4_BufferResource(&vbuf_upload), 0);
 
 	// R4_DescriptorHeap descriptor_heap = R4_MakeDescriptorHeap(r4, &(R4_DescriptorHeapDesc) {
 	// 	.type = R4_DescriptorHeapType_CbvSrvUav,
@@ -182,14 +190,11 @@ EntryPoint(int32 argc, const char* const* argv)
 		},
 	});
 
-	intsize frame_count = 0;
 	intsize image_index = 0;
 	bool running = true;
 	bool first_frame = true;
 	while (running)
 	{
-		if (++frame_count == 500)
-			Debugbreak();
 		ArenaSavepoint scratch = ArenaSave(OS_ScratchArena(NULL, 0));
 		intsize event_count;
 		OS_Event* events = OS_PollEvents(false, scratch.arena, &event_count);
@@ -206,8 +211,8 @@ EntryPoint(int32 argc, const char* const* argv)
 
 		R4_CommandAllocator* allocator = &allocators[image_index];
 		R4_CommandList* cmdlist = &cmdlists[image_index];
-		R4_RenderTargetView* rtv = &rtvs[image_index];
-		R4_Resource* image = &swapchain_images[image_index];
+		R4_ImageView* image_view = &swapchain_views[image_index];
+		R4_Image* image = &swapchain_images[image_index];
 		R4_ResetCommandAllocator(r4, allocator);
 		R4_BeginCommandList(r4, cmdlist, &allocators[image_index]);
 
@@ -229,7 +234,7 @@ EntryPoint(int32 argc, const char* const* argv)
 		}
 
 		R4_CmdBarrier(r4, cmdlist, 1, &(R4_ResourceBarrier) {
-			.resource = image,
+			.resource = R4_ImageResource(image),
 			.type = R4_BarrierType_Transition,
 			.transition = {
 				.subresource = 0,
@@ -240,9 +245,7 @@ EntryPoint(int32 argc, const char* const* argv)
 		R4_CmdBeginRenderpass(r4, cmdlist, &(R4_BeginRenderpassDesc) {
 			.render_area = { .width = 1280, .height = 720 },
 			.color_attachments[0] = {
-				.rendertarget = rtv,
-				.initial_layout = R4_ResourceState_Common,
-				.target_layout = R4_ResourceState_RenderTarget,
+				.image_view = image_view,
 				.load = R4_AttachmentLoadOp_Clear,
 				.clear_color = { 0.2f, 0.0f, 0.3f, 1.0f },
 				.store = R4_AttachmentStoreOp_Store,
@@ -259,7 +262,7 @@ EntryPoint(int32 argc, const char* const* argv)
 		R4_CmdSetRootSignature(r4, cmdlist, &root_signature);
 		R4_CmdSetPipeline(r4, cmdlist, &pipeline);
 		R4_CmdSetVertexBuffers(r4, cmdlist, 0, 1, &(R4_VertexBuffer) {
-			.resource = &vbuf,
+			.buffer = &vbuf,
 			.size = sizeof(vertices),
 			.stride = sizeof(struct Vertex),
 		});
@@ -273,7 +276,7 @@ EntryPoint(int32 argc, const char* const* argv)
 
 		R4_CmdEndRenderpass(r4, cmdlist);
 		R4_CmdBarrier(r4, cmdlist, 1, &(R4_ResourceBarrier) {
-			.resource = image,
+			.resource = R4_ImageResource(image),
 			.type = R4_BarrierType_Transition,
 			.transition = {
 				.subresource = 0,
@@ -286,7 +289,7 @@ EntryPoint(int32 argc, const char* const* argv)
 		R4_ExecuteCommandLists(r4, &graphics_queue, &image_fences[image_index], &swapchain, 1, &cmdlist);
 		R4_Present(r4, &graphics_queue, &swapchain, 1);
 	}
-	
+
 	R4_WaitFence(r4, &image_fences[image_index], UINT32_MAX);
 	R4_FreeFence(r4, &image_fences[0]);
 	R4_FreeFence(r4, &image_fences[1]);
@@ -298,10 +301,14 @@ EntryPoint(int32 argc, const char* const* argv)
 	R4_FreeCommandAllocator(r4, &allocators[1]);
 	R4_FreeCommandAllocator(r4, &allocators[2]);
 	// R4_FreeDescriptorHeap(r4, &descriptor_heap);
-	R4_FreeResource(r4, &vbuf_upload);
-	R4_FreeResource(r4, &vbuf);
+	R4_FreeBuffer(r4, &vbuf_upload);
+	R4_FreeBuffer(r4, &vbuf);
 	R4_FreeHeap(r4, &default_heap);
 	R4_FreeHeap(r4, &upload_heap);
+	R4_FreeImageView(r4, &swapchain_views[0]);
+	R4_FreeImageView(r4, &swapchain_views[1]);
+	R4_FreeImageView(r4, &swapchain_views[2]);
+	R4_FreeViewHeap(r4, &view_heap);
 	R4_DestroyContext(r4);
 	OS_DestroyWindow(window);
 	return 0;

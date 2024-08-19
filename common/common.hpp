@@ -2,7 +2,6 @@
 #define COMMON_HPP
 
 #include "common.h"
-#include "common_atomic.h"
 
 template <typename T>
 static inline T*

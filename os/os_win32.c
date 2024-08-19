@@ -325,11 +325,11 @@ static void
 SetupThreadScratchMemory_(intsize chunk_size, intsize chunk_count)
 {
 	Trace();
-	SafeAssert(chunk_size && chunk_count && IsPowerOf2(chunk_size));
+	SafeAssert(chunk_size >= 0 && chunk_count >= 0 && IsPowerOf2(chunk_size));
 	
-	uint8* memory = VirtualAlloc(NULL, chunk_size*chunk_count, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+	uint8* memory = VirtualAlloc(NULL, (SIZE_T)(chunk_size*chunk_count), MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
 	SafeAssert(memory);
-	uintsize pad = AlignUp(sizeof(Arena), 15);
+	intz pad = AlignUp(SignedSizeof(Arena), 15);
 	for (intsize i = 0; i < chunk_count; ++i)
 		*(Arena*)(memory + chunk_size*i) = ArenaFromMemory(memory + chunk_size*i + pad, chunk_size - pad);
 	
@@ -350,7 +350,7 @@ StringToWide_(Arena* output_arena, String str)
 	int32 size = MultiByteToWideChar(CP_UTF8, 0, (char const*)str.data, (int32)str.size, NULL, 0);
 	if (size == 0)
 		return NULL;
-	wchar_t* wide = ArenaPushDirtyAligned(output_arena, (size + 1) * sizeof(wchar_t), alignof(wchar_t));
+	wchar_t* wide = ArenaPushDirtyAligned(output_arena, (size + 1) * SignedSizeof(wchar_t), alignof(wchar_t));
 	MultiByteToWideChar(CP_UTF8, 0, (char const*)str.data, (int32)str.size, wide, size);
 	wide[size] = 0;
 	
@@ -1368,7 +1368,7 @@ EnumerateAudioEndpoints_(void)
 			intsize remaining = g_win32.device_count - i - 1;
 			
 			if (remaining > 0)
-				MemoryMove(&g_win32.devices[i], &g_win32.devices[i + 1], sizeof(g_win32.devices[0]) * remaining);
+				MemoryMove(&g_win32.devices[i], &g_win32.devices[i + 1], SignedSizeof(g_win32.devices[0]) * remaining);
 			
 			--g_win32.device_count;
 			--i;
@@ -1974,10 +1974,10 @@ wmain(int argc_, wchar_t** argv_)
 			needed_size += size;
 		}
 		
-		char* buffer = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, needed_size + (argc + 1)*sizeof(char*));
-		char* end_buffer = buffer + needed_size + (argc + 1)*sizeof(char*);
+		char* buffer = OS_HeapAlloc(needed_size + (argc + 1)*SignedSizeof(char*));
+		char* end_buffer = buffer + needed_size + (argc + 1)*SignedSizeof(char*);
 		argv = (char**)buffer;
-		buffer += (argc + 1) * sizeof(char*);
+		buffer += (argc + 1) * SignedSizeof(char*);
 		for (intsize i = 0; i < argc; ++i)
 		{
 			argv[i] = buffer;
@@ -2912,21 +2912,23 @@ OS_SetGamepadMappings(OS_GamepadMapping const* mappings, intsize mapping_count)
 
 //~ Memory & file stuff
 API void*
-OS_HeapAlloc(uintsize size)
+OS_HeapAlloc(intz size)
 {
 	Trace();
-	return HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size);
+	SafeAssert(size >= 0);
+	return HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)size);
 }
 
 API void*
-OS_HeapRealloc(void* ptr, uintsize size)
+OS_HeapRealloc(void* ptr, intz size)
 {
 	Trace();
+	SafeAssert(size >= 0);
 	void* result;
 	if (ptr)
-		result = HeapReAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ptr, size);
+		result = HeapReAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ptr, (SIZE_T)size);
 	else
-		result = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size);
+		result = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)size);
 	return result;
 }
 
@@ -2939,9 +2941,10 @@ OS_HeapFree(void* ptr)
 }
 
 API void*
-OS_VirtualAlloc(void* address, uintsize size, uint32 flags)
+OS_VirtualAlloc(void* address, intz size, uint32 flags)
 {
 	Trace();
+	SafeAssert(size >= 0);
 	
 	DWORD type = MEM_RESERVE|MEM_COMMIT;
 	DWORD protect = PAGE_READWRITE;
@@ -2952,23 +2955,25 @@ OS_VirtualAlloc(void* address, uintsize size, uint32 flags)
 		protect = 0;
 	}
 	
-	void* result = VirtualAlloc(address, size, type, protect);
+	void* result = VirtualAlloc(address, (SIZE_T)size, type, protect);
 	return result;
 }
 
 API bool
-OS_VirtualCommit(void* address, uintsize size)
+OS_VirtualCommit(void* address, intz size)
 {
 	Trace();
+	SafeAssert(size >= 0);
 	
-	void* result = VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE);
+	void* result = VirtualAlloc(address, (SIZE_T)size, MEM_COMMIT, PAGE_READWRITE);
 	return result;
 }
 
 API bool
-OS_VirtualProtect(void* address, uintsize size, uint32 flags)
+OS_VirtualProtect(void* address, intz size, uint32 flags)
 {
 	Trace();
+	SafeAssert(size >= 0);
 	
 	DWORD protect = PAGE_READWRITE;
 	if (flags & OS_VirtualFlags_ReadOnly)
@@ -2977,33 +2982,36 @@ OS_VirtualProtect(void* address, uintsize size, uint32 flags)
 		protect = PAGE_EXECUTE;
 	
 	DWORD prev;
-	bool result = VirtualProtect(address, size, protect, &prev);
+	bool result = VirtualProtect(address, (SIZE_T)size, protect, &prev);
 	return result;
 }
 
 API bool
-OS_VirtualFree(void* address, uintsize size)
+OS_VirtualFree(void* address, intz size)
 {
 	Trace();
+	SafeAssert(size >= 0);
 	
 	bool result = VirtualFree(address, 0, MEM_RELEASE);
 	return result;
 }
 
 API bool
-OS_ArenaCommitMemoryProc(Arena* arena, uintsize needed_size)
+OS_ArenaCommitMemoryProc(Arena* arena, intz needed_size)
 {
 	Trace();
-	uintsize commited = arena->size;
-	uintsize reserved = arena->reserved;
-	uint8*   memory   = arena->memory;
+	intz   commited = arena->size;
+	intz   reserved = arena->reserved;
+	uint8* memory   = arena->memory;
 	Assert(commited < needed_size);
 	
-	uintsize rounded_needed_size = AlignUp(needed_size, (32<<20) - 1);
+	intz rounded_needed_size = AlignUp(needed_size, (32<<20) - 1);
 	if (rounded_needed_size > reserved)
 		return false;
 	
-	void* result = VirtualAlloc(memory + commited, rounded_needed_size - commited, MEM_COMMIT, PAGE_READWRITE);
+	intz amount_to_commit = rounded_needed_size - commited;
+	SafeAssert(amount_to_commit >= 0);
+	void* result = VirtualAlloc(memory + commited, (SIZE_T)amount_to_commit, MEM_COMMIT, PAGE_READWRITE);
 	if (result != NULL)
 	{
 		arena->size = rounded_needed_size;
@@ -3013,13 +3021,14 @@ OS_ArenaCommitMemoryProc(Arena* arena, uintsize needed_size)
 }
 
 API Arena
-OS_VirtualAllocArena(uintsize total_reserved_size)
+OS_VirtualAllocArena(intz total_reserved_size)
 {
 	Trace();
+	SafeAssert(total_reserved_size >= 0);
 	Arena result = { 0 };
 	
 	total_reserved_size = AlignUp(total_reserved_size, (32<<20) - 1);
-	void* memory = VirtualAlloc(NULL, total_reserved_size, MEM_RESERVE, PAGE_READWRITE);
+	void* memory = VirtualAlloc(NULL, (SIZE_T)total_reserved_size, MEM_RESERVE, PAGE_READWRITE);
 	if (memory)
 	{
 		if (VirtualAlloc(memory, 32<<20, MEM_COMMIT, PAGE_READWRITE))
@@ -3041,7 +3050,7 @@ OS_VirtualAllocArena(uintsize total_reserved_size)
 }
 
 API bool
-OS_ReadEntireFile(String path, Arena* output_arena, void** out_data, uintsize* out_size, OS_Error* out_err)
+OS_ReadEntireFile(String path, Arena* output_arena, void** out_data, intz* out_size, OS_Error* out_err)
 {
 	Trace(); TraceText(path);
 	Arena* scratch_arena = OS_ScratchArena(&output_arena, 1);
@@ -3075,10 +3084,10 @@ OS_ReadEntireFile(String path, Arena* output_arena, void** out_data, uintsize* o
 #endif
 	
 	ArenaSavepoint output_arena_save = ArenaSave(output_arena);
-	uintsize file_size = (uintsize)large_int.QuadPart;
+	intz file_size = large_int.QuadPart;
 	uint8* file_data = ArenaPushDirtyAligned(output_arena, file_size, 1);
 	
-	uintsize still_to_read = file_size;
+	intz still_to_read = file_size;
 	uint8* p = file_data;
 	while (still_to_read > 0)
 	{
@@ -3106,7 +3115,7 @@ OS_ReadEntireFile(String path, Arena* output_arena, void** out_data, uintsize* o
 }
 
 API bool
-OS_WriteEntireFile(String path, void const* data, uintsize size, OS_Error* out_err)
+OS_WriteEntireFile(String path, void const* data, intz size, OS_Error* out_err)
 {
 	Trace(); TraceText(path);
 	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
@@ -3122,7 +3131,7 @@ OS_WriteEntireFile(String path, void const* data, uintsize size, OS_Error* out_e
 	if (handle == INVALID_HANDLE_VALUE)
 		return FillOsErr_(out_err, GetLastError());
 	
-	uintsize total_size = size;
+	intz total_size = size;
 	const uint8* head = data;
 	
 	while (total_size > 0)
@@ -3558,13 +3567,13 @@ OS_IsFilePipe(OS_File file)
 }
 
 API OS_FileMapping
-OS_MapFileForReading(OS_File file, void const** out_buffer, uintsize* out_size, OS_Error* out_err)
+OS_MapFileForReading(OS_File file, void const** out_buffer, intz* out_size, OS_Error* out_err)
 {
 	Trace();
 	OS_FileMapping result = { 0 };
 	HANDLE file_handle = file.ptr;
 	HANDLE mapping;
-	uintsize size;
+	intz size;
 
 	*out_buffer = NULL;
 	*out_size = 0;
@@ -3773,7 +3782,7 @@ OS_KillChildProcess(OS_ChildProcess child, OS_Error* out_err)
 {
 	Trace();
 	HANDLE handle = child.ptr;
-	BOOL ok = TerminateProcess(handle, INT32_MIN);
+	BOOL ok = TerminateProcess(handle, (UINT)INT32_MIN);
 	
 	if (ok)
 		SetLastError(0);
@@ -4423,7 +4432,7 @@ OS_W32_StringFromHr(HRESULT hr, Arena* output_arena)
 	String result = { 0 };
 	wchar_t* wtext = NULL;
 	DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
-	DWORD len = FormatMessageW(flags, NULL, hr, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (void*)&wtext, 0, NULL);
+	DWORD len = FormatMessageW(flags, NULL, (DWORD)hr, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (void*)&wtext, 0, NULL);
 
 	if (len > 0 && wtext)
 	{
@@ -4447,7 +4456,7 @@ OS_W32_MFStartup(OS_Error *out_err)
 {
 	Trace();
 	HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
-	return FillOsErr_(out_err, hr);
+	return FillOsErr_(out_err, (DWORD)hr);
 }
 
 API bool
@@ -4455,7 +4464,7 @@ OS_W32_MFShutdown(OS_Error *out_err)
 {
 	Trace();
 	HRESULT hr = MFShutdown();
-	return FillOsErr_(out_err, hr);
+	return FillOsErr_(out_err, (DWORD)hr);
 }
 
 #ifdef CONFIG_DEBUG
@@ -4504,6 +4513,8 @@ static void*
 HeapAllocatorProc_(Allocator* allocator, AllocatorMode mode, intsize size, intsize alignment, void* old_ptr, intsize old_size, AllocatorError* out_err)
 {
 	Trace();
+	SafeAssert(size >= 0);
+	SafeAssert(alignment >= 0);
 	void* result = NULL;
 	AllocatorError error = AllocatorError_Ok;
 
@@ -4520,7 +4531,7 @@ HeapAllocatorProc_(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 				error = AllocatorError_InvalidArgument;
 				break;
 			}
-			result = _aligned_malloc(size, alignment);
+			result = _aligned_malloc((size_t)size, (size_t)alignment);
 			if (!result)
 				error = AllocatorError_OutOfMemory;
 			else
@@ -4541,7 +4552,7 @@ HeapAllocatorProc_(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 			}
 			if (!old_ptr)
 			{
-				result = _aligned_malloc(size, alignment);
+				result = _aligned_malloc((size_t)size, (size_t)alignment);
 				if (!result)
 					error = AllocatorError_OutOfMemory;
 				else
@@ -4549,7 +4560,7 @@ HeapAllocatorProc_(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 				break;
 			}
 
-			result = _aligned_realloc(old_ptr, size, alignment);
+			result = _aligned_realloc(old_ptr, (size_t)size, (size_t)alignment);
 			if (!result)
 				error = AllocatorError_OutOfMemory;
 			else if (size > old_size)
@@ -4562,7 +4573,7 @@ HeapAllocatorProc_(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 				error = AllocatorError_InvalidArgument;
 				break;
 			}
-			result = _aligned_malloc(size, alignment);
+			result = _aligned_malloc((size_t)size, (size_t)alignment);
 			if (!result)
 				error = AllocatorError_OutOfMemory;
 		} break;
@@ -4575,7 +4586,7 @@ HeapAllocatorProc_(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 			}
 			if (!old_ptr)
 			{
-				result = _aligned_malloc(size, alignment);
+				result = _aligned_malloc((size_t)size, (size_t)alignment);
 				if (!result)
 					error = AllocatorError_OutOfMemory;
 				else
@@ -4583,7 +4594,7 @@ HeapAllocatorProc_(Allocator* allocator, AllocatorMode mode, intsize size, intsi
 				break;
 			}
 
-			result = _aligned_realloc(old_ptr, size, alignment);
+			result = _aligned_realloc(old_ptr, (size_t)size, (size_t)alignment);
 			if (!result)
 				error = AllocatorError_OutOfMemory;
 		} break;

@@ -5,9 +5,47 @@
 struct R4_Context typedef R4_Context;
 struct OS_Window;
 
+enum R4_ContextProfile
+{
+	R4_ContextProfile_Null = 0,
+	R4_ContextProfile_Vulkan11,
+	R4_ContextProfile_Vulkan12,
+	R4_ContextProfile_Vulkan13,
+	R4_ContextProfile_D3D110,
+	R4_ContextProfile_D3D111,
+	R4_ContextProfile_D3D120,
+	R4_ContextProfile_D3D121,
+	R4_ContextProfile_D3D122,
+	R4_ContextProfile_WebGpu,
+	R4_ContextProfile_Metal2,
+	R4_ContextProfile_Metal3,
+}
+typedef R4_ContextProfile;
+
+enum R4_ShaderProfile
+{
+	R4_ShaderProfile_Null = 0,
+	R4_ShaderProfile_Spirv13,
+	R4_ShaderProfile_Spirv14,
+	R4_ShaderProfile_Dxil51,
+	R4_ShaderProfile_Dxil60,
+	R4_ShaderProfile_Dxil61,
+	R4_ShaderProfile_Dxil62,
+	R4_ShaderProfile_Dxil63,
+	R4_ShaderProfile_Dxil64,
+	R4_ShaderProfile_Dxil65,
+	R4_ShaderProfile_Dxil66,
+	R4_ShaderProfile_Dxil67,
+}
+typedef R4_ShaderProfile;
+
 struct R4_ContextInfo
 {
 	String backend_api;
+
+	R4_ContextProfile context_profile;
+	R4_ShaderProfile shader_profile;
+
 	bool has_mesh_shaders;
 	bool has_raytracing;
 }
@@ -96,23 +134,59 @@ struct R4_DescriptorSet typedef R4_DescriptorSet;
 struct R4_DescriptorHeap typedef R4_DescriptorHeap;
 struct R4_RootSignature typedef R4_RootSignature;
 struct R4_Pipeline typedef R4_Pipeline;
-struct R4_Resource typedef R4_Resource;
 struct R4_Heap typedef R4_Heap;
+
+struct R4_Buffer typedef R4_Buffer;
+struct R4_Image typedef R4_Image;
+struct R4_ImageView typedef R4_ImageView;
+struct R4_ShaderModule typedef R4_ShaderModule;
+
+struct R4_ViewHeap typedef R4_ViewHeap;
+struct R4_ViewHeap
+{
+	struct ID3D12DescriptorHeap* d3d12_heap_rtv;
+	struct ID3D12DescriptorHeap* d3d12_heap_dsv;
+	struct ID3D12DescriptorHeap* d3d12_heap_cbv_srv_uav;
+	struct ID3D12DescriptorHeap* d3d12_heap_sampler;
+	// nothing for vk, wgpu
+};
 
 struct R4_Queue
 {
-	struct ID3D12CommandQueue* d3d12_queue;
-	struct VkQueue_T* vk_queue;
-	struct VkQueue_T* vk_present_queue;
-	int32 family_index;
+	union
+	{
+		struct
+		{
+			struct ID3D12CommandQueue* d3d12_queue;
+		};
+		struct
+		{
+			struct VkQueue_T* vk_queue;
+			struct VkQueue_T* vk_present_queue;
+			int32 family_index;
+		};
+		struct
+		{
+			struct WGPUQueueImpl* wgpu_queue;
+		};
+	};
 	R4_CommandListKind kind;
 };
 
 struct R4_Fence
 {
-	struct ID3D12Fence* d3d12_fence;
-	void* d3d12_event;
-	struct VkFence_T* vk_fence;
+	union
+	{
+		struct
+		{
+			struct ID3D12Fence* d3d12_fence;
+			void* d3d12_event;
+		};
+		struct
+		{
+			struct VkFence_T* vk_fence;
+		};
+	};
 	uint64 counter;
 };
 
@@ -165,31 +239,40 @@ struct R4_Pipeline
 	uint32 vk_bindpoint;
 };
 
-struct R4_Resource
+struct R4_Buffer
 {
 	struct ID3D12Resource* d3d12_resource;
 	struct VkBuffer_T* vk_buffer;
+	struct VkDeviceMemory_T* vk_device_memory;
+	uint64 vk_offset;
+};
+
+struct R4_Image
+{
+	struct ID3D12Resource* d3d12_resource;
 	struct VkImage_T* vk_image;
 	struct VkDeviceMemory_T* vk_device_memory;
 	uint64 vk_offset;
 };
 
-struct R4_RenderTargetView
+struct R4_ImageView
 {
-	struct ID3D12Resource* d3d12_resource;
 	uint64 d3d12_rtv_ptr;
 	struct VkImageView_T* vk_view;
-	struct VkImage_T* vk_image;
-}
-typedef R4_RenderTargetView;
+};
 
-struct R4_DepthStencilView
+struct R4_Resource
 {
-	struct ID3D12Resource* d3d12_resource;
-	uint64 d3d12_dsv_ptr;
-	struct VkImageView_T* vk_view;
+	R4_Buffer* buffer;
+	R4_Image* image;
+
+	#ifdef __cplusplus
+	R4_Resource() : buffer(NULL), image(NULL) {}
+	R4_Resource(R4_Buffer* buffer) : buffer(buffer), image(NULL) {}
+	R4_Resource(R4_Image* image) : buffer(NULL), image(image) {}
+	#endif
 }
-typedef R4_DepthStencilView;
+typedef R4_Resource;
 
 struct R4_Heap
 {
@@ -201,9 +284,9 @@ typedef R4_Heap;
 struct R4_GraphicsPipelineInputLayout
 {
 	R4_Format format;
-	uint32 input_slot;
-	uint32 byte_offset;
-	uint32 instance_step_rate;
+	intz input_slot;
+	intz byte_offset;
+	intz instance_step_rate;
 }
 typedef R4_GraphicsPipelineInputLayout;
 
@@ -303,21 +386,25 @@ struct R4_GraphicsPipelineRenderTargetBlendDesc
 }
 typedef R4_GraphicsPipelineRenderTargetBlendDesc;
 
+struct R4_ShaderBytecode
+{
+	void const* data;
+	intz size;
+}
+typedef R4_ShaderBytecode;
+
 struct R4_GraphicsPipelineDesc
 {
 	R4_RootSignature const* rootsig;
 
-	struct
-	{
-		void const* data;
-		uintsize size;
-	} vs_dxil, ps_dxil, vs_spirv, ps_spirv;
+	R4_ShaderBytecode vs_dxil, ps_dxil;
+	R4_ShaderBytecode vs_spirv, ps_spirv;
 
 	R4_GraphicsPipelineInputLayout input_layout[64];
 	R4_PrimitiveTopology primitive_topology;
 
-	uint32 sample_count;
-	uint32 sample_quality;
+	intz sample_count;
+	intz sample_quality;
 	uint32 sample_mask;
 	uint32 node_mask;
 
@@ -346,7 +433,7 @@ struct R4_GraphicsPipelineDesc
 	bool blend_enable_independent_blend;
 	R4_GraphicsPipelineRenderTargetBlendDesc blend_rendertargets[8];
 
-	uint32 rendertarget_count;
+	intz rendertarget_count;
 	R4_Format rendertarget_formats[8];
 	R4_Format depthstencil_format;
 }
@@ -425,39 +512,20 @@ enum
 
 struct R4_DescriptorHeapDesc
 {
+	int64 descriptor_count;
 	R4_DescriptorHeapType type;
-	uint32 descriptor_count;
 	uint32 flags;
 }
 typedef R4_DescriptorHeapDesc;
 
-struct R4_ContextDesc
+enum R4_ImageDimension
 {
-	struct
-	{
-		R4_Format format;
-		uint32 buffer_count;
-		struct OS_Window* window;
-		R4_Swapchain* out_swapchain;
-		R4_Queue* out_graphics_queue;
-	} swapchains[32];
-	struct
-	{
-		R4_CommandListKind kind;
-		R4_Queue* out_queue;
-	} queues[32];
+	R4_ImageDimension_Null = 0,
+	R4_ImageDimension_Texture1D,
+	R4_ImageDimension_Texture2D,
+	R4_ImageDimension_Texture3D,
 }
-typedef R4_ContextDesc;
-
-enum R4_ResourceKind
-{
-	R4_ResourceKind_Null = 0,
-	R4_ResourceKind_Buffer,
-	R4_ResourceKind_Texture1D,
-	R4_ResourceKind_Texture2D,
-	R4_ResourceKind_Texture3D,
-}
-typedef R4_ResourceKind;
+typedef R4_ImageDimension;
 
 enum
 {
@@ -471,23 +539,23 @@ enum
 	R4_ResourceUsageFlag_TransferDst = 0x0080,
 };
 
-struct R4_ResourceDesc
+struct R4_ImageDesc
 {
-	R4_ResourceKind kind;
-	uint64 width;
-	uint64 height;
-	uint32 depth;
-	uint32 mip_levels;
+	R4_ImageDimension dimension;
+	int64 width;
+	int64 height;
+	int32 depth;
+	int32 mip_levels;
 	R4_Format format;
 	uint32 usage;
 }
-typedef R4_ResourceDesc;
+typedef R4_ImageDesc;
 
-struct R4_PlacedResourceDesc
+struct R4_PlacedImageDesc
 {
-	R4_ResourceDesc resource_desc;
+	R4_ImageDesc image_desc;
 	R4_Heap* heap;
-	uint64 heap_offset;
+	int64 heap_offset;
 	R4_ResourceState initial_state;
 	struct
 	{
@@ -497,21 +565,7 @@ struct R4_PlacedResourceDesc
 		uint8 stencil;
 	} optimized_clear_value;
 }
-typedef R4_PlacedResourceDesc;
-
-struct R4_ReservedResourceDesc
-{
-	R4_ResourceDesc resource_desc;
-	R4_ResourceState initial_state;
-	struct
-	{
-		R4_Format format;
-		float32 color[4];
-		float32 depth;
-		uint8 stencil;
-	} optimized_clear_value;
-}
-typedef R4_ReservedResourceDesc;
+typedef R4_PlacedImageDesc;
 
 enum R4_HeapKind
 {
@@ -525,12 +579,65 @@ typedef R4_HeapKind;
 struct R4_HeapDesc
 {
 	R4_HeapKind kind;
-	uint64 size;
+	int64 size;
 }
 typedef R4_HeapDesc;
 
-API R4_Context* R4_D3D12_MakeContext(Arena* arena, R4_ContextDesc* desc);
-API R4_Context* R4_VK_MakeContext(Arena* arena, R4_ContextDesc* desc);
+struct R4_BufferDesc
+{
+	int64 size;
+	uint32 usage;
+}
+typedef R4_BufferDesc;
+
+struct R4_PlacedBufferDesc
+{
+	R4_Heap* heap;
+	int64 heap_offset;
+	R4_ResourceState initial_state;
+	R4_BufferDesc buffer_desc;
+}
+typedef R4_PlacedBufferDesc;
+
+struct R4_ViewHeapDesc
+{
+	int64 rtv_count;
+	int64 dsv_count;
+	int64 cbv_srv_uav_count;
+	int64 sampler_count;
+}
+typedef R4_ViewHeapDesc;
+
+struct R4_ImageViewDesc
+{
+	R4_Format format;
+	R4_Image* image;
+}
+typedef R4_ImageViewDesc;
+
+struct R4_ContextDesc
+{
+	bool prefer_igpu_if_possible;
+	struct
+	{
+		R4_Format format;
+		intz buffer_count;
+		struct OS_Window* window;
+		R4_Swapchain* out_swapchain;
+		R4_Queue* out_graphics_queue;
+	} swapchains[32];
+	struct
+	{
+		R4_CommandListKind kind;
+		R4_Queue* out_queue;
+	} queues[32];
+}
+typedef R4_ContextDesc;
+
+API R4_Context* R4_D3D12_MakeContext(Allocator allocator, R4_ContextDesc* desc);
+API R4_Context* R4_VK_MakeContext(Allocator allocator, R4_ContextDesc* desc);
+API R4_Context* R4_WEBGPU_MakeContext(Allocator allocator, R4_ContextDesc* desc);
+API R4_Context* R4_MTL_MakeContext(Allocator allocator, R4_ContextDesc* desc);
 
 API R4_ContextInfo R4_QueryInfo(R4_Context* ctx);
 API void R4_DestroyContext(R4_Context* ctx);
@@ -545,8 +652,11 @@ API R4_Pipeline R4_MakeComputePipeline(R4_Context* ctx, R4_ComputePipelineDesc c
 API R4_RootSignature R4_MakeRootSignature(R4_Context* ctx, R4_RootSignatureDesc const* desc);
 API R4_DescriptorHeap R4_MakeDescriptorHeap(R4_Context* ctx, R4_DescriptorHeapDesc const* desc);
 API R4_Heap R4_MakeHeap(R4_Context* ctx, R4_HeapDesc const* desc);
-API R4_Resource R4_MakeReservedResource(R4_Context* ctx, R4_ReservedResourceDesc const* desc);
-API R4_Resource R4_MakePlacedResource(R4_Context* ctx, R4_PlacedResourceDesc const* desc);
+API R4_Image R4_MakePlacedImage(R4_Context* ctx, R4_PlacedImageDesc const* desc);
+API R4_Buffer R4_MakePlacedBuffer(R4_Context* ctx, R4_PlacedBufferDesc const* desc);
+API R4_ViewHeap R4_MakeViewHeap(R4_Context* ctx, R4_ViewHeapDesc const* desc);
+
+API R4_ImageView R4_MakeImageViewAt(R4_Context* ctx, R4_ViewHeap* view_heap, int64 index, R4_ImageViewDesc const* desc);
 
 API void R4_FreeFence(R4_Context* ctx, R4_Fence* fence);
 API void R4_FreeCommandAllocator(R4_Context* ctx, R4_CommandAllocator* allocator);
@@ -555,90 +665,24 @@ API void R4_FreePipeline(R4_Context* ctx, R4_Pipeline* pipeline);
 API void R4_FreeRootSignature(R4_Context* ctx, R4_RootSignature* rootsig);
 API void R4_FreeDescriptorHeap(R4_Context* ctx, R4_DescriptorHeap* heap);
 API void R4_FreeHeap(R4_Context* ctx, R4_Heap* heap);
-API void R4_FreeResource(R4_Context* ctx, R4_Resource* resource);
+API void R4_FreeBuffer(R4_Context* ctx, R4_Buffer* buffer);
+API void R4_FreeImage(R4_Context* ctx, R4_Image* image);
+API void R4_FreeViewHeap(R4_Context* ctx, R4_ViewHeap* view_heap);
+API void R4_FreeImageView(R4_Context* ctx, R4_ImageView* image_view);
 
-API uint32 R4_GetDescriptorSize(R4_Context* ctx, R4_DescriptorHeapType type);
-API uint64 R4_GetDescriptorHeapStart(R4_Context* ctx, R4_DescriptorHeap* heap);
-API uint32 R4_GetSwapchainBuffers(R4_Context* ctx, R4_Swapchain* swapchain, intsize image_count, R4_Resource* out_resources);
-API R4_DescriptorHeap R4_CreateRenderTargetViewsFromResources(R4_Context* ctx, R4_Format format, intsize resource_count, R4_Resource* resources, R4_RenderTargetView* out_rtvs);
+API intz R4_GetDescriptorSize(R4_Context* ctx, R4_DescriptorHeapType type);
+API int64 R4_GetDescriptorHeapStart(R4_Context* ctx, R4_DescriptorHeap* heap);
+API intz R4_GetSwapchainBuffers(R4_Context* ctx, R4_Swapchain* swapchain, intz image_count, R4_Image* out_images);
 
 struct R4_MemoryRequirements
 {
-	uint64 size;
-	uint64 alignment;
+	int64 size;
+	int64 alignment;
 }
 typedef R4_MemoryRequirements;
 
-API R4_MemoryRequirements R4_GetResourceMemoryRequirements(R4_Context* ctx, R4_ResourceDesc const* desc);
-
-struct R4_RtvDesc
-{
-	R4_Resource* resource;
-	// TODO
-}
-typedef R4_RtvDesc;
-
-enum R4_DsvDimension
-{
-	R4_DsvDimension_Null          = 0,
-	R4_DsvDimension_Tex1d         = 1,
-	R4_DsvDimension_Tex1dArray    = 2,
-	R4_DsvDimension_Tex2d         = 3,
-	R4_DsvDimension_Tex2dArray    = 4,
-	R4_DsvDimension_Tex2dMS       = 5,
-	R4_DsvDimension_Tex2dMSArray  = 6,
-}
-typedef R4_DsvDimension;
-
-struct R4_DsvDesc
-{
-	R4_Resource* resource;
-	R4_Format format;
-	R4_DsvDimension dimension;
-	union
-	{
-		struct
-		{
-			uint32 mip_slice;
-		} tex1d, tex2d;
-		struct
-		{
-			uint32 mip_slice;
-			uint32 array_start;
-			uint32 array_count;
-		} tex1d_arr, tex2d_arr;
-		struct
-		{
-			uint32 array_start;
-			uint32 array_count;
-		} tex2dms_arr;
-	};
-}
-typedef R4_DsvDesc;
-
-struct R4_CbvDesc
-{
-	uint64 gpu_address;
-	uint64 size;
-}
-typedef R4_CbvDesc;
-
-struct R4_SamplerDesc
-{
-
-}
-typedef R4_SamplerDesc;
-
-struct R4_SrvDesc
-{
-	R4_Resource* resource;
-}
-typedef R4_SrvDesc;
-
-API void R4_CreateRtvAt    (R4_Context* ctx, uint64 ptr_rtv, R4_RtvDesc const* desc);
-API void R4_CreateDsvAt    (R4_Context* ctx, uint64 ptr_dsv, R4_DsvDesc const* desc);
-API void R4_CreateCbvAt    (R4_Context* ctx, uint64 ptr_cbv, R4_CbvDesc const* desc);
-API void R4_CreateSamplerAt(R4_Context* ctx, uint64 ptr_sampler, R4_SamplerDesc const* desc);
+API R4_MemoryRequirements R4_GetBufferMemoryRequirements(R4_Context* ctx, R4_BufferDesc const* desc);
+API R4_MemoryRequirements R4_GetImageMemoryRequirements(R4_Context* ctx, R4_ImageDesc const* desc);
 
 struct R4_Range
 {
@@ -649,8 +693,8 @@ typedef R4_Range;
 
 API void R4_MapMemory    (R4_Context* ctx, R4_Heap* heap, uint64 offset, uint64 size);
 API void R4_UnmapMemory  (R4_Context* ctx, R4_Heap* heap);
-API void R4_MapResource  (R4_Context* ctx, R4_Resource* resource, uint32 subresource, uint64 size, void** out_memory);
-API void R4_UnmapResource(R4_Context* ctx, R4_Resource* resource, uint32 subresource);
+API void R4_MapResource  (R4_Context* ctx, R4_Resource resource, uint32 subresource, uint64 size, void** out_memory);
+API void R4_UnmapResource(R4_Context* ctx, R4_Resource resource, uint32 subresource);
 
 struct R4_Viewport
 {
@@ -670,7 +714,7 @@ typedef R4_TransitionBarrier;
 
 struct R4_AliasingBarrier
 {
-	R4_Resource* to;
+	R4_Resource to;
 }
 typedef R4_AliasingBarrier;
 
@@ -685,13 +729,13 @@ typedef R4_BarrierType;
 
 struct R4_ResourceBarrier
 {
-	R4_Resource* resource;
+	R4_Resource resource;
 	R4_BarrierType type;
 	union
 	{
 		R4_TransitionBarrier transition;
 		R4_AliasingBarrier aliasing;
-		R4_Resource* uav_barrier;
+		R4_Resource uav_barrier;
 	};
 }
 typedef R4_ResourceBarrier;
@@ -715,12 +759,9 @@ typedef R4_AttachmentStoreOp;
 
 struct R4_RenderpassAttachment
 {
-	R4_RenderTargetView* rendertarget;
-	R4_DepthStencilView* depthstencil;
+	R4_ImageView* image_view;
 	R4_AttachmentLoadOp load;
 	R4_AttachmentStoreOp store;
-	R4_ResourceState initial_layout;
-	R4_ResourceState target_layout;
 	float32 clear_color[4];
 	float32 clear_depth;
 	uint8 clear_stencil;
@@ -744,7 +785,7 @@ typedef R4_BeginRenderpassDesc;
 
 struct R4_VertexBuffer
 {
-	R4_Resource* resource;
+	R4_Buffer* buffer;
 	uint64 offset;
 	uint32 size;
 	uint32 stride;
@@ -761,17 +802,17 @@ API void R4_ExecuteCommandLists  (R4_Context* ctx, R4_Queue* queue, R4_Fence* co
 API void R4_Present              (R4_Context* ctx, R4_Queue* queue, R4_Swapchain* swapchain, uint32 sync_interval);
 
 API void R4_CmdSetPrimitiveTopology  (R4_Context* ctx, R4_CommandList* cmdlist, R4_PrimitiveTopology topology);
-API void R4_CmdSetRenderTargets      (R4_Context* ctx, R4_CommandList* cmdlist, intsize rtv_count, uint64 ptr_rtvs[], uint64 ptr_dsv);
+//API void R4_CmdSetRenderTargets      (R4_Context* ctx, R4_CommandList* cmdlist, intsize rt_count, R4_ImageView* rt_images[], R4_ImageView* ds_image);
 API void R4_CmdSetViewports          (R4_Context* ctx, R4_CommandList* cmdlist, intsize viewport_count, R4_Viewport const* viewports);
 API void R4_CmdSetScissors           (R4_Context* ctx, R4_CommandList* cmdlist, intsize scissor_count, R4_Rect const* scissors);
 API void R4_CmdSetPipeline           (R4_Context* ctx, R4_CommandList* cmdlist, R4_Pipeline* pipeline);
 API void R4_CmdSetRootSignature      (R4_Context* ctx, R4_CommandList* cmdlist, R4_RootSignature* rootsig);
-API void R4_CmdSetVertexBuffers      (R4_Context* ctx, R4_CommandList* cmdlist, uint32 first_slot, uint32 slot_count, R4_VertexBuffer const* buffers);
-API void R4_CmdSetIndexBuffer        (R4_Context* ctx, R4_CommandList* cmdlist, R4_Resource* buffer, uint64 offset, uint32 size, R4_Format format);
+API void R4_CmdSetVertexBuffers      (R4_Context* ctx, R4_CommandList* cmdlist, intz first_slot, intz slot_count, R4_VertexBuffer const* buffers);
+API void R4_CmdSetIndexBuffer        (R4_Context* ctx, R4_CommandList* cmdlist, R4_Buffer* buffer, uint64 offset, uint32 size, R4_Format format);
 API void R4_CmdDraw                  (R4_Context* ctx, R4_CommandList* cmdlist, uint32 start_vertex, uint32 vertex_count, uint32 start_instance, uint32 instance_count);
 API void R4_CmdDrawIndexed           (R4_Context* ctx, R4_CommandList* cmdlist, uint32 start_index, uint32 index_count, uint32 start_instance, uint32 instance_count, int32 base_vertex);
 API void R4_CmdDispatch              (R4_Context* ctx, R4_CommandList* cmdlist, uint32 x, uint32 y, uint32 z);
-API void R4_CmdResourceBarrier       (R4_Context* ctx, R4_CommandList* cmdlist, intsize barrier_count, R4_ResourceBarrier* barriers[]);
+API void R4_CmdResourceBarrier       (R4_Context* ctx, R4_CommandList* cmdlist, intz barrier_count, R4_ResourceBarrier* barriers[]);
 
 struct R4_RootArgument
 {
@@ -786,10 +827,18 @@ typedef R4_RootArgument;
 
 API void R4_CmdSetGraphicsRootConstantsU32(R4_Context* ctx, R4_CommandList* cmdlist, R4_RootArgument const* arg);
 
-API void R4_CmdCopyBuffer(R4_Context* ctx, R4_CommandList* cmdlist, R4_Resource* dest, uint64 dest_offset, R4_Resource* source, uint64 source_offset, uint64 size);
+API void R4_CmdCopyBuffer(R4_Context* ctx, R4_CommandList* cmdlist, R4_Buffer* dest, uint64 dest_offset, R4_Buffer* source, uint64 source_offset, uint64 size);
 API void R4_CmdBarrier   (R4_Context* ctx, R4_CommandList* cmdlist, intsize barrier_count, R4_ResourceBarrier const* barriers);
 
 API void R4_CmdBeginRenderpass(R4_Context* ctx, R4_CommandList* cmdlist, R4_BeginRenderpassDesc const* desc);
 API void R4_CmdEndRenderpass(R4_Context* ctx, R4_CommandList* cmdlist);
+
+#ifdef __cplusplus
+static inline R4_Resource R4_BufferResource(R4_Buffer* buffer) { return buffer; }
+static inline R4_Resource R4_ImageResource(R4_Image* image) { return image; }
+#else
+static inline R4_Resource R4_BufferResource(R4_Buffer* buffer) { return (R4_Resource) { .buffer = buffer }; }
+static inline R4_Resource R4_ImageResource(R4_Image* image) { return (R4_Resource) { .image = image }; }
+#endif
 
 #endif

@@ -37,7 +37,7 @@ CheckHr_(R4_Context* ctx, HRESULT hr)
 }
 
 static D3D12_RESOURCE_STATES
-D3d12StatesFromResourceStates_(uint32 flags)
+D3d12StatesFromResourceStates_(R4_ResourceState flags)
 {
 	D3D12_RESOURCE_STATES result = (D3D12_RESOURCE_STATES)0;
 
@@ -293,16 +293,18 @@ D3d12VisibilityFromVisibility_(R4_ShaderVisibility visibility)
 }
 
 static D3D12_RESOURCE_DESC
-D3d12ResourceDescFromDesc_(R4_ResourceDesc const* desc)
+D3d12ResourceDescFromImageDesc_(R4_ImageDesc const* desc)
 {
+	SafeAssert(desc->width >= 0);
+	SafeAssert(desc->height >= 0 && desc->height <= UINT32_MAX);
+	SafeAssert(desc->depth >= 0 && desc->depth <= UINT16_MAX);
 	D3D12_RESOURCE_DESC result = {
 		.Dimension =
-			(desc->kind == R4_ResourceKind_Buffer) ? D3D12_RESOURCE_DIMENSION_BUFFER :
-			(desc->kind == R4_ResourceKind_Texture1D) ? D3D12_RESOURCE_DIMENSION_TEXTURE1D :
-			(desc->kind == R4_ResourceKind_Texture2D) ? D3D12_RESOURCE_DIMENSION_TEXTURE2D :
-			(desc->kind == R4_ResourceKind_Texture3D) ? D3D12_RESOURCE_DIMENSION_TEXTURE3D :
+			(desc->dimension == R4_ImageDimension_Texture1D) ? D3D12_RESOURCE_DIMENSION_TEXTURE1D :
+			(desc->dimension == R4_ImageDimension_Texture2D) ? D3D12_RESOURCE_DIMENSION_TEXTURE2D :
+			(desc->dimension == R4_ImageDimension_Texture3D) ? D3D12_RESOURCE_DIMENSION_TEXTURE3D :
 			D3D12_RESOURCE_DIMENSION_UNKNOWN,
-		.Width = desc->width,
+		.Width = (UINT)desc->width,
 		.Height = desc->height ? (UINT)desc->height : 1,
 		.DepthOrArraySize = desc->depth ? (UINT16)desc->depth : (UINT16)1,
 		.MipLevels = 1,
@@ -315,10 +317,41 @@ D3d12ResourceDescFromDesc_(R4_ResourceDesc const* desc)
 	return result;
 }
 
+static D3D12_RESOURCE_DESC
+D3d12ResourceDescFromBufferDesc_(R4_BufferDesc const* desc)
+{
+	SafeAssert(desc->size >= 0);
+	D3D12_RESOURCE_DESC result = {
+		.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
+		.Width = (UINT64)desc->size,
+		.Height = 1,
+		.DepthOrArraySize = 1,
+		.MipLevels = 1,
+		.Format = DXGI_FORMAT_UNKNOWN,
+		.SampleDesc = {
+			.Count = 1,
+		},
+		.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+	};
+	return result;
+}
+
+static ID3D12Resource*
+D3d12ResourceFromResource_(R4_Resource resource)
+{
+	ID3D12Resource* result = NULL;
+	if (resource.buffer)
+		result = resource.buffer->d3d12_resource;
+	else if (resource.image)
+		result = resource.image->d3d12_resource;
+	SafeAssert(result);
+	return result;
+}
+
 // =============================================================================
 // =============================================================================
 API R4_Context*
-R4_D3D12_MakeContext(Arena* arena, R4_ContextDesc* desc)
+R4_D3D12_MakeContext(Allocator allocator, R4_ContextDesc* desc)
 {
 	Trace();
 	HRESULT hr;
@@ -433,7 +466,13 @@ R4_D3D12_MakeContext(Arena* arena, R4_ContextDesc* desc)
 				goto lbl_error;
 		}
 
-		return ArenaPushStructData(arena, R4_Context, &ctx);
+		AllocatorError err;
+		R4_Context* result = AllocatorNew<R4_Context>(&allocator, &err);
+		if (!result)
+			goto lbl_error;
+
+		*result = ctx;
+		return result;
 	}
 
 lbl_error:
@@ -498,7 +537,7 @@ R4_DeviceLost(R4_Context* ctx, R4_DeviceLostInfo* out_info)
 	hr = __atomic_load_n(&ctx->device_lost_reason, __ATOMIC_ACQUIRE);
 	if (hr != 0)
 	{
-		info.api_error_code = hr;
+		info.api_error_code = (uint64)hr;
 		switch (hr)
 		{
 			default: info.reason = Str("unknown error"); break;
@@ -590,10 +629,11 @@ API R4_Heap
 R4_MakeHeap(R4_Context* ctx, R4_HeapDesc const* desc)
 {
 	Trace();
+	SafeAssert(desc->size >= 0);
 	HRESULT hr;
 	ID3D12Heap* heap = NULL;
 	D3D12_HEAP_DESC heap_desc = {
-		.SizeInBytes = AlignUp(desc->size, 64<<10),
+		.SizeInBytes = AlignUp((UINT64)desc->size, 64U<<10),
 		.Properties = {
 			.Type =
 				(desc->kind == R4_HeapKind_Default)  ? D3D12_HEAP_TYPE_DEFAULT  :
@@ -638,13 +678,14 @@ R4_MakeDescriptorHeap(R4_Context* ctx, R4_DescriptorHeapDesc const* desc)
 	};
 }
 
-API R4_Resource
-R4_MakePlacedResource(R4_Context* ctx, R4_PlacedResourceDesc const* desc)
+API R4_Image
+R4_MakePlacedImage(R4_Context* ctx, R4_PlacedImageDesc const* desc)
 {
 	Trace();
+	SafeAssert(desc->heap_offset >= 0);
 	HRESULT hr;
 	ID3D12Resource* resource = NULL;
-	D3D12_RESOURCE_DESC resource_desc = D3d12ResourceDescFromDesc_(&desc->resource_desc);
+	D3D12_RESOURCE_DESC resource_desc = D3d12ResourceDescFromImageDesc_(&desc->image_desc);
 	D3D12_CLEAR_VALUE clear_value = {
 		.Format = DxgiFormatFromFormat_(desc->optimized_clear_value.format),
 		.Color = {
@@ -663,10 +704,32 @@ R4_MakePlacedResource(R4_Context* ctx, R4_PlacedResourceDesc const* desc)
 	}
 	hr = ctx->device->CreatePlacedResource(
 		desc->heap->d3d12_heap,
-		desc->heap_offset,
+		(UINT64)desc->heap_offset,
 		&resource_desc,
 		D3d12StatesFromResourceStates_(desc->initial_state),
 		clear_value.Format ? &clear_value : NULL,
+		IID_PPV_ARGS(&resource));
+	if (!CheckHr_(ctx, hr))
+		return {};
+	return {
+		.d3d12_resource = resource,
+	};
+}
+
+API R4_Buffer
+R4_MakePlacedBuffer(R4_Context* ctx, R4_PlacedBufferDesc const* desc)
+{
+	Trace();
+	SafeAssert(desc->heap_offset >= 0);
+	HRESULT hr;
+	ID3D12Resource* resource = NULL;
+	D3D12_RESOURCE_DESC resource_desc = D3d12ResourceDescFromBufferDesc_(&desc->buffer_desc);
+	hr = ctx->device->CreatePlacedResource(
+		desc->heap->d3d12_heap,
+		(UINT64)desc->heap_offset,
+		&resource_desc,
+		D3d12StatesFromResourceStates_(desc->initial_state),
+		NULL,
 		IID_PPV_ARGS(&resource));
 	if (!CheckHr_(ctx, hr))
 		return {};
@@ -695,7 +758,7 @@ R4_MakeRootSignature(R4_Context* ctx, R4_RootSignatureDesc const* desc)
 		{
 			case R4_RootParameterType_Constants:
 			{
-				root_params[root_params_count++] = D3D12_ROOT_PARAMETER {
+				root_params[root_params_count++] = {
 					.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
 					.Constants = {
 						.ShaderRegister = param->constants.offset,
@@ -741,14 +804,17 @@ R4_MakeGraphicsPipeline(R4_Context* ctx, R4_GraphicsPipelineDesc const* desc)
 		R4_GraphicsPipelineInputLayout const* layout = &desc->input_layout[i];
 		if (!layout->format)
 			break;
+		SafeAssert((UINT)layout->input_slot <= INT32_MAX);
+		SafeAssert((UINT)layout->byte_offset <= INT32_MAX);
+		SafeAssert((UINT)layout->instance_step_rate <= INT32_MAX);
 		input_layout[i] = {
 			.SemanticName = "VINPUT",
 			.SemanticIndex = input_layout_size,
 			.Format = DxgiFormatFromFormat_(layout->format),
-			.InputSlot = layout->input_slot,
-			.AlignedByteOffset = layout->byte_offset,
+			.InputSlot = (UINT)layout->input_slot,
+			.AlignedByteOffset = (UINT)layout->byte_offset,
 			.InputSlotClass = (layout->instance_step_rate != 0) ? D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA : D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-			.InstanceDataStepRate = layout->instance_step_rate,
+			.InstanceDataStepRate = (UINT)layout->instance_step_rate,
 		};
 		++input_layout_size;
 	}
@@ -776,10 +842,16 @@ R4_MakeGraphicsPipeline(R4_Context* ctx, R4_GraphicsPipelineDesc const* desc)
 		};
 	}
 
+	SafeAssert((UINT)desc->rendertarget_count <= INT32_MAX);
+	SafeAssert((UINT)desc->sample_count <= INT32_MAX);
+	SafeAssert((UINT)desc->sample_quality <= INT32_MAX);
+	SafeAssert(desc->vs_dxil.size >= 0);
+	SafeAssert(desc->ps_dxil.size >= 0);
+
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC pipeline_desc = {
 		.pRootSignature = desc->rootsig->d3d12_rootsig,
-		.VS = { desc->vs_dxil.data, desc->vs_dxil.size },
-		.PS = { desc->ps_dxil.data, desc->ps_dxil.size },
+		.VS = { desc->vs_dxil.data, (uintz)desc->vs_dxil.size },
+		.PS = { desc->ps_dxil.data, (uintz)desc->ps_dxil.size },
 		.BlendState = blend_desc,
 		.SampleMask = desc->sample_mask,
 		.RasterizerState = {
@@ -810,7 +882,7 @@ R4_MakeGraphicsPipeline(R4_Context* ctx, R4_GraphicsPipelineDesc const* desc)
 			.NumElements = input_layout_size,
 		},
 		.PrimitiveTopologyType = D3d12TopologyTypeFromTopologyType_(desc->primitive_topology),
-		.NumRenderTargets = desc->rendertarget_count,
+		.NumRenderTargets = (UINT)desc->rendertarget_count,
 		.RTVFormats = {
 			DxgiFormatFromFormat_(desc->rendertarget_formats[0]),
 			DxgiFormatFromFormat_(desc->rendertarget_formats[1]),
@@ -823,8 +895,8 @@ R4_MakeGraphicsPipeline(R4_Context* ctx, R4_GraphicsPipelineDesc const* desc)
 		},
 		.DSVFormat = DxgiFormatFromFormat_(desc->depthstencil_format),
 		.SampleDesc = {
-			.Count = desc->sample_count,
-			.Quality = desc->sample_quality,
+			.Count = (UINT)desc->sample_count,
+			.Quality = (UINT)desc->sample_quality,
 		},
 		.NodeMask = desc->node_mask,
 		.CachedPSO = {},
@@ -836,6 +908,106 @@ R4_MakeGraphicsPipeline(R4_Context* ctx, R4_GraphicsPipelineDesc const* desc)
 
 	return {
 		.d3d12_pso = pipeline,
+	};
+}
+
+API R4_ViewHeap
+R4_MakeViewHeap(R4_Context* ctx, R4_ViewHeapDesc const* desc)
+{
+	Trace();
+	SafeAssert(desc->rtv_count >= 0 && desc->rtv_count <= UINT32_MAX);
+	SafeAssert(desc->dsv_count >= 0 && desc->dsv_count <= UINT32_MAX);
+	SafeAssert(desc->cbv_srv_uav_count >= 0 && desc->cbv_srv_uav_count <= UINT32_MAX);
+	SafeAssert(desc->sampler_count >= 0 && desc->sampler_count <= UINT32_MAX);
+	HRESULT hr;
+	ID3D12DescriptorHeap* heap_rtv = NULL;
+	ID3D12DescriptorHeap* heap_dsv = NULL;
+	ID3D12DescriptorHeap* heap_cbv_srv_uav = NULL;
+	ID3D12DescriptorHeap* heap_sampler = NULL;
+	
+	if (desc->rtv_count)
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {
+			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+			.NumDescriptors = (UINT)desc->rtv_count,
+			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+		};
+		hr = ctx->device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap_rtv));
+		if (!CheckHr_(ctx, hr))
+			return {};
+	}
+	if (desc->dsv_count)
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {
+			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+			.NumDescriptors = (UINT)desc->dsv_count,
+			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+		};
+		hr = ctx->device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap_dsv));
+		if (!CheckHr_(ctx, hr))
+		{
+			if (heap_rtv)
+				heap_rtv->Release();
+			return {};
+		}
+	}
+	if (desc->cbv_srv_uav_count)
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {
+			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+			.NumDescriptors = (UINT)desc->cbv_srv_uav_count,
+			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+		};
+		hr = ctx->device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap_cbv_srv_uav));
+		if (!CheckHr_(ctx, hr))
+		{
+			if (heap_rtv)
+				heap_rtv->Release();
+			if (heap_dsv)
+				heap_dsv->Release();
+			return {};
+		}
+	}
+	if (desc->sampler_count)
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {
+			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+			.NumDescriptors = (UINT)desc->sampler_count,
+			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+		};
+		hr = ctx->device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap_sampler));
+		if (!CheckHr_(ctx, hr))
+		{
+			if (heap_rtv)
+				heap_rtv->Release();
+			if (heap_dsv)
+				heap_dsv->Release();
+			if (heap_cbv_srv_uav)
+				heap_cbv_srv_uav->Release();
+			return {};
+		}
+	}
+
+	return {
+		.d3d12_heap_rtv = heap_rtv,
+		.d3d12_heap_dsv = heap_dsv,
+		.d3d12_heap_cbv_srv_uav = heap_cbv_srv_uav,
+		.d3d12_heap_sampler = heap_sampler,
+	};
+}
+
+API R4_ImageView
+R4_MakeImageViewAt(R4_Context* ctx, R4_ViewHeap* view_heap, int64 index, R4_ImageViewDesc const* desc)
+{
+	Trace();
+	SafeAssert(index >= 0);
+	uint64 increment = ctx->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+	uint64 heap_start = view_heap->d3d12_heap_rtv->GetCPUDescriptorHandleForHeapStart().ptr;
+	uint64 ptr = heap_start + (uint64)index * increment;
+	// TODO(ljre): respect desc if format is different than the resource's internal format
+	ctx->device->CreateRenderTargetView(desc->image->d3d12_resource, NULL, {ptr});
+	return {
+		.d3d12_rtv_ptr = ptr,
 	};
 }
 
@@ -905,17 +1077,49 @@ R4_FreeHeap(R4_Context* ctx, R4_Heap* heap)
 }
 
 API void
-R4_FreeResource(R4_Context* ctx, R4_Resource* resource)
+R4_FreeBuffer(R4_Context* ctx, R4_Buffer* buffer)
 {
 	Trace();
-	if (resource->d3d12_resource)
-		resource->d3d12_resource->Release();
-	*resource = {};
+	if (buffer->d3d12_resource)
+		buffer->d3d12_resource->Release();
+	*buffer = {};
+}
+
+API void
+R4_FreeImage(R4_Context* ctx, R4_Image* image)
+{
+	Trace();
+	if (image->d3d12_resource)
+		image->d3d12_resource->Release();
+	*image = {};
+}
+
+API void
+R4_FreeViewHeap(R4_Context* ctx, R4_ViewHeap* view_heap)
+{
+	Trace();
+	if (view_heap->d3d12_heap_rtv)
+		view_heap->d3d12_heap_rtv->Release();
+	if (view_heap->d3d12_heap_dsv)
+		view_heap->d3d12_heap_dsv->Release();
+	if (view_heap->d3d12_heap_cbv_srv_uav)
+		view_heap->d3d12_heap_cbv_srv_uav->Release();
+	if (view_heap->d3d12_heap_sampler)
+		view_heap->d3d12_heap_sampler->Release();
+	*view_heap = {};
+}
+
+API void
+R4_FreeImageView(R4_Context* ctx, R4_ImageView* image_view)
+{
+	Trace();
+	// NOTE(ljre): views are owned by their respective ID3D12DescriptorHeap and don't need to be destructed.
+	*image_view = {};
 }
 
 // =============================================================================
 // =============================================================================
-API uint32
+API intz
 R4_GetDescriptorSize(R4_Context* ctx, R4_DescriptorHeapType type)
 {
 	Trace();
@@ -923,19 +1127,19 @@ R4_GetDescriptorSize(R4_Context* ctx, R4_DescriptorHeapType type)
 	return ctx->device->GetDescriptorHandleIncrementSize(heap_type);
 }
 
-API uint32
-R4_GetSwapchainBuffers(R4_Context* ctx, R4_Swapchain* swapchain, intsize image_count, R4_Resource* out_resources)
+API intz
+R4_GetSwapchainBuffers(R4_Context* ctx, R4_Swapchain* swapchain, intsize image_count, R4_Image* out_images)
 {
 	Trace();
 	HRESULT hr;
-	uint32 count = 0;
+	intz count = 0;
 	for (intsize i = 0; i < image_count; ++i)
 	{
 		ID3D12Resource* resource = NULL;
 		hr = swapchain->d3d12_swapchain->GetBuffer(i, IID_PPV_ARGS(&resource));
 		if (!CheckHr_(ctx, hr))
 			return 0;
-		out_resources[i] = {
+		out_images[i] = {
 			.d3d12_resource = resource,
 		};
 		count = i+1;
@@ -944,66 +1148,46 @@ R4_GetSwapchainBuffers(R4_Context* ctx, R4_Swapchain* swapchain, intsize image_c
 	return count;
 }
 
-API R4_DescriptorHeap
-R4_CreateRenderTargetViewsFromResources(R4_Context* ctx, R4_Format format, intsize resource_count, R4_Resource* resources, R4_RenderTargetView* out_rtvs)
+API R4_MemoryRequirements
+R4_GetBufferMemoryRequirements(R4_Context* ctx, R4_BufferDesc const* desc)
 {
 	Trace();
-	(void)format;
-	if (resource_count <= 0)
-		return {};
-	HRESULT hr;
-	ID3D12DescriptorHeap* heap = NULL;
-	D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {
-		.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-		.NumDescriptors = (UINT)resource_count,
-		.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-	};
-	hr = ctx->device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap));
-	if (!CheckHr_(ctx, hr))
-		return {};
-	uint64 increment = ctx->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-	uint64 heap_start = heap->GetCPUDescriptorHandleForHeapStart().ptr;
-	for (intsize i = 0; i < resource_count; ++i)
-	{
-		uint64 ptr = heap_start + i * increment;
-		ctx->device->CreateRenderTargetView(resources[i].d3d12_resource, NULL, {ptr});
-		out_rtvs[i] = {
-			.d3d12_resource = resources[i].d3d12_resource,
-			.d3d12_rtv_ptr = ptr,
-		};
-		out_rtvs[i].d3d12_resource->AddRef();
-	}
+	D3D12_RESOURCE_DESC resource_desc = D3d12ResourceDescFromBufferDesc_(desc);
+	D3D12_RESOURCE_ALLOCATION_INFO allocation_info = ctx->device->GetResourceAllocationInfo(1, 1, &resource_desc);
 	return {
-		.d3d12_heap = heap,
+		.size = (int64)allocation_info.SizeInBytes,
+		.alignment = (int64)allocation_info.Alignment,
 	};
 }
 
 API R4_MemoryRequirements
-R4_GetResourceMemoryRequirements(R4_Context* ctx, R4_ResourceDesc const* desc)
+R4_GetImageMemoryRequirements(R4_Context* ctx, R4_ImageDesc const* desc)
 {
 	Trace();
-	D3D12_RESOURCE_DESC resource_desc = D3d12ResourceDescFromDesc_(desc);
+	D3D12_RESOURCE_DESC resource_desc = D3d12ResourceDescFromImageDesc_(desc);
 	D3D12_RESOURCE_ALLOCATION_INFO allocation_info = ctx->device->GetResourceAllocationInfo(1, 1, &resource_desc);
 	return {
-		.size = allocation_info.SizeInBytes,
-		.alignment = allocation_info.Alignment,
+		.size = (int64)allocation_info.SizeInBytes,
+		.alignment = (int64)allocation_info.Alignment,
 	};
 }
 
 API void
-R4_MapResource(R4_Context* ctx, R4_Resource* resource, uint32 subresource, uint64 size, void** out_memory)
+R4_MapResource(R4_Context* ctx, R4_Resource resource, uint32 subresource, uint64 size, void** out_memory)
 {
 	Trace();
 	HRESULT hr;
-	hr = resource->d3d12_resource->Map(subresource, {}, out_memory);
+	ID3D12Resource* d3d12_resource = D3d12ResourceFromResource_(resource);
+	hr = d3d12_resource->Map(subresource, {}, out_memory);
 	CheckHr_(ctx, hr);
 }
 
 API void
-R4_UnmapResource(R4_Context* ctx, R4_Resource* resource, uint32 subresource)
+R4_UnmapResource(R4_Context* ctx, R4_Resource resource, uint32 subresource)
 {
 	Trace();
-	resource->d3d12_resource->Unmap(subresource, NULL);
+	ID3D12Resource* d3d12_resource = D3d12ResourceFromResource_(resource);
+	d3d12_resource->Unmap(subresource, NULL);
 }
 
 // =============================================================================
@@ -1109,19 +1293,19 @@ R4_CmdBeginRenderpass(R4_Context* ctx, R4_CommandList* cmdlist, R4_BeginRenderpa
 	for (intsize i = 0; i < ArrayLength(desc->color_attachments); ++i)
 	{
 		R4_RenderpassAttachment const* attachment = &desc->color_attachments[i];
-		if (!attachment->rendertarget)
+		if (!attachment->image_view)
 			break;
-		rtvs_to_bind[rtvs_to_bind_count++] = { attachment->rendertarget->d3d12_rtv_ptr };
+		rtvs_to_bind[rtvs_to_bind_count++] = { attachment->image_view->d3d12_rtv_ptr };
 	}
 	cmdlist->d3d12_list->OMSetRenderTargets(rtvs_to_bind_count, rtvs_to_bind, FALSE, NULL);
 
 	for (intsize i = 0; i < ArrayLength(desc->color_attachments); ++i)
 	{
 		R4_RenderpassAttachment const* attachment = &desc->color_attachments[i];
-		if (!attachment->rendertarget)
+		if (!attachment->image_view)
 			break;
 		if (attachment->load == R4_AttachmentLoadOp_Clear)
-			cmdlist->d3d12_list->ClearRenderTargetView({attachment->rendertarget->d3d12_rtv_ptr}, attachment->clear_color, 0, NULL);
+			cmdlist->d3d12_list->ClearRenderTargetView({attachment->image_view->d3d12_rtv_ptr}, attachment->clear_color, 0, NULL);
 	}
 }
 
@@ -1187,7 +1371,7 @@ R4_CmdSetRootSignature(R4_Context* ctx, R4_CommandList* cmdlist, R4_RootSignatur
 }
 
 API void
-R4_CmdSetIndexBuffer(R4_Context* ctx, R4_CommandList* cmdlist, R4_Resource* buffer, uint64 offset, uint32 size, R4_Format format)
+R4_CmdSetIndexBuffer(R4_Context* ctx, R4_CommandList* cmdlist, R4_Buffer* buffer, uint64 offset, uint32 size, R4_Format format)
 {
 	Trace();
 	D3D12_INDEX_BUFFER_VIEW view = {
@@ -1199,7 +1383,7 @@ R4_CmdSetIndexBuffer(R4_Context* ctx, R4_CommandList* cmdlist, R4_Resource* buff
 }
 
 API void
-R4_CmdSetVertexBuffers(R4_Context* ctx, R4_CommandList* cmdlist, uint32 first_slot, uint32 slot_count, R4_VertexBuffer const* buffers)
+R4_CmdSetVertexBuffers(R4_Context* ctx, R4_CommandList* cmdlist, intz first_slot, intz slot_count, R4_VertexBuffer const* buffers)
 {
 	Trace();
 	ArenaSavepoint scratch = ArenaSave(OS_ScratchArena(NULL, 0));
@@ -1207,7 +1391,7 @@ R4_CmdSetVertexBuffers(R4_Context* ctx, R4_CommandList* cmdlist, uint32 first_sl
 	for (intsize i = 0; i < slot_count; ++i)
 	{
 		views[i] = {
-			.BufferLocation = buffers[i].resource->d3d12_resource->GetGPUVirtualAddress() + buffers[i].offset,
+			.BufferLocation = buffers[i].buffer->d3d12_resource->GetGPUVirtualAddress() + buffers[i].offset,
 			.SizeInBytes = buffers[i].size,
 			.StrideInBytes = buffers[i].stride,
 		};
@@ -1251,7 +1435,7 @@ R4_CmdSetGraphicsRootConstantsU32(R4_Context* ctx, R4_CommandList* cmdlist, R4_R
 }
 
 API void
-R4_CmdCopyBuffer(R4_Context* ctx, R4_CommandList* cmdlist, R4_Resource* dest, uint64 dest_offset, R4_Resource* source, uint64 source_offset, uint64 size)
+R4_CmdCopyBuffer(R4_Context* ctx, R4_CommandList* cmdlist, R4_Buffer* dest, uint64 dest_offset, R4_Buffer* source, uint64 source_offset, uint64 size)
 {
 	Trace();
 	cmdlist->d3d12_list->CopyBufferRegion(dest->d3d12_resource, dest_offset, source->d3d12_resource, source_offset, size);
@@ -1270,6 +1454,7 @@ R4_CmdBarrier(R4_Context* ctx, R4_CommandList *cmdlist, intsize barrier_count, c
 		R4_ResourceBarrier const* barrier = &barriers[i];
 		if (!barrier->type)
 			break;
+		ID3D12Resource* barrier_resource = D3d12ResourceFromResource_(barrier->resource);
 
 		switch (barrier->type)
 		{
@@ -1279,7 +1464,7 @@ R4_CmdBarrier(R4_Context* ctx, R4_CommandList *cmdlist, intsize barrier_count, c
 				all_barriers[i] = D3D12_RESOURCE_BARRIER {
 					.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
 					.Transition = {
-						.pResource = barrier->resource->d3d12_resource,
+						.pResource = barrier_resource,
 						.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
 						.StateBefore = D3d12StatesFromResourceStates_(transition->from),
 						.StateAfter = D3d12StatesFromResourceStates_(transition->to),

@@ -68,7 +68,7 @@ IsXInputDevice(const GUID* guid)
 
 // Original: https://github.com/glfw/glfw/blob/6876cf8d7e0e70dc3e4d7b0224d08312c9f78099/src/win32_joystick.c#L452
 static bool
-ConvertGuidToSDLGuid(const DIDEVICEINSTANCEW* instance, char* guid_str, uintsize guid_str_size)
+ConvertGuidToSDLGuid(const DIDEVICEINSTANCEW* instance, char* guid_str, intz guid_str_size)
 {
     if (MemoryCompare(&instance->guidProduct.Data4[2], "PIDVID", 6) == 0)
     {
