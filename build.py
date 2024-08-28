@@ -248,7 +248,7 @@ def main():
             case ['odin', *flags]:
                 odin = {
                     'input': f'{project}',
-                    'output': make_outpath(project+'.obj', middir),
+                    'output': make_outpath(project+'*.obj', middir),
                     'flags': flags,
                 }
                 objs.append({
@@ -472,7 +472,7 @@ def build_odin(odin):
         return 1
 
     package = odin['input']
-    output = odin['output']
+    output = odin['output'].replace('*', '')
     flags = [
         '-build-mode:obj',
         '-collection:src=.',

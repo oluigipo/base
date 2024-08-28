@@ -2976,9 +2976,9 @@ OS_VirtualProtect(void* address, intz size, uint32 flags)
 	SafeAssert(size >= 0);
 	
 	DWORD protect = PAGE_READWRITE;
-	if (flags & OS_VirtualFlags_ReadOnly)
+	if (flags & OS_VirtualFlags_Read)
 		protect = PAGE_READONLY;
-	else if (flags & OS_VirtualFlags_ExecuteOnly)
+	else if (flags & OS_VirtualFlags_Execute)
 		protect = PAGE_EXECUTE;
 	
 	DWORD prev;
@@ -4510,7 +4510,7 @@ OS_DebugLog(const char* fmt, ...)
 
 // Heap Allocator
 static void*
-HeapAllocatorProc_(Allocator* allocator, AllocatorMode mode, intsize size, intsize alignment, void* old_ptr, intsize old_size, AllocatorError* out_err)
+HeapAllocatorProc_(void* instance, AllocatorMode mode, intsize size, intsize alignment, void* old_ptr, intsize old_size, AllocatorError* out_err)
 {
 	Trace();
 	SafeAssert(size >= 0);

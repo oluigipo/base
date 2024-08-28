@@ -7,7 +7,7 @@ template <typename T>
 static inline T*
 AllocatorNew(Allocator* allocator, AllocatorError* out_err)
 {
-	return (T*)allocator->proc(allocator, AllocatorMode_Alloc, sizeof(T), alignof(T), NULL, 0, out_err);
+	return (T*)allocator->proc(allocator->instance, AllocatorMode_Alloc, sizeof(T), alignof(T), NULL, 0, out_err);
 }
 
 template <typename T>
@@ -15,14 +15,14 @@ static inline T*
 AllocatorNewArray(Allocator* allocator, intsize count, AllocatorError* out_err)
 {
 	SafeAssert(count >= 0 && count <= INTSIZE_MAX / sizeof(T));
-	return (T*)allocator->proc(allocator, AllocatorMode_Alloc, count*sizeof(T), alignof(T), NULL, 0, out_err);
+	return (T*)allocator->proc(allocator->instance, AllocatorMode_Alloc, count*sizeof(T), alignof(T), NULL, 0, out_err);
 }
 
 template <typename T>
 static inline void
 AllocatorDelete(Allocator* allocator, T* ptr, AllocatorError* out_err)
 {
-	allocator->proc(allocator, AllocatorMode_Free, 0, 0, ptr, sizeof(T), out_err);
+	allocator->proc(allocator->instance, AllocatorMode_Free, 0, 0, ptr, sizeof(T), out_err);
 }
 
 template <typename T>
@@ -30,7 +30,7 @@ static inline void
 AllocatorDeleteArray(Allocator* allocator, T* ptr, intsize count, AllocatorError* out_err)
 {
 	SafeAssert(count >= 0 && count <= INTSIZE_MAX / sizeof(T));
-	allocator->proc(allocator, AllocatorMode_Free, 0, 0, ptr, count*sizeof(T), out_err);
+	allocator->proc(allocator->instance, AllocatorMode_Free, 0, 0, ptr, count*sizeof(T), out_err);
 }
 
 template <typename T>
@@ -39,7 +39,7 @@ AllocatorResizeArray(Allocator* allocator, intsize count, T* ptr, intsize old_co
 {
 	SafeAssert(count >= 0 && count <= INTSIZE_MAX / sizeof(T));
 	SafeAssert(old_count >= 0 && old_count <= INTSIZE_MAX / sizeof(T));
-	return (T*)allocator->proc(allocator, AllocatorMode_Resize, count * sizeof(T), alignof(T), ptr, old_count * sizeof(T), out_err);
+	return (T*)allocator->proc(allocator->instance, AllocatorMode_Resize, count * sizeof(T), alignof(T), ptr, old_count * sizeof(T), out_err);
 }
 
 template <typename T>
@@ -47,7 +47,7 @@ static inline bool
 AllocatorResizeArrayOk(Allocator* allocator, intsize count, T** ptr, intsize old_count, AllocatorError* out_err)
 {
 	SafeAssert(count >= 0 && count <= INTSIZE_MAX / sizeof(T));
-	T* result = (T*)allocator->proc(allocator, AllocatorMode_Resize, count * sizeof(T), alignof(T), ptr, old_count * sizeof(T), out_err);
+	T* result = (T*)allocator->proc(allocator->instance, AllocatorMode_Resize, count * sizeof(T), alignof(T), ptr, old_count * sizeof(T), out_err);
 	if (result || !count)
 	{
 		*ptr = result;
@@ -94,7 +94,7 @@ static inline Slice<T>
 AllocatorNewSlice(Allocator* allocator, intsize count, AllocatorError* out_err)
 {
 	SafeAssert(count >= 0 && count <= INTSIZE_MAX / sizeof(T));
-	T* ptr = (T*)allocator->proc(allocator, AllocatorMode_Alloc, count*sizeof(T), alignof(T), NULL, 0, out_err);
+	T* ptr = (T*)allocator->proc(allocator->instance, AllocatorMode_Alloc, count*sizeof(T), alignof(T), NULL, 0, out_err);
 	if (ptr)
 		return { ptr, count };
 	return {};
@@ -105,7 +105,7 @@ static inline void
 AllocatorDeleteSlice(Allocator* allocator, Slice<T> slice, AllocatorError* out_err)
 {
 	SafeAssert(slice.count >= 0 && slice.count <= INTSIZE_MAX / sizeof(T));
-	allocator->proc(allocator, AllocatorMode_Free, 0, 0, slice.data, slice.count*sizeof(T), out_err);
+	allocator->proc(allocator->instance, AllocatorMode_Free, 0, 0, slice.data, slice.count*sizeof(T), out_err);
 }
 
 template <typename T>
@@ -114,7 +114,7 @@ AllocatorResizeSlice(Allocator* allocator, intsize count, Slice<T> slice, Alloca
 {
 	SafeAssert(count >= 0 && count <= INTSIZE_MAX / sizeof(T));
 	SafeAssert(slice.count >= 0 && slice.count <= INTSIZE_MAX / sizeof(T));
-	T* ptr = (T*)allocator->proc(allocator, AllocatorMode_Resize, count * sizeof(T), alignof(T), slice.data, slice.count * sizeof(T), out_err);
+	T* ptr = (T*)allocator->proc(allocator->instance, AllocatorMode_Resize, count * sizeof(T), alignof(T), slice.data, slice.count * sizeof(T), out_err);
 	if (ptr)
 		return { ptr, count };
 	return {};
@@ -126,7 +126,7 @@ AllocatorResizeSliceOk(Allocator* allocator, intsize count, Slice<T>* slice_ptr,
 {
 	SafeAssert(count >= 0 && count <= INTSIZE_MAX / sizeof(T));
 	SafeAssert(slice_ptr->count >= 0 && slice_ptr->count <= INTSIZE_MAX / sizeof(T));
-	T* result = (T*)allocator->proc(allocator, AllocatorMode_Resize, count * sizeof(T), alignof(T), slice_ptr->data, slice_ptr->count * sizeof(T), out_err);
+	T* result = (T*)allocator->proc(allocator->instance, AllocatorMode_Resize, count * sizeof(T), alignof(T), slice_ptr->data, slice_ptr->count * sizeof(T), out_err);
 	if (result || !count)
 	{
 		*slice_ptr = { result, count };

@@ -1,0 +1,12 @@
+
+fxc render4_new/test_shader.hlsl vs_5_1 Vertex
+fxc render4_new/test_shader.hlsl ps_5_1 Pixel
+dxc-spirv render4_new/test_shader.hlsl vs_6_0 Vertex -fspv-target-env=vulkan1.3
+dxc-spirv render4_new/test_shader.hlsl ps_6_0 Pixel -fspv-target-env=vulkan1.3
+
+c render4_new/test.c
+c os/os_win32.c
+cxx os/os_win32.cpp
+#cxx render4_new/render4_d3d12.cpp
+
+output render4_new_test

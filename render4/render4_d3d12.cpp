@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "api.h"
 #include "api_os.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -7,84 +8,198 @@
 #include <dxgi1_6.h>
 
 #include "api_os_win32.h"
-#include "api_os_d3d12.h"
-#include "api_render4.h"
+#include "render4_d3d12.h"
 
-struct R4_Context
+#pragma comment(lib, "d3d12.lib")
+#pragma comment(lib, "dxgi.lib")
+
+static_assert(sizeof(R4_D3D12_Queue)            <= sizeof(R4_Queue), "");
+static_assert(sizeof(R4_D3D12_Buffer)           <= sizeof(R4_Buffer), "");
+static_assert(sizeof(R4_D3D12_Image)            <= sizeof(R4_Image), "");
+static_assert(sizeof(R4_D3D12_Heap)             <= sizeof(R4_Heap), "");
+static_assert(sizeof(R4_D3D12_CommandAllocator) <= sizeof(R4_CommandAllocator), "");
+static_assert(sizeof(R4_D3D12_CommandList)      <= sizeof(R4_CommandList), "");
+static_assert(sizeof(R4_D3D12_Pipeline)         <= sizeof(R4_Pipeline), "");
+static_assert(sizeof(R4_D3D12_PipelineLayout)   <= sizeof(R4_PipelineLayout), "");
+static_assert(sizeof(R4_D3D12_DescriptorHeap)   <= sizeof(R4_DescriptorHeap), "");
+static_assert(sizeof(R4_D3D12_DescriptorSet)    <= sizeof(R4_DescriptorSet), "");
+static_assert(sizeof(R4_D3D12_BufferView)       <= sizeof(R4_BufferView), "");
+static_assert(sizeof(R4_D3D12_ImageView)        <= sizeof(R4_ImageView), "");
+static_assert(sizeof(R4_D3D12_Sampler)          <= sizeof(R4_Sampler), "");
+static_assert(sizeof(R4_D3D12_RenderTargetView) <= sizeof(R4_RenderTargetView), "");
+static_assert(sizeof(R4_D3D12_DepthStencilView) <= sizeof(R4_DepthStencilView), "");
+
+struct ViewPool_
 {
-	OS_D3D12Api2 api;
-	ID3D12Device* device;
-	ID3D12Device2* device2;
-	IDXGIAdapter1* adapter1;
-	IDXGIFactory4* factory4;
-
-	HRESULT device_lost_reason;
+	Slice<int32> free_table;
+	int32 free_count;
+	int32 allocated_count;
 };
 
-static bool
-CheckHr_(R4_Context* ctx, HRESULT hr)
+struct R4_D3D12_Context
 {
-	if (hr == DXGI_ERROR_DEVICE_HUNG ||
-		hr == DXGI_ERROR_DEVICE_REMOVED ||
-		hr == DXGI_ERROR_DEVICE_RESET ||
-		hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR)
+	Allocator allocator;
+	struct ID3D12Device* device;
+	struct ID3D12Device2* device2;
+	struct IDXGIAdapter1* adapter1;
+	struct IDXGIFactory4* factory4;
+	struct IDXGISwapChain1* swapchain1;
+	struct IDXGISwapChain3* swapchain3;
+	struct ID3D12CommandQueue* direct_queue;
+	struct ID3D12CommandQueue* compute_queue;
+	struct ID3D12CommandQueue* copy_queue;
+	R4_ContextInfo info;
+	bool debug_layer_enabled;
+
+	struct ID3D12Fence* fence;
+	void* fence_event;
+	uint64 fence_counter;
+
+	struct ID3D12DescriptorHeap* rtv_heap;
+	struct ID3D12DescriptorHeap* dsv_heap;
+	struct ID3D12DescriptorHeap* sampler_heap;
+	struct ID3D12DescriptorHeap* cbv_srv_uav_heap;
+
+	ViewPool_ rtv_pool;
+	ViewPool_ dsv_pool;
+	ViewPool_ sampler_pool;
+	ViewPool_ cbv_srv_uav_pool;
+}
+typedef R4_D3D12_Context;
+
+struct R4_Context: public R4_D3D12_Context {};
+
+static ViewPool_
+InitViewPool_(int32 max_size, Allocator allocator, AllocatorError* err)
+{
+	Trace();
+	return {
+		.free_table = AllocatorNewSlice<int32>(&allocator, max_size, err),
+		.free_count = 0,
+		.allocated_count = 0,
+	};
+}
+
+static int32
+AllocateFromViewPool_(ViewPool_* pool)
+{
+	Trace();
+	SafeAssert(pool->free_table);
+	int32 result;
+	if (pool->free_count > 0)
+		result = pool->free_table[--pool->free_count];
+	else if (pool->allocated_count < pool->free_table.count)
+		result = pool->allocated_count++;
+	else
 	{
-		__atomic_store_n(&ctx->device_lost_reason, hr, __ATOMIC_RELEASE);
-		OS_LogErr("ERROR: HR: %u\n", (unsigned int)hr);
-		return false;
+		SafeAssert("RAN OUT OF DESCRIPTORS!!!");
+		Unreachable();
 	}
-	return true;
+	return result;
+}
+
+static void
+FreeFromViewPool_(ViewPool_* pool, int32 index)
+{
+	Trace();
+	SafeAssert(pool->free_table);
+	pool->free_table[pool->free_count++] = index;
+}
+
+static void
+FreeViewPool_(ViewPool_* pool, Allocator allocator, AllocatorError* err)
+{
+	Trace();
+	if (pool->free_table)
+		AllocatorDeleteSlice(&allocator, pool->free_table, err);
+	*pool = {};
+}
+
+static bool
+CheckHr_(HRESULT hr, R4_Result* r)
+{
+	if (SUCCEEDED(hr))
+	{
+		if (r)
+			*r = R4_Result_Ok;
+		return true;
+	}
+		
+	OS_LogErr("ERROR: HR: %u\n", (unsigned int)hr);
+	if (r)
+	{
+		if (hr == DXGI_ERROR_DEVICE_HUNG ||
+			hr == DXGI_ERROR_DEVICE_REMOVED ||
+			hr == DXGI_ERROR_DEVICE_RESET ||
+			hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR)
+		{
+			*r = R4_Result_DeviceLost;
+		}
+		else if (hr == E_OUTOFMEMORY)
+			*r = R4_Result_DeviceOutOfMemory;
+		else
+			*r = R4_Result_Failure;
+	}
+	return false;
+}
+
+static bool
+CheckAllocatorErr_(AllocatorError err, R4_Result* r)
+{
+	if (!err)
+	{
+		if (r)
+			*r = R4_Result_Ok;
+		return true;
+	}
+
+	OS_LogErr("ERROR: ALLOCATOR: %u\n", (unsigned int)err);
+	if (r)
+	{
+		if (err == AllocatorError_OutOfMemory)
+			*r = R4_Result_AllocatorOutOfMemory;
+		else
+			*r = R4_Result_AllocatorError;
+	}
+	return false;
 }
 
 static D3D12_RESOURCE_STATES
-D3d12StatesFromResourceStates_(R4_ResourceState flags)
+D3d12StatesFromResourceStates_(R4_ResourceState state)
 {
 	D3D12_RESOURCE_STATES result = (D3D12_RESOURCE_STATES)0;
 
-	if (flags == R4_ResourceState_Common)
-		return result;
-	if (flags & R4_ResourceState_Present)
-		result |= D3D12_RESOURCE_STATE_PRESENT;
-	if (flags & (R4_ResourceState_VertexBuffer | R4_ResourceState_ConstantBuffer))
-		result |= D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-	if (flags & R4_ResourceState_IndexBuffer)
-		result |= D3D12_RESOURCE_STATE_INDEX_BUFFER;
-	if (flags & R4_ResourceState_RenderTarget)
-		result |= D3D12_RESOURCE_STATE_RENDER_TARGET;
-	if (flags & R4_ResourceState_UnorderedAccess)
-		result |= D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-	if (flags & R4_ResourceState_DepthWrite)
-		result |= D3D12_RESOURCE_STATE_DEPTH_WRITE;
-	if (flags & R4_ResourceState_DepthRead)
-		result |= D3D12_RESOURCE_STATE_DEPTH_READ;
-	if (flags & R4_ResourceState_NonPixelShaderResource)
-		result |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-	if (flags & R4_ResourceState_PixelShaderResource)
-		result |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-	if (flags & R4_ResourceState_StreamOut)
-		result |= D3D12_RESOURCE_STATE_STREAM_OUT;
-	if (flags & R4_ResourceState_IndirectArgument)
-		result |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
-	if (flags & R4_ResourceState_Predication)
-		result |= D3D12_RESOURCE_STATE_PREDICATION;
-	if (flags & R4_ResourceState_CopyDest)
-		result |= D3D12_RESOURCE_STATE_COPY_DEST;
-	if (flags & R4_ResourceState_CopySource)
-		result |= D3D12_RESOURCE_STATE_COPY_SOURCE;
+	switch (state)
+	{
+		default: Unreachable(); break;
+		case R4_ResourceState_Null: result = D3D12_RESOURCE_STATE_COMMON; break;
+		case R4_ResourceState_Common: result = D3D12_RESOURCE_STATE_COMMON; break;
+		case R4_ResourceState_UniformBuffer:
+		case R4_ResourceState_VertexBuffer: result = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER; break;
+		case R4_ResourceState_Present: result = D3D12_RESOURCE_STATE_PRESENT; break;
+		case R4_ResourceState_IndexBuffer: result = D3D12_RESOURCE_STATE_INDEX_BUFFER; break;
+		case R4_ResourceState_TransferSrc: result = D3D12_RESOURCE_STATE_COPY_SOURCE; break;
+		case R4_ResourceState_TransferDst: result = D3D12_RESOURCE_STATE_COPY_DEST; break;
+		case R4_ResourceState_SampledImage:
+		case R4_ResourceState_ShaderStorage: result = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE; break;
+		case R4_ResourceState_ShaderReadWrite: result = D3D12_RESOURCE_STATE_UNORDERED_ACCESS; break;
+		case R4_ResourceState_DepthStencil: result = D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_DEPTH_READ; break;
+		case R4_ResourceState_RenderTarget: result = D3D12_RESOURCE_STATE_RENDER_TARGET; break;
+	}
 
 	return result;
 }
 
 static D3D12_COMMAND_LIST_TYPE
-D3d12TypeFromCommandListKind_(R4_CommandListKind kind)
+D3d12TypeFromCommandListKind_(R4_CommandListType kind)
 {
 	D3D12_COMMAND_LIST_TYPE result = (D3D12_COMMAND_LIST_TYPE)-1;
 
 	switch (kind)
 	{
-		case R4_CommandListKind_Graphics: result = D3D12_COMMAND_LIST_TYPE_DIRECT; break;
-		case R4_CommandListKind_Compute: result = D3D12_COMMAND_LIST_TYPE_COMPUTE; break;
-		case R4_CommandListKind_Copy: result = D3D12_COMMAND_LIST_TYPE_COPY; break;
+		case R4_CommandListType_Graphics: result = D3D12_COMMAND_LIST_TYPE_DIRECT; break;
+		case R4_CommandListType_Compute: result = D3D12_COMMAND_LIST_TYPE_COMPUTE; break;
+		case R4_CommandListType_Copy: result = D3D12_COMMAND_LIST_TYPE_COPY; break;
 		default: Unreachable(); break;
 	}
 
@@ -103,6 +218,7 @@ DxgiFormatFromFormat_(R4_Format format)
 		case R4_Format_R8_UNorm: result = DXGI_FORMAT_R8_UNORM; break;
 		case R4_Format_R8G8_UNorm: result = DXGI_FORMAT_R8G8_UNORM; break;
 		case R4_Format_R8G8B8A8_UNorm: result = DXGI_FORMAT_R8G8B8A8_UNORM; break;
+		case R4_Format_R8G8B8A8_SRgb: result = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; break;
 		case R4_Format_R8_UInt: result = DXGI_FORMAT_R8_UINT; break;
 		case R4_Format_R8G8_UInt: result = DXGI_FORMAT_R8G8_UINT; break;
 		case R4_Format_R8G8B8A8_UInt: result = DXGI_FORMAT_R8G8B8A8_UINT; break;
@@ -249,33 +365,6 @@ D3d12CompFuncFromCompFunc_(R4_ComparisonFunc func)
 	return result;
 }
 
-static D3D12_PRIMITIVE_TOPOLOGY_TYPE
-D3d12TopologyTypeFromTopologyType_(R4_PrimitiveTopology topology)
-{
-	D3D12_PRIMITIVE_TOPOLOGY_TYPE result = (D3D12_PRIMITIVE_TOPOLOGY_TYPE)0;
-
-	switch (topology)
-	{
-		case R4_PrimitiveTopology_TriangleList:
-		case R4_PrimitiveTopology_TriangleFan:
-		case R4_PrimitiveTopology_TriangleStrip:
-			result = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-			break;
-		case R4_PrimitiveTopology_LineList:
-		case R4_PrimitiveTopology_LineStrip:
-			result = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
-			break;
-		case R4_PrimitiveTopology_PointList:
-			result = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
-			break;
-		case R4_PrimitiveTopology_Patch:
-			result = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
-			break;
-	}
-
-	return result;
-}
-
 static D3D12_SHADER_VISIBILITY
 D3d12VisibilityFromVisibility_(R4_ShaderVisibility visibility)
 {
@@ -292,1187 +381,541 @@ D3d12VisibilityFromVisibility_(R4_ShaderVisibility visibility)
 	return result;
 }
 
-static D3D12_RESOURCE_DESC
-D3d12ResourceDescFromImageDesc_(R4_ImageDesc const* desc)
-{
-	SafeAssert(desc->width >= 0);
-	SafeAssert(desc->height >= 0 && desc->height <= UINT32_MAX);
-	SafeAssert(desc->depth >= 0 && desc->depth <= UINT16_MAX);
-	D3D12_RESOURCE_DESC result = {
-		.Dimension =
-			(desc->dimension == R4_ImageDimension_Texture1D) ? D3D12_RESOURCE_DIMENSION_TEXTURE1D :
-			(desc->dimension == R4_ImageDimension_Texture2D) ? D3D12_RESOURCE_DIMENSION_TEXTURE2D :
-			(desc->dimension == R4_ImageDimension_Texture3D) ? D3D12_RESOURCE_DIMENSION_TEXTURE3D :
-			D3D12_RESOURCE_DIMENSION_UNKNOWN,
-		.Width = (UINT)desc->width,
-		.Height = desc->height ? (UINT)desc->height : 1,
-		.DepthOrArraySize = desc->depth ? (UINT16)desc->depth : (UINT16)1,
-		.MipLevels = 1,
-		.Format = DxgiFormatFromFormat_(desc->format),
-		.SampleDesc = {
-			.Count = 1,
-		},
-		.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-	};
-	return result;
-}
-
-static D3D12_RESOURCE_DESC
-D3d12ResourceDescFromBufferDesc_(R4_BufferDesc const* desc)
-{
-	SafeAssert(desc->size >= 0);
-	D3D12_RESOURCE_DESC result = {
-		.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
-		.Width = (UINT64)desc->size,
-		.Height = 1,
-		.DepthOrArraySize = 1,
-		.MipLevels = 1,
-		.Format = DXGI_FORMAT_UNKNOWN,
-		.SampleDesc = {
-			.Count = 1,
-		},
-		.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-	};
-	return result;
-}
-
-static ID3D12Resource*
-D3d12ResourceFromResource_(R4_Resource resource)
-{
-	ID3D12Resource* result = NULL;
-	if (resource.buffer)
-		result = resource.buffer->d3d12_resource;
-	else if (resource.image)
-		result = resource.image->d3d12_resource;
-	SafeAssert(result);
-	return result;
-}
-
 // =============================================================================
 // =============================================================================
+// Context creation
 API R4_Context*
-R4_D3D12_MakeContext(Allocator allocator, R4_ContextDesc* desc)
+R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 {
 	Trace();
+	AllocatorError err;
 	HRESULT hr;
-	R4_Context ctx = {};
-	if (!OS_MakeD3D12Api2(&ctx.api, true))
+	R4_D3D12_Context* d3d12 = AllocatorNew<R4_D3D12_Context>(&allocator, &err);
+	if (!CheckAllocatorErr_(err, r))
 		return NULL;
+	d3d12->allocator = allocator;
 
 	{
-		hr = ctx.api.create_dxgi_factory1(IID_PPV_ARGS(&ctx.factory4));
-		if (FAILED(hr))
+		if (desc->debug_mode)
+		{
+			HMODULE dll_d3d12 = GetModuleHandleW(L"d3d12.dll");
+			if (dll_d3d12)
+			{
+				PFN_D3D12_GET_DEBUG_INTERFACE proc = (PFN_D3D12_GET_DEBUG_INTERFACE)GetProcAddress(dll_d3d12, "D3D12GetDebugInterface");
+				if (proc)
+				{
+					ID3D12Debug* debug;
+					hr = proc(IID_PPV_ARGS(&debug));
+					if (SUCCEEDED(hr))
+					{
+						debug->EnableDebugLayer();
+						debug->Release();
+						d3d12->debug_layer_enabled = true;
+					}
+				}
+			}
+		}
+
+		hr = CreateDXGIFactory1(IID_PPV_ARGS(&d3d12->factory4));
+		if (!CheckHr_(hr, r))
 			goto lbl_error;
-		
+
 		for (UINT i = 0;; ++i)
 		{
-			IDXGIAdapter1* this_adapter;
-			if (ctx.factory4->EnumAdapters1(i, &this_adapter) == DXGI_ERROR_NOT_FOUND)
+			IDXGIAdapter1* curr_adapter;
+			if (FAILED(d3d12->factory4->EnumAdapters1(i, &curr_adapter)))
 				break;
-			hr = ctx.api.d3d12_create_device(this_adapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), NULL);
+			hr = D3D12CreateDevice(curr_adapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), NULL);
 			if (SUCCEEDED(hr))
 			{
-				ctx.adapter1 = this_adapter;
+				d3d12->adapter1 = curr_adapter;
 				break;
 			}
-			this_adapter->Release();
+			curr_adapter->Release();
 		}
-		if (!ctx.adapter1)
+		if (!d3d12->adapter1)
 			goto lbl_error;
 
-		hr = ctx.api.d3d12_create_device(ctx.adapter1, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&ctx.device));
-		if (FAILED(hr))
+		hr = D3D12CreateDevice(d3d12->adapter1, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d3d12->device));
+		if (!CheckHr_(hr, r))
 			goto lbl_error;
-		hr = ctx.device->QueryInterface(IID_PPV_ARGS(&ctx.device2));
-		if (FAILED(hr))
+		hr = d3d12->device->QueryInterface(IID_PPV_ARGS(&d3d12->device2));
+		if (!CheckHr_(hr, r))
 			goto lbl_error;
 
-		if (ctx.api.debug_layer_enabled)
+		if (d3d12->debug_layer_enabled && IsDebuggerPresent())
 		{
 			ID3D12InfoQueue* queue;
-			hr = ctx.device->QueryInterface(IID_PPV_ARGS(&queue));
+			hr = d3d12->device->QueryInterface(IID_PPV_ARGS(&queue));
 			if (SUCCEEDED(hr))
 			{
-				if (Assert_IsDebuggerPresent_())
-				{
-					queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, true);
-					queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, true);
-					queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, true);
-				}
+				queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, true);
+				queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, true);
+				queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, true);
 				queue->Release();
 			}
 		}
 
-		for (intsize i = 0; i < ArrayLength(desc->swapchains); ++i)
-		{
-			if (!desc->swapchains[i].window)
-				break;
-			HWND hwnd = OS_W32_HwndFromWindow(*desc->swapchains[i].window);
-			R4_Format format = desc->swapchains[i].format;
-			uint32 buffer_count = desc->swapchains[i].buffer_count;
-			R4_Swapchain* out_swapchain = desc->swapchains[i].out_swapchain;
-			R4_Queue* out_queue = desc->swapchains[i].out_graphics_queue;
-
-			D3D12_COMMAND_QUEUE_DESC desc = {
-				.Type = D3D12_COMMAND_LIST_TYPE_DIRECT,
-				.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE,
-			};
-			hr = ctx.device->CreateCommandQueue(&desc, IID_PPV_ARGS(&out_queue->d3d12_queue));
-			if (FAILED(hr))
-				goto lbl_error;
-			out_queue->kind = R4_CommandListKind_Graphics;
-
-			DXGI_SWAP_CHAIN_DESC1 swapchain_desc1 = {
-				.Format = DxgiFormatFromFormat_(format),
-				.SampleDesc = {
-					.Count = 1,
-				},
-				.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
-				.BufferCount = buffer_count,
-				.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
-			};
-			IDXGISwapChain1* swapchain1;
-			hr = ctx.factory4->CreateSwapChainForHwnd(out_queue->d3d12_queue, hwnd, &swapchain_desc1, NULL, NULL, &swapchain1);
-			if (FAILED(hr))
-				goto lbl_error;
-			hr = swapchain1->QueryInterface(IID_PPV_ARGS(&out_swapchain->d3d12_swapchain));
-			if (FAILED(hr))
-			{
-				swapchain1->Release();
-				goto lbl_error;
-			}
-
-			hr = ctx.factory4->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
-			if (FAILED(hr))
-			{
-				ArenaSavepoint scratch = ArenaSave(OS_ScratchArena(NULL, 0));
-				String str = OS_W32_StringFromHr(hr, scratch.arena);
-				OS_LogErr("[WARN] render4: MakeWindowAssociation failed (0x%x): %S\n", hr, str);
-				ArenaRestore(scratch);
-			}
-		}
-
-		for (intsize i = 0; i < ArrayLength(desc->queues); ++i)
-		{
-			if (!desc->queues[i].out_queue)
-				break;
-
-			D3D12_COMMAND_QUEUE_DESC queue_desc = {
-				.Type = D3d12TypeFromCommandListKind_(desc->queues[i].kind),
-				.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE,
-			};
-			hr = ctx.device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&desc->queues[i].out_queue->d3d12_queue));
-			if (FAILED(hr))
-				goto lbl_error;
-		}
-
-		AllocatorError err;
-		R4_Context* result = AllocatorNew<R4_Context>(&allocator, &err);
-		if (!result)
+		D3D12_COMMAND_QUEUE_DESC direct_queue_desc = {
+			.Type = D3D12_COMMAND_LIST_TYPE_DIRECT,
+		};
+		hr = d3d12->device->CreateCommandQueue(&direct_queue_desc, IID_PPV_ARGS(&d3d12->direct_queue));
+		if (!CheckHr_(hr, r))
 			goto lbl_error;
 
-		*result = ctx;
-		return result;
+		HWND hwnd = (HWND)desc->window_handle;
+		DXGI_SWAP_CHAIN_DESC1 swapchain_desc = {
+			.Format = DxgiFormatFromFormat_(desc->backbuffer_format),
+			.SampleDesc = {
+				.Count = 1,
+			},
+			.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
+			.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
+		};
+		hr = d3d12->factory4->CreateSwapChainForHwnd(d3d12->direct_queue, hwnd, &swapchain_desc, NULL, NULL, &d3d12->swapchain1);
+		if (!CheckHr_(hr, r))
+			goto lbl_error;
+		hr = d3d12->swapchain1->QueryInterface(IID_PPV_ARGS(&d3d12->swapchain3));
+		if (!CheckHr_(hr, r))
+			goto lbl_error;
+
+		hr = d3d12->factory4->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
+		if (FAILED(hr))
+			OS_LogErr("WARNING: MakeWindowAssociation failed (0x%x)\n", (uint32)hr);
+
+		*desc->out_graphics_queue = { .d3d12 = { d3d12->direct_queue } };
+		if (desc->out_compute_queue)
+		{
+			D3D12_COMMAND_QUEUE_DESC direct_queue_desc = {
+				.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE,
+			};
+			hr = d3d12->device->CreateCommandQueue(&direct_queue_desc, IID_PPV_ARGS(&d3d12->compute_queue));
+			if (!CheckHr_(hr, r))
+				goto lbl_error;
+			*desc->out_compute_queue = { .d3d12 = { d3d12->compute_queue } };
+		}
+		if (desc->out_copy_queue)
+		{
+			D3D12_COMMAND_QUEUE_DESC direct_queue_desc = {
+				.Type = D3D12_COMMAND_LIST_TYPE_COPY,
+			};
+			hr = d3d12->device->CreateCommandQueue(&direct_queue_desc, IID_PPV_ARGS(&d3d12->copy_queue));
+			if (!CheckHr_(hr, r))
+				goto lbl_error;
+			*desc->out_copy_queue = { .d3d12 = { d3d12->copy_queue } };
+		}
+
+		int32 max_rtvs = desc->max_render_target_views;
+		int32 max_dsvs = desc->max_depth_stencil_views;
+		int32 max_samplers = desc->max_samplers;
+		int32 max_image_views = desc->max_image_views;
+		int32 max_buffer_views = desc->max_buffer_views;
+		if (!max_rtvs)
+			max_rtvs = 1024;
+		if (!max_dsvs)
+			max_dsvs = 1024;
+		if (!max_samplers)
+			max_samplers = 1024;
+		if (!max_image_views)
+			max_image_views = 1<<20;
+		if (!max_buffer_views)
+			max_buffer_views = 1<<20;
+
+		D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc = {
+			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+			.NumDescriptors = (UINT)max_rtvs,
+			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+		};
+		hr = d3d12->device->CreateDescriptorHeap(&rtv_heap_desc, IID_PPV_ARGS(&d3d12->rtv_heap));
+		if (!CheckHr_(hr, r))
+			goto lbl_error;
+
+		D3D12_DESCRIPTOR_HEAP_DESC dsv_heap_desc = {
+			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+			.NumDescriptors = (UINT)max_dsvs,
+			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+		};
+		hr = d3d12->device->CreateDescriptorHeap(&dsv_heap_desc, IID_PPV_ARGS(&d3d12->dsv_heap));
+		if (!CheckHr_(hr, r))
+			goto lbl_error;
+
+		D3D12_DESCRIPTOR_HEAP_DESC sampler_heap_desc = {
+			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+			.NumDescriptors = (UINT)max_samplers,
+			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+		};
+		hr = d3d12->device->CreateDescriptorHeap(&sampler_heap_desc, IID_PPV_ARGS(&d3d12->sampler_heap));
+		if (!CheckHr_(hr, r))
+			goto lbl_error;
+
+		SafeAssert(max_image_views >= 0 && max_buffer_views >= 0);
+		D3D12_DESCRIPTOR_HEAP_DESC cbv_srv_uav_heap_desc = {
+			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+			.NumDescriptors = (UINT)max_image_views + (UINT)max_buffer_views,
+			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+		};
+		hr = d3d12->device->CreateDescriptorHeap(&cbv_srv_uav_heap_desc, IID_PPV_ARGS(&d3d12->cbv_srv_uav_heap));
+		if (!CheckHr_(hr, r))
+			goto lbl_error;
+
+		d3d12->rtv_pool = InitViewPool_(max_rtvs, allocator, &err);
+		if (!CheckAllocatorErr_(err, r))
+			goto lbl_error;
+		d3d12->dsv_pool = InitViewPool_(max_dsvs, allocator, &err);
+		if (!CheckAllocatorErr_(err, r))
+			goto lbl_error;
+		d3d12->sampler_pool = InitViewPool_(max_samplers, allocator, &err);
+		if (!CheckAllocatorErr_(err, r))
+			goto lbl_error;
+		d3d12->cbv_srv_uav_pool = InitViewPool_(max_image_views + max_buffer_views, allocator, &err);
+		if (!CheckAllocatorErr_(err, r))
+			goto lbl_error;
 	}
 
+	return (R4_Context*)d3d12;
+
 lbl_error:
-	String str = StringPrintfLocal(256, "HR: %x", (uint32)hr);
-	OS_MessageBox(Str("Error D3D12"), str);
-	for (intsize i = 0; i < ArrayLength(desc->swapchains); ++i)
-	{
-		if (desc->swapchains[i].out_swapchain && desc->swapchains[i].out_swapchain->d3d12_swapchain)
-			desc->swapchains[i].out_swapchain->d3d12_swapchain->Release();
-		if (desc->swapchains[i].out_graphics_queue && desc->swapchains[i].out_graphics_queue->d3d12_queue)
-			desc->swapchains[i].out_graphics_queue->d3d12_queue->Release();
-	}
-	for (intsize i = 0; i < ArrayLength(desc->queues); ++i)
-	{
-		if (desc->queues[i].out_queue && desc->queues[i].out_queue->d3d12_queue)
-			desc->queues[i].out_queue->d3d12_queue->Release();
-	}
-	if (ctx.factory4)
-		ctx.factory4->Release();
-	if (ctx.adapter1)
-		ctx.adapter1->Release();
-	if (ctx.device)
-		ctx.device->Release();
-	if (ctx.device2)
-		ctx.device->Release();
+	R4_DestroyContext((R4_Context*)d3d12, NULL);
 	return NULL;
 }
 
-API void
-R4_DestroyContext(R4_Context *ctx)
+API R4_ContextInfo
+R4_GetContextInfo(R4_Context* ctx)
 {
 	Trace();
+	return ctx->info;
+}
 
-	if (ctx->factory4)
-		ctx->factory4->Release();
-	if (ctx->adapter1)
-		ctx->adapter1->Release();
+API bool
+R4_IsDeviceLost(R4_Context* ctx, R4_Result* r)
+{
+	Trace();
+	// TODO(ljre)
+	return false;
+}
+
+API void
+R4_DestroyContext(R4_Context* ctx, R4_Result* r)
+{
+	Trace();
+	AllocatorError err;
+
+	FreeViewPool_(&ctx->cbv_srv_uav_pool, ctx->allocator, &err);
+	FreeViewPool_(&ctx->sampler_pool, ctx->allocator, &err);
+	FreeViewPool_(&ctx->dsv_pool, ctx->allocator, &err);
+	FreeViewPool_(&ctx->rtv_pool, ctx->allocator, &err);
+	if (ctx->dsv_heap)
+		ctx->dsv_heap->Release();
+	if (ctx->sampler_heap)
+		ctx->sampler_heap->Release();
+	if (ctx->cbv_srv_uav_heap)
+		ctx->cbv_srv_uav_heap->Release();
+	if (ctx->copy_queue)
+		ctx->copy_queue->Release();
+	if (ctx->compute_queue)
+		ctx->compute_queue->Release();
+	if (ctx->swapchain3)
+		ctx->swapchain3->Release();
+	if (ctx->swapchain1)
+		ctx->swapchain1->Release();
+	if (ctx->direct_queue)
+		ctx->direct_queue->Release();
+	if (ctx->device2)
+		ctx->device2->Release();
 	if (ctx->device)
 		ctx->device->Release();
-	if (ctx->device2)
-		ctx->device->Release();
+	if (ctx->adapter1)
+		ctx->adapter1->Release();
+	if (ctx->factory4)
+		ctx->factory4->Release();
+
+	if (ctx->allocator.proc)
+	{
+		Allocator allocator = ctx->allocator;
+		AllocatorDelete(&allocator, ctx, &err);
+		if (!CheckAllocatorErr_(err, r))
+			return;
+	}
 }
 
-API R4_ContextInfo
-R4_QueryInfo(R4_Context *ctx)
+API void
+R4_PresentAndSync(R4_Context* ctx, R4_Result* r, int32 sync_interval)
 {
 	Trace();
-	R4_ContextInfo info = {
-		.backend_api = StrInit("Direct3D 12"),
-	};
-
-	return info;
+	HRESULT hr = ctx->swapchain3->Present((UINT)sync_interval, 0);
+	CheckHr_(hr, r);
 }
 
-API bool
-R4_DeviceLost(R4_Context* ctx, R4_DeviceLostInfo* out_info)
+API intz
+R4_AcquireNextBackbuffer(R4_Context* ctx, R4_Result* r)
 {
 	Trace();
 	HRESULT hr;
-	R4_DeviceLostInfo info = {};
+	intz backbuffer_index = ctx->swapchain3->GetCurrentBackBufferIndex();
 
-	hr = __atomic_load_n(&ctx->device_lost_reason, __ATOMIC_ACQUIRE);
-	if (hr != 0)
+	ctx->fence_counter += 1;
+	hr = ctx->direct_queue->Signal(ctx->fence, ctx->fence_counter);
+	if (!CheckHr_(hr, r))
+		return 0;
+	if (ctx->fence->GetCompletedValue() < ctx->fence_counter)
 	{
-		info.api_error_code = (uint64)hr;
-		switch (hr)
-		{
-			default: info.reason = Str("unknown error"); break;
-			case DXGI_ERROR_DEVICE_HUNG: info.reason = Str("device hung"); break;
-			case DXGI_ERROR_DEVICE_REMOVED: info.reason = Str("device removed"); break;
-			case DXGI_ERROR_DEVICE_RESET: info.reason = Str("device reset"); break;
-			case DXGI_ERROR_DRIVER_INTERNAL_ERROR: info.reason = Str("driver internal error"); break;
-		}
+		hr = ctx->fence->SetEventOnCompletion(ctx->fence_counter, ctx->fence_event);
+		if (!CheckHr_(hr, r))
+			return 0;
+		if (WaitForSingleObject(ctx->fence_event, INFINITE) != WAIT_OBJECT_0)
+			return 0;
 	}
 
-	if (out_info)
-		*out_info = info;
-	return hr != 0;
+	return backbuffer_index;
 }
 
-API bool
-R4_RecoverDevice(R4_Context* ctx)
+API void
+R4_ExecuteCommandLists(R4_Context* ctx, R4_Result* r, R4_Queue* queue, bool last_submission, intz cmdlist_count, R4_CommandList* const cmdlists[])
 {
 	Trace();
-	Unreachable(); // TODO
+	AllocatorError err;
+
+	Slice<ID3D12CommandList*> lists = AllocatorNewSlice<ID3D12CommandList*>(&ctx->allocator, cmdlist_count, &err);
+	if (!CheckAllocatorErr_(err, r))
+		return;
+	for (intz i = 0; i < lists.count; ++i)
+		lists[i] = cmdlists[i]->d3d12.list;
+	queue->d3d12.queue->ExecuteCommandLists(lists.count, &lists[0]);
+	AllocatorDeleteSlice(&ctx->allocator, lists, &err);
+	if (!CheckAllocatorErr_(err, r))
+		return;
 }
 
 // =============================================================================
 // =============================================================================
-API R4_Fence
-R4_MakeFence(R4_Context *ctx)
-{
-	Trace();
-	HRESULT hr;
-	ID3D12Fence* fence = NULL;
-	HANDLE event = NULL;
-	
-	hr = ctx->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
-	if (!CheckHr_(ctx, hr))
-		return {};
-	event = CreateEventW(NULL, FALSE, FALSE, NULL);
-	if (!event || event == INVALID_HANDLE_VALUE)
-	{
-		fence->Release();
-		return {};
-	}
-
-	return {
-		.d3d12_fence = fence,
-		.d3d12_event = event,
-	};
-}
-
-API R4_CommandAllocator
-R4_MakeCommandAllocator(R4_Context* ctx, R4_Queue* queue)
-{
-	Trace();
-	HRESULT hr;
-	ID3D12CommandAllocator* allocator = NULL;
-	D3D12_COMMAND_LIST_TYPE type = D3d12TypeFromCommandListKind_(queue->kind);
-
-	hr = ctx->device->CreateCommandAllocator(type, IID_PPV_ARGS(&allocator));
-	CheckHr_(ctx, hr);
-
-	return {
-		.d3d12_allocator = allocator,
-	};
-}
-
-API R4_CommandList
-R4_MakeCommandList(R4_Context* ctx, R4_CommandListKind list_kind, R4_CommandAllocator* command_allocator)
-{
-	Trace();
-	HRESULT hr;
-	ID3D12GraphicsCommandList* list = NULL;
-	D3D12_COMMAND_LIST_TYPE type = D3d12TypeFromCommandListKind_(list_kind);
-
-	hr = ctx->device->CreateCommandList(0, type, command_allocator->d3d12_allocator, NULL, IID_PPV_ARGS(&list));
-	if (!CheckHr_(ctx, hr))
-		return {};
-	hr = list->Close();
-	if (!CheckHr_(ctx, hr))
-	{
-		list->Release();
-		return {};
-	}
-
-	return {
-		.d3d12_list = list,
-	};
-}
-
+// Heap management
 API R4_Heap
-R4_MakeHeap(R4_Context* ctx, R4_HeapDesc const* desc)
+R4_MakeHeap(R4_Context* ctx, R4_Result* r, int64 size, R4_HeapType type)
 {
 	Trace();
-	SafeAssert(desc->size >= 0);
+	SafeAssert(size >= 0);
 	HRESULT hr;
+
 	ID3D12Heap* heap = NULL;
 	D3D12_HEAP_DESC heap_desc = {
-		.SizeInBytes = AlignUp((UINT64)desc->size, 64U<<10),
+		.SizeInBytes = AlignUp((UINT64)size, (64U<<10) - 1),
 		.Properties = {
 			.Type =
-				(desc->kind == R4_HeapKind_Default)  ? D3D12_HEAP_TYPE_DEFAULT  :
-				(desc->kind == R4_HeapKind_Upload)   ? D3D12_HEAP_TYPE_UPLOAD   :
-				(desc->kind == R4_HeapKind_Readback) ? D3D12_HEAP_TYPE_READBACK :
+				(type == R4_HeapType_Default)  ? D3D12_HEAP_TYPE_DEFAULT  :
+				(type == R4_HeapType_Upload)   ? D3D12_HEAP_TYPE_UPLOAD   :
+				(type == R4_HeapType_Readback) ? D3D12_HEAP_TYPE_READBACK :
 				(D3D12_HEAP_TYPE)0,
 		},
 		.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
 	};
 	hr = ctx->device->CreateHeap(&heap_desc, IID_PPV_ARGS(&heap));
-	if (!CheckHr_(ctx, hr))
+	if (!CheckHr_(hr, r))
 		return {};
-	return {
-		.d3d12_heap = heap,
-	};
-}
-
-API R4_DescriptorHeap
-R4_MakeDescriptorHeap(R4_Context* ctx, R4_DescriptorHeapDesc const* desc)
-{
-	Trace();
-	HRESULT hr;
-	ID3D12DescriptorHeap* heap = NULL;
-	D3D12_DESCRIPTOR_HEAP_FLAGS flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-	if (desc->flags & R4_DescriptorHeapFlag_ShaderVisible)
-		flags |= D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-	D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {
-		.Type =
-			(desc->type == R4_DescriptorHeapType_Rtv) ? D3D12_DESCRIPTOR_HEAP_TYPE_RTV :
-			(desc->type == R4_DescriptorHeapType_Dsv) ? D3D12_DESCRIPTOR_HEAP_TYPE_DSV :
-			(desc->type == R4_DescriptorHeapType_CbvSrvUav) ? D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV :
-			(desc->type == R4_DescriptorHeapType_Sampler) ? D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER :
-			(D3D12_DESCRIPTOR_HEAP_TYPE)0,
-		.Flags = flags,
-		.NodeMask = 1,
-	};
-	hr = ctx->device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap));
-	if (!CheckHr_(ctx, hr))
-		return {};
-	return {
-		.d3d12_heap = heap,
-	};
-}
-
-API R4_Image
-R4_MakePlacedImage(R4_Context* ctx, R4_PlacedImageDesc const* desc)
-{
-	Trace();
-	SafeAssert(desc->heap_offset >= 0);
-	HRESULT hr;
-	ID3D12Resource* resource = NULL;
-	D3D12_RESOURCE_DESC resource_desc = D3d12ResourceDescFromImageDesc_(&desc->image_desc);
-	D3D12_CLEAR_VALUE clear_value = {
-		.Format = DxgiFormatFromFormat_(desc->optimized_clear_value.format),
-		.Color = {
-			desc->optimized_clear_value.color[0],
-			desc->optimized_clear_value.color[1],
-			desc->optimized_clear_value.color[2],
-			desc->optimized_clear_value.color[3],
-		},
-	};
-	if (clear_value.Format && IsDepthStencilFormat_(clear_value.Format))
-	{
-		clear_value.DepthStencil = {
-			.Depth = desc->optimized_clear_value.depth,
-			.Stencil = desc->optimized_clear_value.stencil,
-		};
-	}
-	hr = ctx->device->CreatePlacedResource(
-		desc->heap->d3d12_heap,
-		(UINT64)desc->heap_offset,
-		&resource_desc,
-		D3d12StatesFromResourceStates_(desc->initial_state),
-		clear_value.Format ? &clear_value : NULL,
-		IID_PPV_ARGS(&resource));
-	if (!CheckHr_(ctx, hr))
-		return {};
-	return {
-		.d3d12_resource = resource,
-	};
-}
-
-API R4_Buffer
-R4_MakePlacedBuffer(R4_Context* ctx, R4_PlacedBufferDesc const* desc)
-{
-	Trace();
-	SafeAssert(desc->heap_offset >= 0);
-	HRESULT hr;
-	ID3D12Resource* resource = NULL;
-	D3D12_RESOURCE_DESC resource_desc = D3d12ResourceDescFromBufferDesc_(&desc->buffer_desc);
-	hr = ctx->device->CreatePlacedResource(
-		desc->heap->d3d12_heap,
-		(UINT64)desc->heap_offset,
-		&resource_desc,
-		D3d12StatesFromResourceStates_(desc->initial_state),
-		NULL,
-		IID_PPV_ARGS(&resource));
-	if (!CheckHr_(ctx, hr))
-		return {};
-	return {
-		.d3d12_resource = resource,
-	};
-}
-
-API R4_RootSignature
-R4_MakeRootSignature(R4_Context* ctx, R4_RootSignatureDesc const* desc)
-{
-	Trace();
-	HRESULT hr;
-	ID3D12RootSignature* rootsig = NULL;
-	ID3D10Blob* rootsig_blob = NULL;
-	
-	D3D12_ROOT_PARAMETER root_params[ArrayLength(desc->params)] = {};
-	intsize root_params_count = 0;
-	for (intsize i = 0; i < ArrayLength(desc->params); ++i)
-	{
-		R4_RootParameter const* param = &desc->params[i];
-		if (!param->type)
-			break;
-		D3D12_SHADER_VISIBILITY visibility = D3d12VisibilityFromVisibility_(param->visibility);
-		switch (param->type)
-		{
-			case R4_RootParameterType_Constants:
-			{
-				root_params[root_params_count++] = {
-					.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
-					.Constants = {
-						.ShaderRegister = param->constants.offset,
-						.RegisterSpace = 0,
-						.Num32BitValues= param->constants.count,
-					},
-					.ShaderVisibility = visibility,
-				};
-			} break;
-		}
-	}
-
-	D3D12_ROOT_SIGNATURE_DESC rootsig_desc = {
-		.NumParameters = (UINT32)root_params_count,
-		.pParameters = root_params,
-		.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
-	};
-	hr = ctx->api.d3d12_serialize_root_signature(&rootsig_desc, D3D_ROOT_SIGNATURE_VERSION_1_0, &rootsig_blob, NULL);
-	if (!CheckHr_(ctx, hr))
-		return {};
-	
-	hr = ctx->device->CreateRootSignature(0, rootsig_blob->GetBufferPointer(), rootsig_blob->GetBufferSize(), IID_PPV_ARGS(&rootsig));
-	rootsig_blob->Release();
-	if (!CheckHr_(ctx, hr))
-		return {};
-
-	return {
-		.d3d12_rootsig = rootsig,
-	};
-}
-
-API R4_Pipeline
-R4_MakeGraphicsPipeline(R4_Context* ctx, R4_GraphicsPipelineDesc const* desc)
-{
-	Trace();
-	HRESULT hr;
-	ID3D12PipelineState* pipeline = NULL;
-
-	D3D12_INPUT_ELEMENT_DESC input_layout[ArrayLength(desc->input_layout)] = {};
-	UINT input_layout_size = 0;
-	for (intsize i = 0; i < ArrayLength(desc->input_layout); ++i)
-	{
-		R4_GraphicsPipelineInputLayout const* layout = &desc->input_layout[i];
-		if (!layout->format)
-			break;
-		SafeAssert((UINT)layout->input_slot <= INT32_MAX);
-		SafeAssert((UINT)layout->byte_offset <= INT32_MAX);
-		SafeAssert((UINT)layout->instance_step_rate <= INT32_MAX);
-		input_layout[i] = {
-			.SemanticName = "VINPUT",
-			.SemanticIndex = input_layout_size,
-			.Format = DxgiFormatFromFormat_(layout->format),
-			.InputSlot = (UINT)layout->input_slot,
-			.AlignedByteOffset = (UINT)layout->byte_offset,
-			.InputSlotClass = (layout->instance_step_rate != 0) ? D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA : D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-			.InstanceDataStepRate = (UINT)layout->instance_step_rate,
-		};
-		++input_layout_size;
-	}
-
-	D3D12_BLEND_DESC blend_desc = {
-		.AlphaToCoverageEnable = desc->blend_enable_alpha_to_coverage,
-		.IndependentBlendEnable = desc->blend_enable_independent_blend,
-	};
-	intsize rtcount = Min(ArrayLength(blend_desc.RenderTarget), ArrayLength(desc->blend_rendertargets));
-	for (intsize i = 0; i < rtcount; ++i)
-	{
-		R4_GraphicsPipelineRenderTargetBlendDesc const* rt = &desc->blend_rendertargets[i];
-
-		blend_desc.RenderTarget[i] = {
-			.BlendEnable = rt->enable_blend,
-			.LogicOpEnable = rt->enable_logic_op,
-			.SrcBlend = D3d12BlendFromBlendFunc_(rt->src),
-			.DestBlend = D3d12BlendFromBlendFunc_(rt->dst),
-			.BlendOp = D3d12BlendOpFromBlendOp_(rt->op),
-			.SrcBlendAlpha = D3d12BlendFromBlendFunc_(rt->src_alpha),
-			.DestBlendAlpha = D3d12BlendFromBlendFunc_(rt->dst_alpha),
-			.BlendOpAlpha = D3d12BlendOpFromBlendOp_(rt->op_alpha),
-			.LogicOp = D3d12LogicOpFromLogicOp_(rt->logic_op),
-			.RenderTargetWriteMask = rt->rendertarget_write_mask,
-		};
-	}
-
-	SafeAssert((UINT)desc->rendertarget_count <= INT32_MAX);
-	SafeAssert((UINT)desc->sample_count <= INT32_MAX);
-	SafeAssert((UINT)desc->sample_quality <= INT32_MAX);
-	SafeAssert(desc->vs_dxil.size >= 0);
-	SafeAssert(desc->ps_dxil.size >= 0);
-
-	D3D12_GRAPHICS_PIPELINE_STATE_DESC pipeline_desc = {
-		.pRootSignature = desc->rootsig->d3d12_rootsig,
-		.VS = { desc->vs_dxil.data, (uintz)desc->vs_dxil.size },
-		.PS = { desc->ps_dxil.data, (uintz)desc->ps_dxil.size },
-		.BlendState = blend_desc,
-		.SampleMask = desc->sample_mask,
-		.RasterizerState = {
-			.FillMode = D3d12FillModeFromFillMode_(desc->rast_fill_mode),
-			.CullMode = D3d12CullModeFromCullMode_(desc->rast_cull_mode),
-			.FrontCounterClockwise = !desc->rast_cw_frontface,
-			.DepthBias = desc->rast_depth_bias,
-			.DepthBiasClamp = desc->rast_depth_bias_clamp,
-			.SlopeScaledDepthBias = desc->rast_slope_scaled_depth_bias,
-			.DepthClipEnable = desc->rast_enable_depth_clip,
-			.MultisampleEnable = desc->rast_enable_multisample,
-			.AntialiasedLineEnable = desc->rast_enable_antialiased_line,
-			.ForcedSampleCount = desc->rast_forced_sample_count,
-			.ConservativeRaster = desc->rast_enable_conservative_mode ? D3D12_CONSERVATIVE_RASTERIZATION_MODE_ON : D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
-		},
-		.DepthStencilState = {
-			.DepthEnable = desc->depth_enable,
-			.DepthWriteMask = desc->depth_disable_writes ? D3D12_DEPTH_WRITE_MASK_ZERO : D3D12_DEPTH_WRITE_MASK_ALL,
-			.DepthFunc = D3d12CompFuncFromCompFunc_(desc->depth_comparison_func),
-			.StencilEnable = desc->stencil_enable,
-			.StencilReadMask = desc->stencil_read_mask,
-			.StencilWriteMask = desc->stencil_write_mask,
-			.FrontFace = {}, // TODO(ljre)
-			.BackFace = {}, // TODO(ljre)
-		},
-		.InputLayout = {
-			.pInputElementDescs = input_layout,
-			.NumElements = input_layout_size,
-		},
-		.PrimitiveTopologyType = D3d12TopologyTypeFromTopologyType_(desc->primitive_topology),
-		.NumRenderTargets = (UINT)desc->rendertarget_count,
-		.RTVFormats = {
-			DxgiFormatFromFormat_(desc->rendertarget_formats[0]),
-			DxgiFormatFromFormat_(desc->rendertarget_formats[1]),
-			DxgiFormatFromFormat_(desc->rendertarget_formats[2]),
-			DxgiFormatFromFormat_(desc->rendertarget_formats[3]),
-			DxgiFormatFromFormat_(desc->rendertarget_formats[4]),
-			DxgiFormatFromFormat_(desc->rendertarget_formats[5]),
-			DxgiFormatFromFormat_(desc->rendertarget_formats[6]),
-			DxgiFormatFromFormat_(desc->rendertarget_formats[7]),
-		},
-		.DSVFormat = DxgiFormatFromFormat_(desc->depthstencil_format),
-		.SampleDesc = {
-			.Count = (UINT)desc->sample_count,
-			.Quality = (UINT)desc->sample_quality,
-		},
-		.NodeMask = desc->node_mask,
-		.CachedPSO = {},
-		.Flags = D3D12_PIPELINE_STATE_FLAG_NONE,
-	};
-
-	hr = ctx->device->CreateGraphicsPipelineState(&pipeline_desc, IID_PPV_ARGS(&pipeline));
-	CheckHr_(ctx, hr);
-
-	return {
-		.d3d12_pso = pipeline,
-	};
-}
-
-API R4_ViewHeap
-R4_MakeViewHeap(R4_Context* ctx, R4_ViewHeapDesc const* desc)
-{
-	Trace();
-	SafeAssert(desc->rtv_count >= 0 && desc->rtv_count <= UINT32_MAX);
-	SafeAssert(desc->dsv_count >= 0 && desc->dsv_count <= UINT32_MAX);
-	SafeAssert(desc->cbv_srv_uav_count >= 0 && desc->cbv_srv_uav_count <= UINT32_MAX);
-	SafeAssert(desc->sampler_count >= 0 && desc->sampler_count <= UINT32_MAX);
-	HRESULT hr;
-	ID3D12DescriptorHeap* heap_rtv = NULL;
-	ID3D12DescriptorHeap* heap_dsv = NULL;
-	ID3D12DescriptorHeap* heap_cbv_srv_uav = NULL;
-	ID3D12DescriptorHeap* heap_sampler = NULL;
-	
-	if (desc->rtv_count)
-	{
-		D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {
-			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-			.NumDescriptors = (UINT)desc->rtv_count,
-			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-		};
-		hr = ctx->device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap_rtv));
-		if (!CheckHr_(ctx, hr))
-			return {};
-	}
-	if (desc->dsv_count)
-	{
-		D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {
-			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
-			.NumDescriptors = (UINT)desc->dsv_count,
-			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-		};
-		hr = ctx->device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap_dsv));
-		if (!CheckHr_(ctx, hr))
-		{
-			if (heap_rtv)
-				heap_rtv->Release();
-			return {};
-		}
-	}
-	if (desc->cbv_srv_uav_count)
-	{
-		D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {
-			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-			.NumDescriptors = (UINT)desc->cbv_srv_uav_count,
-			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-		};
-		hr = ctx->device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap_cbv_srv_uav));
-		if (!CheckHr_(ctx, hr))
-		{
-			if (heap_rtv)
-				heap_rtv->Release();
-			if (heap_dsv)
-				heap_dsv->Release();
-			return {};
-		}
-	}
-	if (desc->sampler_count)
-	{
-		D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {
-			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-			.NumDescriptors = (UINT)desc->sampler_count,
-			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-		};
-		hr = ctx->device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap_sampler));
-		if (!CheckHr_(ctx, hr))
-		{
-			if (heap_rtv)
-				heap_rtv->Release();
-			if (heap_dsv)
-				heap_dsv->Release();
-			if (heap_cbv_srv_uav)
-				heap_cbv_srv_uav->Release();
-			return {};
-		}
-	}
-
-	return {
-		.d3d12_heap_rtv = heap_rtv,
-		.d3d12_heap_dsv = heap_dsv,
-		.d3d12_heap_cbv_srv_uav = heap_cbv_srv_uav,
-		.d3d12_heap_sampler = heap_sampler,
-	};
-}
-
-API R4_ImageView
-R4_MakeImageViewAt(R4_Context* ctx, R4_ViewHeap* view_heap, int64 index, R4_ImageViewDesc const* desc)
-{
-	Trace();
-	SafeAssert(index >= 0);
-	uint64 increment = ctx->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-	uint64 heap_start = view_heap->d3d12_heap_rtv->GetCPUDescriptorHandleForHeapStart().ptr;
-	uint64 ptr = heap_start + (uint64)index * increment;
-	// TODO(ljre): respect desc if format is different than the resource's internal format
-	ctx->device->CreateRenderTargetView(desc->image->d3d12_resource, NULL, {ptr});
-	return {
-		.d3d12_rtv_ptr = ptr,
-	};
-}
-
-API void
-R4_FreeFence(R4_Context* ctx, R4_Fence* fence)
-{
-	Trace();
-	if (fence->d3d12_fence)
-		fence->d3d12_fence->Release();
-	if (fence->d3d12_event)
-		CloseHandle(fence->d3d12_event);
-	*fence = {};
-}
-
-API void
-R4_FreeCommandAllocator(R4_Context* ctx, R4_CommandAllocator* allocator)
-{
-	Trace();
-	if (allocator->d3d12_allocator)
-		allocator->d3d12_allocator->Release();
-	*allocator = {};
-}
-
-API void
-R4_FreeCommandList(R4_Context* ctx, R4_CommandAllocator* allocator, R4_CommandList* cmdlist)
-{
-	Trace();
-	if (cmdlist->d3d12_list)
-		cmdlist->d3d12_list->Release();
-	*cmdlist = {};
-}
-
-API void
-R4_FreePipeline(R4_Context* ctx, R4_Pipeline* pipeline)
-{
-	Trace();
-	if (pipeline->d3d12_pso)
-		pipeline->d3d12_pso->Release();
-	*pipeline = {};
-}
-
-API void
-R4_FreeRootSignature(R4_Context* ctx, R4_RootSignature* rootsig)
-{
-	Trace();
-	if (rootsig->d3d12_rootsig)
-		rootsig->d3d12_rootsig->Release();
-	*rootsig = {};
-}
-
-API void
-R4_FreeDescriptorHeap(R4_Context* ctx, R4_DescriptorHeap* heap)
-{
-	Trace();
-	if (heap->d3d12_heap)
-		heap->d3d12_heap->Release();
-	*heap = {};
+	return { .d3d12 = { heap } };
 }
 
 API void
 R4_FreeHeap(R4_Context* ctx, R4_Heap* heap)
 {
 	Trace();
-	if (heap->d3d12_heap)
-		heap->d3d12_heap->Release();
-	*heap = {};
-}
-
-API void
-R4_FreeBuffer(R4_Context* ctx, R4_Buffer* buffer)
-{
-	Trace();
-	if (buffer->d3d12_resource)
-		buffer->d3d12_resource->Release();
-	*buffer = {};
-}
-
-API void
-R4_FreeImage(R4_Context* ctx, R4_Image* image)
-{
-	Trace();
-	if (image->d3d12_resource)
-		image->d3d12_resource->Release();
-	*image = {};
-}
-
-API void
-R4_FreeViewHeap(R4_Context* ctx, R4_ViewHeap* view_heap)
-{
-	Trace();
-	if (view_heap->d3d12_heap_rtv)
-		view_heap->d3d12_heap_rtv->Release();
-	if (view_heap->d3d12_heap_dsv)
-		view_heap->d3d12_heap_dsv->Release();
-	if (view_heap->d3d12_heap_cbv_srv_uav)
-		view_heap->d3d12_heap_cbv_srv_uav->Release();
-	if (view_heap->d3d12_heap_sampler)
-		view_heap->d3d12_heap_sampler->Release();
-	*view_heap = {};
-}
-
-API void
-R4_FreeImageView(R4_Context* ctx, R4_ImageView* image_view)
-{
-	Trace();
-	// NOTE(ljre): views are owned by their respective ID3D12DescriptorHeap and don't need to be destructed.
-	*image_view = {};
+	auto* d3d12_heap = (R4_D3D12_Heap*)heap;
+	d3d12_heap->heap->Release();
 }
 
 // =============================================================================
 // =============================================================================
-API intz
-R4_GetDescriptorSize(R4_Context* ctx, R4_DescriptorHeapType type)
-{
-	Trace();
-	D3D12_DESCRIPTOR_HEAP_TYPE heap_type = (D3D12_DESCRIPTOR_HEAP_TYPE)type;
-	return ctx->device->GetDescriptorHandleIncrementSize(heap_type);
-}
+// Buffers & Images
 
-API intz
-R4_GetSwapchainBuffers(R4_Context* ctx, R4_Swapchain* swapchain, intsize image_count, R4_Image* out_images)
-{
-	Trace();
-	HRESULT hr;
-	intz count = 0;
-	for (intsize i = 0; i < image_count; ++i)
-	{
-		ID3D12Resource* resource = NULL;
-		hr = swapchain->d3d12_swapchain->GetBuffer(i, IID_PPV_ARGS(&resource));
-		if (!CheckHr_(ctx, hr))
-			return 0;
-		out_images[i] = {
-			.d3d12_resource = resource,
-		};
-		count = i+1;
-	}
-	
-	return count;
-}
+// =============================================================================
+// =============================================================================
+// Buffer views & Image views
 
-API R4_MemoryRequirements
-R4_GetBufferMemoryRequirements(R4_Context* ctx, R4_BufferDesc const* desc)
+// =============================================================================
+// =============================================================================
+// Render target views & depth stencil views
+API R4_RenderTargetView
+R4_MakeRenderTargetView(R4_Context* ctx, R4_Result* r, R4_RenderTargetViewDesc const* desc)
 {
 	Trace();
-	D3D12_RESOURCE_DESC resource_desc = D3d12ResourceDescFromBufferDesc_(desc);
-	D3D12_RESOURCE_ALLOCATION_INFO allocation_info = ctx->device->GetResourceAllocationInfo(1, 1, &resource_desc);
-	return {
-		.size = (int64)allocation_info.SizeInBytes,
-		.alignment = (int64)allocation_info.Alignment,
-	};
-}
-
-API R4_MemoryRequirements
-R4_GetImageMemoryRequirements(R4_Context* ctx, R4_ImageDesc const* desc)
-{
-	Trace();
-	D3D12_RESOURCE_DESC resource_desc = D3d12ResourceDescFromImageDesc_(desc);
-	D3D12_RESOURCE_ALLOCATION_INFO allocation_info = ctx->device->GetResourceAllocationInfo(1, 1, &resource_desc);
-	return {
-		.size = (int64)allocation_info.SizeInBytes,
-		.alignment = (int64)allocation_info.Alignment,
-	};
+	int32 index = AllocateFromViewPool_(&ctx->rtv_pool);
+	SafeAssert(index >= 0);
+	uint64 increment = ctx->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+	uint64 heap_start = ctx->rtv_heap->GetCPUDescriptorHandleForHeapStart().ptr;
+	uint64 ptr = heap_start + (uint64)index * increment;
+	ctx->device->CreateRenderTargetView(desc->image->d3d12.resource, NULL, {ptr});
+	return { .d3d12 = { ptr } };
 }
 
 API void
-R4_MapResource(R4_Context* ctx, R4_Resource resource, uint32 subresource, uint64 size, void** out_memory)
+R4_FreeRenderTargetView(R4_Context* ctx, R4_RenderTargetView* render_target_view)
 {
 	Trace();
-	HRESULT hr;
-	ID3D12Resource* d3d12_resource = D3d12ResourceFromResource_(resource);
-	hr = d3d12_resource->Map(subresource, {}, out_memory);
-	CheckHr_(ctx, hr);
-}
+	uint64 increment = ctx->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+	uint64 heap_start = ctx->rtv_heap->GetCPUDescriptorHandleForHeapStart().ptr;
+	uint64 ptr = render_target_view->d3d12.rtv_ptr;
+	SafeAssert(ptr >= heap_start);
+	ptr -= heap_start;
+	ptr /= increment;
+	SafeAssert(ptr >= 0 && ptr <= INT32_MAX);
+	FreeFromViewPool_(&ctx->rtv_pool, (int32)ptr);
 
-API void
-R4_UnmapResource(R4_Context* ctx, R4_Resource resource, uint32 subresource)
-{
-	Trace();
-	ID3D12Resource* d3d12_resource = D3d12ResourceFromResource_(resource);
-	d3d12_resource->Unmap(subresource, NULL);
+	*render_target_view = {};
 }
 
 // =============================================================================
 // =============================================================================
-API bool
-R4_WaitFence(R4_Context* ctx, R4_Fence* fence, uint32 timeout_ms)
+// Samplers
+
+// =============================================================================
+// =============================================================================
+// Pipeline Layout
+API R4_PipelineLayout
+R4_MakePipelineLayout(R4_Context* ctx, R4_Result* r, R4_PipelineLayoutDesc const* desc)
 {
 	Trace();
+	SafeAssert(desc->table_count >= 0 && desc->table_count <= 64);
 	HRESULT hr;
-	if (timeout_ms == UINT32_MAX)
-		timeout_ms = INFINITE;
-	if (fence->d3d12_fence->GetCompletedValue() < fence->counter)
+	ID3D12RootSignature* rootsig = NULL;
+	ID3D10Blob* rootsig_blob = NULL;
+
+	D3D12_ROOT_PARAMETER root_params[ArrayLength(desc->push_constants) + 64] = {};
+	intz root_params_count = 0;
+	intz rest_table_count = 0;
+	intz sampler_table_count = 0;
+	intz const_count = 0;
+
+	for (intz i = 0; i < desc->table_count; ++i)
 	{
-		hr = fence->d3d12_fence->SetEventOnCompletion(fence->counter, fence->d3d12_event);
-		if (!CheckHr_(ctx, hr))
-			return false;
-		DWORD r = WaitForSingleObject(fence->d3d12_event, timeout_ms);
-		return r == WAIT_OBJECT_0;
-	}
-	return true;
-}
-
-API uint32
-R4_GetCurrentBackBufferIndex(R4_Context* ctx, R4_Swapchain* swapchain)
-{
-	Trace();
-	return swapchain->d3d12_swapchain->GetCurrentBackBufferIndex();
-}
-
-API void
-R4_ResetCommandAllocator(R4_Context* ctx, R4_CommandAllocator* allocator)
-{
-	Trace();
-	HRESULT hr;
-	hr = allocator->d3d12_allocator->Reset();
-	CheckHr_(ctx, hr);
-}
-
-API void
-R4_BeginCommandList(R4_Context* ctx, R4_CommandList* cmdlist, R4_CommandAllocator* allocator)
-{
-	Trace();
-	HRESULT hr;
-	ID3D12PipelineState* pipeline = NULL;
-	hr = cmdlist->d3d12_list->Reset(allocator->d3d12_allocator, pipeline);
-	CheckHr_(ctx, hr);
-}
-
-API void
-R4_EndCommandList(R4_Context* ctx, R4_CommandList* cmdlist)
-{
-	Trace();
-	HRESULT hr;
-	hr = cmdlist->d3d12_list->Close();
-	CheckHr_(ctx, hr);
-}
-
-API void
-R4_ExecuteCommandLists(R4_Context* ctx, R4_Queue* queue, R4_Fence* completion_fence, R4_Swapchain* swapchain_to_signal, intsize cmdlist_count, R4_CommandList* cmdlists[])
-{
-	Trace();
-	SafeAssert(cmdlist_count <= UINT32_MAX);
-	HRESULT hr;
-	// NOTE(ljre): unused since the ID3D12CommandQueue is already 'attached' to the swapchain
-	(void)swapchain_to_signal;
-
-	ArenaSavepoint scratch = ArenaSave(OS_ScratchArena(NULL, 0));
-	ID3D12CommandList** lists = ArenaPushArray(scratch.arena, ID3D12CommandList*, cmdlist_count);
-	SafeAssert(lists);
-	for (intsize i = 0; i < cmdlist_count; ++i)
-		lists[i] = cmdlists[i]->d3d12_list;
-	queue->d3d12_queue->ExecuteCommandLists(cmdlist_count, lists);
-	ArenaRestore(scratch);
-
-	++completion_fence->counter;
-	hr = queue->d3d12_queue->Signal(completion_fence->d3d12_fence, completion_fence->counter);
-	if (!CheckHr_(ctx, hr))
-		return;
-}
-
-API void
-R4_Present(R4_Context *ctx, R4_Queue* queue, R4_Swapchain* swapchain, uint32 sync_interval)
-{
-	Trace();
-	HRESULT hr;
-	hr = swapchain->d3d12_swapchain->Present(sync_interval, 0);
-	CheckHr_(ctx, hr);
-}
-
-API void
-R4_CmdSetPrimitiveTopology(R4_Context* ctx, R4_CommandList* cmdlist, R4_PrimitiveTopology topology)
-{
-	Trace();
-	cmdlist->d3d12_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-}
-
-API void
-R4_CmdBeginRenderpass(R4_Context* ctx, R4_CommandList* cmdlist, R4_BeginRenderpassDesc const* desc)
-{
-	Trace();
-	D3D12_CPU_DESCRIPTOR_HANDLE rtvs_to_bind[8] = {};
-	intsize rtvs_to_bind_count = 0;
-	for (intsize i = 0; i < ArrayLength(desc->color_attachments); ++i)
-	{
-		R4_RenderpassAttachment const* attachment = &desc->color_attachments[i];
-		if (!attachment->image_view)
-			break;
-		rtvs_to_bind[rtvs_to_bind_count++] = { attachment->image_view->d3d12_rtv_ptr };
-	}
-	cmdlist->d3d12_list->OMSetRenderTargets(rtvs_to_bind_count, rtvs_to_bind, FALSE, NULL);
-
-	for (intsize i = 0; i < ArrayLength(desc->color_attachments); ++i)
-	{
-		R4_RenderpassAttachment const* attachment = &desc->color_attachments[i];
-		if (!attachment->image_view)
-			break;
-		if (attachment->load == R4_AttachmentLoadOp_Clear)
-			cmdlist->d3d12_list->ClearRenderTargetView({attachment->image_view->d3d12_rtv_ptr}, attachment->clear_color, 0, NULL);
-	}
-}
-
-API void
-R4_CmdEndRenderpass(R4_Context* ctx, R4_CommandList* cmdlist)
-{
-	Trace();
-	// NOTE(ljre): Nothing to do.
-}
-
-API void
-R4_CmdSetViewports(R4_Context* ctx, R4_CommandList* cmdlist, intsize viewport_count, R4_Viewport const* viewports)
-{
-	Trace();
-	D3D12_VIEWPORT vports[8] = {};
-	if (viewport_count > ArrayLength(vports))
-		viewport_count = ArrayLength(vports);
-	for (intsize i = 0; i < viewport_count; ++i)
-	{
-		vports[i] = {
-			.TopLeftX = viewports[i].x,
-			.TopLeftY = viewports[i].y,
-			.Width = viewports[i].width,
-			.Height = viewports[i].height,
-			.MinDepth = viewports[i].min_depth,
-			.MaxDepth = viewports[i].max_depth,
-		};
-	}
-	cmdlist->d3d12_list->RSSetViewports(viewport_count, vports);
-}
-
-API void
-R4_CmdSetScissors(R4_Context* ctx, R4_CommandList* cmdlist, intsize scissor_count, const R4_Rect* scissors)
-{
-	Trace();
-	D3D12_RECT rects[8] = {};
-	if (scissor_count > ArrayLength(rects))
-		scissor_count = ArrayLength(rects);
-	for (intsize i = 0; i < scissor_count; ++i)
-	{
-		rects[i] = {
-			.left = scissors[i].x,
-			.top = scissors[i].y,
-			.right = scissors[i].x + scissors[i].width,
-			.bottom = scissors[i].y + scissors[i].height,
-		};
-	}
-	cmdlist->d3d12_list->RSSetScissorRects(scissor_count, rects);
-}
-
-API void
-R4_CmdSetPipeline(R4_Context* ctx, R4_CommandList* cmdlist, R4_Pipeline* pipeline)
-{
-	Trace();
-	cmdlist->d3d12_list->SetPipelineState(pipeline->d3d12_pso);
-}
-
-API void
-R4_CmdSetRootSignature(R4_Context* ctx, R4_CommandList* cmdlist, R4_RootSignature* rootsig)
-{
-	Trace();
-	cmdlist->d3d12_list->SetGraphicsRootSignature(rootsig->d3d12_rootsig);
-}
-
-API void
-R4_CmdSetIndexBuffer(R4_Context* ctx, R4_CommandList* cmdlist, R4_Buffer* buffer, uint64 offset, uint32 size, R4_Format format)
-{
-	Trace();
-	D3D12_INDEX_BUFFER_VIEW view = {
-		.BufferLocation = buffer->d3d12_resource->GetGPUVirtualAddress() + offset,
-		.SizeInBytes = size,
-		.Format = (format == R4_Format_R32_UInt) ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT,
-	};
-	cmdlist->d3d12_list->IASetIndexBuffer(&view);
-}
-
-API void
-R4_CmdSetVertexBuffers(R4_Context* ctx, R4_CommandList* cmdlist, intz first_slot, intz slot_count, R4_VertexBuffer const* buffers)
-{
-	Trace();
-	ArenaSavepoint scratch = ArenaSave(OS_ScratchArena(NULL, 0));
-	D3D12_VERTEX_BUFFER_VIEW* views = ArenaPushArray(scratch.arena, D3D12_VERTEX_BUFFER_VIEW, slot_count);
-	for (intsize i = 0; i < slot_count; ++i)
-	{
-		views[i] = {
-			.BufferLocation = buffers[i].buffer->d3d12_resource->GetGPUVirtualAddress() + buffers[i].offset,
-			.SizeInBytes = buffers[i].size,
-			.StrideInBytes = buffers[i].stride,
-		};
-	}
-	cmdlist->d3d12_list->IASetVertexBuffers(first_slot, slot_count, views);
-	ArenaRestore(scratch);
-}
-
-API void
-R4_CmdDraw(R4_Context* ctx, R4_CommandList* cmdlist, uint32 start_vertex, uint32 vertex_count, uint32 start_instance, uint32 instance_count)
-{
-	Trace();
-	cmdlist->d3d12_list->DrawInstanced(vertex_count, instance_count, start_vertex, start_instance);
-}
-
-API void
-R4_CmdDrawIndexed(R4_Context* ctx, R4_CommandList* cmdlist, uint32 start_index, uint32 index_count, uint32 start_instance, uint32 instance_count, int32 base_vertex)
-{
-	cmdlist->d3d12_list->DrawIndexedInstanced(index_count, instance_count, start_index, base_vertex, start_instance);
-}
-
-API void
-R4_CmdDispatch(R4_Context* ctx, R4_CommandList* cmdlist, uint32 x, uint32 y, uint32 z)
-{
-	Trace();
-	cmdlist->d3d12_list->Dispatch(x, y, z);
-}
-
-API void
-R4_CmdSetGraphicsRootConstantU32(R4_Context* ctx, R4_CommandList* cmdlist, uint32 slot, uint32 dest_offset, uint32 value)
-{
-	Trace();
-	cmdlist->d3d12_list->SetGraphicsRoot32BitConstant(slot, value, dest_offset);
-}
-
-API void
-R4_CmdSetGraphicsRootConstantsU32(R4_Context* ctx, R4_CommandList* cmdlist, R4_RootArgument const* arg)
-{
-	Trace();
-	cmdlist->d3d12_list->SetGraphicsRoot32BitConstants(arg->param_index, arg->count, arg->u32_args, arg->dest_offset);
-}
-
-API void
-R4_CmdCopyBuffer(R4_Context* ctx, R4_CommandList* cmdlist, R4_Buffer* dest, uint64 dest_offset, R4_Buffer* source, uint64 source_offset, uint64 size)
-{
-	Trace();
-	cmdlist->d3d12_list->CopyBufferRegion(dest->d3d12_resource, dest_offset, source->d3d12_resource, source_offset, size);
-}
-
-API void
-R4_CmdBarrier(R4_Context* ctx, R4_CommandList *cmdlist, intsize barrier_count, const R4_ResourceBarrier *barriers)
-{
-	Trace();
-	if (!barrier_count)
-		return;
-	ArenaSavepoint scratch = ArenaSave(OS_ScratchArena(NULL, 0));
-	D3D12_RESOURCE_BARRIER* all_barriers = ArenaPushArray(scratch.arena, D3D12_RESOURCE_BARRIER, barrier_count);
-	for (intsize i = 0; i < barrier_count; ++i)
-	{
-		R4_ResourceBarrier const* barrier = &barriers[i];
-		if (!barrier->type)
-			break;
-		ID3D12Resource* barrier_resource = D3d12ResourceFromResource_(barrier->resource);
-
-		switch (barrier->type)
+		bool has_sampler = false;
+		bool has_other = false;
+		for (intz j = 0; j < ArrayLength(desc->tables[i].ranges); ++j)
 		{
-			case R4_BarrierType_Transition:
-			{
-				R4_TransitionBarrier const* transition = &barrier->transition;
-				all_barriers[i] = D3D12_RESOURCE_BARRIER {
-					.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-					.Transition = {
-						.pResource = barrier_resource,
-						.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-						.StateBefore = D3d12StatesFromResourceStates_(transition->from),
-						.StateAfter = D3d12StatesFromResourceStates_(transition->to),
-					},
-				};
-			} break;
+			R4_PipelineLayoutDescriptorRange const* range_desc = &desc->tables[i].ranges[j];
+			if (!range_desc->type)
+				break;
+			if (range_desc->type == R4_DescriptorType_Sampler)
+				has_sampler = true;
+			else
+				has_other = true;
 		}
+
+		if (has_sampler)
+			++sampler_table_count;
+		if (has_other)
+			++rest_table_count;
 	}
-	cmdlist->d3d12_list->ResourceBarrier(barrier_count, all_barriers);
-	ArenaRestore(scratch);
+
+	intz rest_table_i = 0;
+	intz sampler_table_i = rest_table_count;
+	D3D12_DESCRIPTOR_RANGE rest_ranges[64][ArrayLength(desc->tables[0].ranges)] = {};
+	D3D12_DESCRIPTOR_RANGE sampler_ranges[64][ArrayLength(desc->tables[0].ranges)] = {};
+	for (intz i = 0; i < desc->table_count; ++i)
+	{
+		D3D12_DESCRIPTOR_RANGE* table_rest_ranges = rest_ranges[i];
+		D3D12_DESCRIPTOR_RANGE* table_sampler_ranges = sampler_ranges[i];
+		intz rest_count = 0;
+		intz sampler_count = 0;
+
+		for (intz j = 0; j < ArrayLength(desc->tables[i].ranges); ++j)
+		{
+			R4_PipelineLayoutDescriptorRange const* range_desc = &desc->tables[i].ranges[j];
+			if (!range_desc->type)
+				break;
+			D3D12_DESCRIPTOR_RANGE* out_range = NULL;
+			if (range_desc->type == R4_DescriptorType_Sampler)
+				out_range = &table_sampler_ranges[sampler_count++];
+			else
+				out_range = &table_rest_ranges[rest_count++];
+			D3D12_DESCRIPTOR_RANGE_TYPE type = (D3D12_DESCRIPTOR_RANGE_TYPE)0;
+			switch (range_desc->type)
+			{
+				case 0: Unreachable(); break;
+				case R4_DescriptorType_Sampler: type = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER; break;
+				case R4_DescriptorType_ImageShaderStorage:
+				case R4_DescriptorType_BufferShaderStorage:
+				case R4_DescriptorType_DynamicBufferShaderStorage:
+				case R4_DescriptorType_ImageSampled: type = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; break;
+				case R4_DescriptorType_UniformBuffer:
+				case R4_DescriptorType_DynamicUniformBuffer: type = D3D12_DESCRIPTOR_RANGE_TYPE_CBV; break;
+				case R4_DescriptorType_ImageShaderReadWrite:
+				case R4_DescriptorType_BufferShaderReadWrite:
+				case R4_DescriptorType_DynamicBufferShaderReadWrite: type = D3D12_DESCRIPTOR_RANGE_TYPE_UAV; break;
+			}
+			*out_range = {
+				.RangeType = type,
+				.NumDescriptors = (UINT)range_desc->count,
+				.BaseShaderRegister = (UINT)range_desc->first_shader_slot,
+				.RegisterSpace = 0,
+				.OffsetInDescriptorsFromTableStart = (UINT)range_desc->offset_in_table,
+			};
+		}
+
+		D3D12_SHADER_VISIBILITY visibility = D3d12VisibilityFromVisibility_(desc->tables[i].shader_visibility);
+		if (rest_count)
+			root_params[rest_table_i++] = {
+				.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+				.DescriptorTable = {
+					.NumDescriptorRanges = (UINT)rest_count,
+					.pDescriptorRanges = table_rest_ranges,
+				},
+				.ShaderVisibility = visibility,
+			};
+		if (sampler_count)
+			root_params[sampler_table_i++] = {
+				.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+				.DescriptorTable = {
+					.NumDescriptorRanges = (UINT)sampler_count,
+					.pDescriptorRanges = table_rest_ranges,
+				},
+				.ShaderVisibility = visibility,
+			};
+	}
+
+	D3D12_ROOT_SIGNATURE_DESC rootsig_desc = {
+		.NumParameters = (UINT)root_params_count,
+		.pParameters = root_params,
+		.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+	};
+	hr = D3D12SerializeRootSignature(&rootsig_desc, D3D_ROOT_SIGNATURE_VERSION_1_0, &rootsig_blob, NULL);
+	if (!CheckHr_(hr, r))
+		return {};
+	hr = ctx->device->CreateRootSignature(0, rootsig_blob->GetBufferPointer(), rootsig_blob->GetBufferSize(), IID_PPV_ARGS(&rootsig));
+	rootsig_blob->Release();
+	if (!CheckHr_(hr, r))
+		return {};
+
+	return {
+		.d3d12 = {
+			.rootsig = rootsig,
+			.rest_table_count = (int32)rest_table_count,
+			.sampler_table_count = (int32)sampler_table_count,
+			.const_count = (int32)const_count,
+		},
+	};
 }
+
+API void
+R4_FreePipelineLayout(R4_Context* ctx, R4_PipelineLayout* pipeline_layout)
+{
+	Trace();
+	if (pipeline_layout->d3d12.rootsig)
+		pipeline_layout->d3d12.rootsig->Release();
+	*pipeline_layout = {};
+}
+
+// =============================================================================
+// =============================================================================
+// Pipeline
+
+// =============================================================================
+// =============================================================================
+// Descriptor heap & descriptor sets
+
+// =============================================================================
+// =============================================================================
+// Command allocator & command lists
+
+// =============================================================================
+// =============================================================================
+// Command list recording
+

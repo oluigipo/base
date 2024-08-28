@@ -1,7 +1,7 @@
 #ifndef API_OS_H
 #define API_OS_H
 
-#include "common.h"
+#include "common_basic.h"
 
 #ifdef SafeAssert_OnFailure
 #   undef SafeAssert_OnFailure
@@ -453,8 +453,9 @@ enum
 	OS_VirtualFlags_ReserveOnly = 0x0001,
 	
 	// Only valid for OS_VirtualProtect
-	OS_VirtualFlags_ReadOnly    = 0x0002,
-	OS_VirtualFlags_ExecuteOnly = 0x0004,
+	OS_VirtualFlags_Read    = 0x0002,
+	OS_VirtualFlags_Write   = 0x0004,
+	OS_VirtualFlags_Execute = 0x0008,
 };
 
 API void* OS_VirtualAlloc  (void* address, intz size, uint32 flags);
@@ -525,6 +526,7 @@ struct OS_FileMapping
 { void* ptr; }
 typedef OS_FileMapping;
 API OS_FileMapping OS_MapFileForReading(OS_File file, void const** out_buffer, intz* out_size, OS_Error* out_err);
+API OS_FileMapping OS_MapFile          (OS_File file, int64 offset, int64 size, uint32 virtual_flags, void** out_buffer, intz* out_size, OS_Error* out_err);
 API void           OS_UnmapFile        (OS_FileMapping mapping);
 
 //------------------------------------------------------------------------
