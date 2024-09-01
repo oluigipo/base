@@ -2,8 +2,8 @@
 #define RENDER4_API2_H
 
 #include "common_basic.h"
-#include "render4_d3d12.h"
-#include "render4_vulkan.h"
+#include "api_d3d12_resources.h"
+#include "api_vulkan_resources.h"
 
 // =============================================================================
 // =============================================================================
@@ -300,6 +300,8 @@ enum
 // =============================================================================
 // =============================================================================
 // Context creation
+typedef void R4_OnErrorCallback(void* user_data, R4_Result r, R4_Result* output_r);
+
 struct R4_ContextDesc
 {
 	bool prefer_igpu;
@@ -318,6 +320,9 @@ struct R4_ContextDesc
 	// defaults: 1048576 (1<<20)
 	int32 max_image_views;
 	int32 max_buffer_views;
+
+	void* user_data;
+	R4_OnErrorCallback* on_error;
 
 	R4_Queue* out_graphics_queue;
 	R4_Queue* out_compute_queue;
@@ -410,6 +415,7 @@ struct R4_PlacedImageDesc
 	int64 heap_offset;
 	R4_ResourceState initial_state;
 	R4_ImageDesc image_desc;
+	R4_Format clear_format;
 	float32 clear_color[4];
 	float32 clear_depth;
 	uint32 clear_stencil;
@@ -450,6 +456,8 @@ struct R4_ImageViewDesc
 {
 	R4_Image* image;
 	R4_Format format;
+	R4_DescriptorType type;
+	R4_ImageDimension dimension;
 }
 typedef R4_ImageViewDesc;
 
@@ -650,12 +658,21 @@ enum R4_CullMode
 }
 typedef R4_CullMode;
 
+struct R4_GraphicsPipelineShaders
+{
+	R4_ShaderBytecode vertex;
+	R4_ShaderBytecode fragment;
+	R4_ShaderBytecode task;
+	R4_ShaderBytecode mesh;
+}
+typedef R4_GraphicsPipelineShaders;
+
 struct R4_GraphicsPipelineDesc
 {
 	R4_PipelineLayout* pipeline_layout;
 
-	R4_ShaderBytecode dxil_vs, dxil_ps;
-	R4_ShaderBytecode spirv_vs, spirv_ps;
+	R4_GraphicsPipelineShaders shaders_dxil;
+	R4_GraphicsPipelineShaders shaders_spirv;
 
 	R4_VertexInput vertex_inputs[16];
 	R4_PrimitiveType primitive;
@@ -748,7 +765,7 @@ API void R4_FreeDescriptorSet(R4_Context* ctx, R4_DescriptorSet* descriptor_set)
 
 struct R4_DescriptorBuffer
 {
-	R4_Buffer* buffer;
+	R4_BufferView* buffer;
 	int64 offset;
 	int64 size;
 }
@@ -797,7 +814,7 @@ typedef R4_CommandListType;
 API R4_CommandAllocator R4_MakeCommandAllocator(R4_Context* ctx, R4_Result* r, R4_Queue* target_queue);
 API void R4_FreeCommandAllocator(R4_Context* ctx, R4_CommandAllocator* cmd_allocator);
 
-API R4_CommandList R4_MakeCommandList(R4_Context* ctx, R4_Result* r, R4_CommandListType, R4_CommandAllocator* allocator);
+API R4_CommandList R4_MakeCommandList(R4_Context* ctx, R4_Result* r, R4_CommandListType type, R4_CommandAllocator* allocator);
 API void R4_FreeCommandList(R4_Context* ctx, R4_CommandAllocator* cmdalloc, R4_CommandList* cmd_list);
 
 // =============================================================================

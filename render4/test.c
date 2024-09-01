@@ -1,20 +1,8 @@
 
-#define USE_VULKAN
-
 #include "common.h"
 #include "api_os.h"
-#include "api_os_win32.h"
-#ifndef USE_VULKAN
 #include "api.h"
-#else
-#	pragma comment(lib, "vulkan-1.lib")
-#	undef API
-#	define API static inline
-#	include "api.h"
-#   include "render4_vulkan.c"
-#	undef API
-#	define API
-#endif
+#pragma comment(lib, "vulkan-1.lib")
 
 #include "third_party/stb_image.h"
 
@@ -66,6 +54,15 @@ BumpAllocateUploadBuffer_(R4_Context* ctx, int64* bump_offset_ptr, R4_UploadBuff
 	return buffer;
 }
 
+static void
+Render4ErrorCallback_(void* user_data, R4_Result r, R4_Result* output_r)
+{
+	Trace();
+	OS_LogErr("[ERROR] render4 callback: 0x%x", (uint32)r);
+	if (!output_r)
+		SafeAssert(!"unhandled render4 error");
+}
+
 IncludeBinary(g_shader_dxvs, "test_shader_vs.dxil");
 IncludeBinary(g_shader_dxps, "test_shader_ps.dxil");
 IncludeBinary(g_shader_spvs, "test_shader_vs.spirv");
@@ -95,8 +92,10 @@ EntryPoint(int32 argc, const char* const* argv)
 	R4_Image swapchain_images[BACKBUFFER_COUNT] = {};
 	R4_Context* r4 = R4_MakeContext(AllocatorFromArena(&arena), NULL, &(R4_ContextDesc) {
 		.os_window = &window,
+		.debug_mode = true,
 		.backbuffer_count = BACKBUFFER_COUNT,
 		.backbuffer_format = R4_Format_R8G8B8A8_UNorm,
+		.on_error = Render4ErrorCallback_,
 		.out_graphics_queue = &graphics_queue,
 		.out_compute_queue = &compute_queue,
 		.out_backbuffer_images = swapchain_images,
@@ -176,6 +175,7 @@ EntryPoint(int32 argc, const char* const* argv)
 	R4_ImageView texture_view = R4_MakeImageView(r4, NULL, &(R4_ImageViewDesc) {
 		.image = &texture,
 		.format = R4_Format_R8G8B8A8_SRgb,
+		.type = R4_DescriptorType_ImageSampled,
 	});
 
 	R4_Sampler sampler = R4_MakeSampler(r4, NULL, &(R4_SamplerDesc) {});
@@ -188,7 +188,7 @@ EntryPoint(int32 argc, const char* const* argv)
 	mem = NULL;
 	{
 		int32 width, height, _;
-		void* pixels = stbi_load("render4_new/test_image.png", &width, &height, &_, 4);
+		void* pixels = stbi_load("render4/test_image.png", &width, &height, &_, 4);
 		SafeAssert(pixels);
 		SafeAssert(width == 512 && height == 512);
 		R4_MapResource(r4, NULL, R4_BufferResource(&texture_upload), 0, texture_size, &mem);
@@ -228,21 +228,13 @@ EntryPoint(int32 argc, const char* const* argv)
 		.primitive = R4_PrimitiveType_TriangleList,
 		.rendertarget_count = 1,
 		.rendertarget_formats[0] = R4_Format_R8G8B8A8_UNorm,
-		.dxil_vs = {
-			g_shader_dxvs_begin,
-			g_shader_dxvs_end - g_shader_dxvs_begin,
+		.shaders_dxil = {
+			.vertex = BufInitRange(g_shader_dxvs_begin, g_shader_dxvs_end),
+			.fragment = BufInitRange(g_shader_dxps_begin, g_shader_dxps_end),
 		},
-		.dxil_ps = {
-			g_shader_dxps_begin,
-			g_shader_dxps_end - g_shader_dxps_begin,
-		},
-		.spirv_vs = {
-			g_shader_spvs_begin,
-			g_shader_spvs_end - g_shader_spvs_begin,
-		},
-		.spirv_ps = {
-			g_shader_spps_begin,
-			g_shader_spps_end - g_shader_spps_begin,
+		.shaders_spirv = {
+			.vertex = BufInitRange(g_shader_spvs_begin, g_shader_spvs_end),
+			.fragment = BufInitRange(g_shader_spps_begin, g_shader_spps_end),
 		},
 		.vertex_inputs = {
 			[0] = {
@@ -265,7 +257,7 @@ EntryPoint(int32 argc, const char* const* argv)
 		.sample_mask = UINT32_MAX,
 		.rast_enable_depth_clip = true,
 		.blend_rendertargets[0] = {
-			.write_mask = 15,
+			.write_mask = 0b1111,
 		},
 	});
 
@@ -313,7 +305,7 @@ EntryPoint(int32 argc, const char* const* argv)
 		R4_Image* backbuffer = &swapchain_images[image_index];
 		R4_DescriptorSet* descriptor_set = &descriptor_sets[image_index];
 		R4_ResetCommandAllocator(r4, NULL, allocator);
-		R4_BeginCommandList(r4, NULL, cmdlist, &allocators[image_index]);
+		R4_BeginCommandList(r4, NULL, cmdlist, allocator);
 
 		R4_DescriptorSetWrite descriptor_set_writes[2] = {
 			[0] = {

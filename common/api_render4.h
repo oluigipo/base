@@ -1,6 +1,7 @@
 #ifndef API_RENDER4_H
 #define API_RENDER4_H
-#include "common.h"
+
+#include "common_basic.h"
 
 struct R4_Context typedef R4_Context;
 struct OS_Window;

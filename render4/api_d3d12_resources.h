@@ -23,6 +23,7 @@ struct R4_D3D12_DepthStencilView typedef R4_D3D12_DepthStencilView;
 struct R4_D3D12_Queue
 {
 	struct ID3D12CommandQueue* queue;
+	uint32 command_type;
 };
 
 struct R4_D3D12_Buffer
@@ -47,7 +48,7 @@ struct R4_D3D12_CommandAllocator
 
 struct R4_D3D12_CommandList
 {
-	struct ID3D12CommandList* list;
+	struct ID3D12GraphicsCommandList* list;
 };
 
 struct R4_D3D12_Pipeline
@@ -55,17 +56,25 @@ struct R4_D3D12_Pipeline
 	struct ID3D12PipelineState* pipeline;
 };
 
+struct R4_D3D12_BindLayout
+{
+	uint32 visibility;
+	int32 sampler_entry_count;
+	int32 resc_entry_count;
+	struct
+	{
+		uint16 type;
+		uint16 first_slot;
+		uint32 count;
+		uint32 offset_from_table_start;
+	} entries[32];
+};
+
 struct R4_D3D12_PipelineLayout
 {
 	struct ID3D12RootSignature* rootsig;
-	int32 rest_table_count;
-	int32 sampler_table_count;
-	int32 const_count;
-};
-
-struct R4_D3D12_BindLayout
-{
-
+	uint32 root_const_count;
+	R4_D3D12_BindLayout bind_layouts[32];
 };
 
 struct R4_D3D12_DescriptorHeap
@@ -75,14 +84,17 @@ struct R4_D3D12_DescriptorHeap
 
 	int64 sampler_heap_buffer_size;
 	int64 view_heap_buffer_size;
-	int64 buffering_offsets[4];
+	int64 sampler_buffering_offsets[4];
+	int64 view_buffering_offsets[4];
 	int32 buffering_count;
 };
 
 struct R4_D3D12_DescriptorSet
 {
-	uint64 cpu_ptr;
-	uint64 gpu_ptr;
+	uint64 sampler_cpu_ptr;
+	uint64 sampler_gpu_ptr;
+	uint64 view_cpu_ptr;
+	uint64 view_gpu_ptr;
 };
 
 struct R4_D3D12_BufferView

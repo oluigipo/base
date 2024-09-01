@@ -84,6 +84,7 @@ struct R4_VK_DescriptorSet
 struct R4_VK_BufferView
 {
 	struct VkBufferView_T* view;
+	struct VkBuffer_T* buffer;
 };
 
 struct R4_VK_ImageView

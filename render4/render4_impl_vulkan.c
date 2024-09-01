@@ -27,6 +27,9 @@ struct R4_Context
 	int32 heap_upload;
 	int32 heap_readback;
 
+	void* user_data;
+	R4_OnErrorCallback* on_error;
+
 	R4_ContextInfo info;
 };
 
@@ -63,7 +66,7 @@ VulkanDebugCallback_(
 }
 
 static bool
-CheckResult_(VkResult vkr, R4_Result* r)
+CheckResult_(R4_Context* ctx, VkResult vkr, R4_Result* r)
 {
 	if (vkr == VK_SUCCESS)
 	{
@@ -72,15 +75,18 @@ CheckResult_(VkResult vkr, R4_Result* r)
 		return true;
 	}
 
-	if (r)
-	{
-		if (vkr == VK_ERROR_DEVICE_LOST || vkr == VK_ERROR_SURFACE_LOST_KHR)
-			*r = R4_Result_DeviceLost;
-		else
-			*r = R4_Result_Failure;
-	}
+	R4_Result final_result;
+	if (vkr == VK_ERROR_DEVICE_LOST || vkr == VK_ERROR_SURFACE_LOST_KHR)
+		final_result = R4_Result_DeviceLost;
 	else
-		Unreachable();
+		final_result = R4_Result_Failure;
+
+	if (r)
+		*r = final_result;
+
+	if (ctx->on_error)
+		ctx->on_error(ctx->user_data, final_result, r);
+
 	return false;
 }
 
@@ -420,6 +426,8 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 	if (!CheckAllocatorErr_(err, r))
 		return NULL;
 	ctx->allocator = allocator;
+	ctx->on_error = desc->on_error;
+	ctx->user_data = desc->user_data;
 
 	// =============================================================================
 	// instance creation & debug messenger
@@ -452,7 +460,7 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 		.ppEnabledExtensionNames = extensions,
 	};
 	vkr = vkCreateInstance(&instance_desc, NULL, &ctx->instance);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		goto lbl_error;
 
 #ifdef CONFIG_DEBUG
@@ -486,7 +494,7 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 	VkPhysicalDevice available_devices[32];
 	uint32 available_devices_count = ArrayLength(available_devices);
 	vkr = vkEnumeratePhysicalDevices(ctx->instance, &available_devices_count, available_devices);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		goto lbl_error;
 
 	int32 best_device_score = -1;
@@ -626,7 +634,7 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 		.hinstance = GetModuleHandleW(NULL),
 	};
 	vkr = vkCreateWin32SurfaceKHR(ctx->instance, &surface_desc, NULL, &ctx->surface);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		goto lbl_error;
 #endif
 
@@ -735,7 +743,7 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 		},
 	};
 	vkr = vkCreateDevice(ctx->physical_device, &device_desc, NULL, &ctx->device);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		goto lbl_error;
 
 	// =============================================================================
@@ -764,13 +772,13 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 	
 	VkSurfaceCapabilitiesKHR surface_caps;
 	vkr = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx->physical_device, ctx->surface, &surface_caps);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		goto lbl_error;
 
 	VkSurfaceFormatKHR formats[32] = {};
 	uint32 format_count = ArrayLength(formats);
 	vkr = vkGetPhysicalDeviceSurfaceFormatsKHR(ctx->physical_device, ctx->surface, &format_count, formats);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		goto lbl_error;
 	SafeAssert(format_count > 0);
 
@@ -785,7 +793,7 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 	VkPresentModeKHR present_modes[32] = {};
 	uint32 present_mode_count = ArrayLength(present_modes);
 	vkr = vkGetPhysicalDeviceSurfacePresentModesKHR(ctx->physical_device, ctx->surface, &present_mode_count, present_modes);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		goto lbl_error;
 	SafeAssert(present_mode_count > 0);
 
@@ -820,17 +828,17 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 		swapchain_desc.pQueueFamilyIndices = families;
 	}
 	vkr = vkCreateSwapchainKHR(ctx->device, &swapchain_desc, NULL, &ctx->swapchain);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		goto lbl_error;
 
 	VkSemaphoreCreateInfo sem_desc = {
 		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
 	};
 	vkr = vkCreateSemaphore(ctx->device, &sem_desc, NULL, &ctx->swapchain_sem);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		goto lbl_error;
 	vkr = vkCreateSemaphore(ctx->device, &sem_desc, NULL, &ctx->swapchain_image_sem);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		goto lbl_error;
 	ctx->swapchain_image_index = 0;
 
@@ -844,7 +852,7 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 			.flags = VK_FENCE_CREATE_SIGNALED_BIT,
 		};
 		vkr = vkCreateFence(ctx->device, &fence_desc, NULL, &ctx->completion_fences[i]);
-		if (!CheckResult_(vkr, r))
+		if (!CheckResult_(ctx, vkr, r))
 			goto lbl_error;
 	}
 
@@ -854,7 +862,7 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 	SafeAssert(desc->backbuffer_count <= ArrayLength(backbuffers));
 	uint32 count = (uint32)desc->backbuffer_count;
 	vkr = vkGetSwapchainImagesKHR(ctx->device, ctx->swapchain, &count, backbuffers);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		goto lbl_error;
 	SafeAssert((intz)count == desc->backbuffer_count);
 	for (intz i = 0; i < desc->backbuffer_count; ++i)
@@ -950,7 +958,7 @@ R4_PresentAndSync(R4_Context* ctx, R4_Result* r, int32 sync_interval)
 		.pImageIndices = &ctx->swapchain_image_index,
 	};
 	vkr = vkQueuePresentKHR(ctx->present_queue, &present_desc);
-	CheckResult_(vkr, r);
+	CheckResult_(ctx, vkr, r);
 }
 
 API intz
@@ -959,13 +967,13 @@ R4_AcquireNextBackbuffer(R4_Context* ctx, R4_Result* r)
 	Trace();
 	VkResult vkr;
 	vkr = vkAcquireNextImageKHR(ctx->device, ctx->swapchain, UINT64_MAX, ctx->swapchain_image_sem, NULL, &ctx->swapchain_image_index);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return -1;
 	vkr = vkWaitForFences(ctx->device, 1, &ctx->completion_fences[ctx->swapchain_image_index], VK_TRUE, UINT64_MAX);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return -1;
 	vkr = vkResetFences(ctx->device, 1, &ctx->completion_fences[ctx->swapchain_image_index]);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return -1;
 	SafeAssert(ctx->swapchain_image_index < 8);
 	return (intz)ctx->swapchain_image_index;
@@ -996,7 +1004,7 @@ R4_ExecuteCommandLists(R4_Context* ctx, R4_Result* r, R4_Queue* queue, bool last
 	}
 	vkr = vkQueueSubmit(queue->vk.queue, 1, &submit_info, ctx->completion_fences[ctx->swapchain_image_index]);
 	ArenaRestore(scratch);
-	CheckResult_(vkr, r);
+	CheckResult_(ctx, vkr, r);
 }
 
 API void
@@ -1005,7 +1013,7 @@ R4_WaitRemainingWorkOnQueue(R4_Context* ctx, R4_Result* r, R4_Queue* queue)
 	Trace();
 	VkResult vkr;
 	vkr = vkQueueWaitIdle(queue->vk.queue);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return;
 }
 
@@ -1035,7 +1043,7 @@ R4_MakeHeap(R4_Context* ctx, R4_Result* r, R4_HeapType type, int64 size)
 		.allocationSize = (uint64)size,
 	};
 	vkr = vkAllocateMemory(ctx->device, &memory_desc, NULL, &memory);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_Heap) {};
 	return (R4_Heap) {
 		.vk.memory = memory,
@@ -1046,6 +1054,7 @@ API void
 R4_FreeHeap(R4_Context* ctx, R4_Heap* heap)
 {
 	Trace();
+	// TODO
 }
 
 // =============================================================================
@@ -1063,10 +1072,10 @@ R4_MakeUploadBuffer(R4_Context* ctx, R4_Result* r, R4_UploadBufferDesc const* de
 
 	VkBufferCreateInfo buffer_desc = VulkanBufferDescFromBufferDesc_(&desc->buffer_desc);
 	vkr = vkCreateBuffer(ctx->device, &buffer_desc, NULL, &buffer);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_Buffer) {};
 	vkr = vkBindBufferMemory(ctx->device, buffer, desc->heap->vk.memory, offset);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 	{
 		vkDestroyBuffer(ctx->device, buffer, NULL);
 		return (R4_Buffer) {};
@@ -1092,10 +1101,10 @@ R4_MakePlacedBuffer(R4_Context* ctx, R4_Result* r, R4_PlacedBufferDesc const* de
 
 	VkBufferCreateInfo buffer_desc = VulkanBufferDescFromBufferDesc_(&desc->buffer_desc);
 	vkr = vkCreateBuffer(ctx->device, &buffer_desc, NULL, &buffer);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_Buffer) {};
 	vkr = vkBindBufferMemory(ctx->device, buffer, desc->heap->vk.memory, offset);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 	{
 		vkDestroyBuffer(ctx->device, buffer, NULL);
 		return (R4_Buffer) {};
@@ -1114,6 +1123,7 @@ API void
 R4_FreeBuffer(R4_Context* ctx, R4_Buffer* buffer)
 {
 	Trace();
+	// TODO
 }
 
 API R4_Image
@@ -1128,10 +1138,10 @@ R4_MakePlacedImage(R4_Context* ctx, R4_Result* r, R4_PlacedImageDesc const* desc
 
 	VkImageCreateInfo image_info = VulkanImageDescFromImageDesc_(&desc->image_desc, desc->initial_state);
 	vkr = vkCreateImage(ctx->device, &image_info, NULL, &image);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_Image) {};
 	vkr = vkBindImageMemory(ctx->device, image, desc->heap->vk.memory, offset);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 	{
 		vkDestroyImage(ctx->device, image, NULL);
 		return (R4_Image) {};
@@ -1150,6 +1160,7 @@ API void
 R4_FreeImage(R4_Context* ctx, R4_Image* image)
 {
 	Trace();
+	// TODO
 }
 
 API R4_MemoryRequirements
@@ -1202,7 +1213,7 @@ R4_MapResource(R4_Context* ctx, R4_Result* r, R4_Resource resource, int32 subres
 	VkResult vkr;
 	MemoryOffsetPair_ pair = VulkanMemoryOffsetPairFromResource_(resource);
 	vkr = vkMapMemory(ctx->device, pair.memory, pair.offset, (uintz)size, 0, out_memory);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return;
 }
 
@@ -1244,7 +1255,7 @@ R4_MakeImageView(R4_Context* ctx, R4_Result* r, R4_ImageViewDesc const* desc)
 		},
 	};
 	vkr = vkCreateImageView(ctx->device, &view_desc, NULL, &view);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_ImageView) {};
 	return (R4_ImageView) {
 		.vk.view = view,
@@ -1280,7 +1291,7 @@ R4_MakeRenderTargetView(R4_Context* ctx, R4_Result* r, R4_RenderTargetViewDesc c
 		},
 	};
 	vkr = vkCreateImageView(ctx->device, &view_desc, NULL, &view);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_RenderTargetView) {};
 
 	return (R4_RenderTargetView) {
@@ -1360,7 +1371,7 @@ R4_MakeSampler(R4_Context* ctx, R4_Result* r, R4_SamplerDesc const* desc)
 		.maxAnisotropy = (float32)desc->max_anisotropy,
 	};
 	vkr = vkCreateSampler(ctx->device, &sampler_desc, NULL, &sampler);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_Sampler) {};
 	return (R4_Sampler) {
 		.vk.sampler = sampler,
@@ -1403,7 +1414,7 @@ R4_MakeBindLayout(R4_Context* ctx, R4_Result* r, R4_BindLayoutDesc const* desc)
 		.pBindings = bindings,
 	};
 	vkr = vkCreateDescriptorSetLayout(ctx->device, &layout_desc, NULL, &layout);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_BindLayout) {};
 
 	return (R4_BindLayout) {
@@ -1465,7 +1476,7 @@ R4_MakePipelineLayout(R4_Context* ctx, R4_Result* r, R4_PipelineLayoutDesc const
 		.pSetLayouts = descriptor_layouts,
 	};
 	vkr = vkCreatePipelineLayout(ctx->device, &layout_desc, NULL, &layout);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_PipelineLayout) {};
 	return (R4_PipelineLayout) {
 		.vk.layout = layout,
@@ -1500,16 +1511,18 @@ R4_MakeGraphicsPipeline(R4_Context* ctx, R4_Result* r, R4_GraphicsPipelineDesc c
 	VkVertexInputBindingDescription vertex_bindings[16] = {};
 	intz vertex_bindings_count = 0;
 
-	if (desc->spirv_vs.size)
+	R4_GraphicsPipelineShaders const* shaders = &desc->shaders_spirv;
+
+	if (shaders->vertex.size)
 	{
-		SafeAssert(desc->spirv_vs.size > 0);
+		SafeAssert(shaders->vertex.size > 0);
 		VkShaderModuleCreateInfo shader_vs_desc = {
 			.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-			.codeSize = (uintz)desc->spirv_vs.size,
-			.pCode = (uint32 const*)desc->spirv_vs.data,
+			.codeSize = (uintz)shaders->vertex.size,
+			.pCode = (uint32 const*)shaders->vertex.data,
 		};
 		vkr = vkCreateShaderModule(ctx->device, &shader_vs_desc, NULL, &shader_vs);
-		if (!CheckResult_(vkr, r))
+		if (!CheckResult_(ctx, vkr, r))
 			return (R4_Pipeline) {};
 		shader_stages[shader_stage_count++] = (VkPipelineShaderStageCreateInfo) {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -1518,16 +1531,16 @@ R4_MakeGraphicsPipeline(R4_Context* ctx, R4_Result* r, R4_GraphicsPipelineDesc c
 			.pName = "Vertex",
 		};
 	}
-	if (desc->spirv_ps.size)
+	if (shaders->fragment.size)
 	{
-		SafeAssert(desc->spirv_ps.size > 0);
+		SafeAssert(shaders->fragment.size > 0);
 		VkShaderModuleCreateInfo shader_ps_desc = {
 			.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-			.codeSize = (uintz)desc->spirv_ps.size,
-			.pCode = (uint32 const*)desc->spirv_ps.data,
+			.codeSize = (uintz)shaders->fragment.size,
+			.pCode = (uint32 const*)shaders->fragment.data,
 		};
 		vkr = vkCreateShaderModule(ctx->device, &shader_ps_desc, NULL, &shader_ps);
-		if (!CheckResult_(vkr, r))
+		if (!CheckResult_(ctx, vkr, r))
 		{
 			if (shader_vs)
 				vkDestroyShaderModule(ctx->device, shader_vs, NULL);
@@ -1659,7 +1672,7 @@ R4_MakeGraphicsPipeline(R4_Context* ctx, R4_Result* r, R4_GraphicsPipelineDesc c
 		vkDestroyShaderModule(ctx->device, shader_vs, NULL);
 	if (shader_ps)
 		vkDestroyShaderModule(ctx->device, shader_ps, NULL);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_Pipeline) {};
 
 	return (R4_Pipeline) {
@@ -1673,6 +1686,7 @@ R4_MakeComputePipeline(R4_Context* ctx, R4_Result* r, R4_ComputePipelineDesc con
 	Trace();
 	VkResult vkr;
 	VkPipeline pipeline = NULL;
+	// TODO
 
 	return (R4_Pipeline) {
 		.vk.pso = pipeline,
@@ -1685,6 +1699,7 @@ R4_MakeMeshPipeline(R4_Context* ctx, R4_Result* r, R4_MeshPipelineDesc const* de
 	Trace();
 	VkResult vkr;
 	VkPipeline pipeline = NULL;
+	// TODO
 
 	return (R4_Pipeline) {
 		.vk.pso = pipeline,
@@ -1735,7 +1750,7 @@ R4_MakeDescriptorHeap(R4_Context* ctx, R4_Result* r, R4_DescriptorHeapDesc const
 		.maxSets = (uint32)max_sets,
 	};
 	vkr = vkCreateDescriptorPool(ctx->device, &pool_desc, NULL, &pool);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_DescriptorHeap) {};
 
 	return (R4_DescriptorHeap) {
@@ -1747,6 +1762,7 @@ API void
 R4_FreeDescriptorHeap(R4_Context* ctx, R4_DescriptorHeap* descriptor_heap)
 {
 	Trace();
+	// TODO
 }
 
 API R4_DescriptorSet
@@ -1763,7 +1779,7 @@ R4_MakeDescriptorSet(R4_Context* ctx, R4_Result* r, R4_DescriptorSetDesc const* 
 		.pSetLayouts = &desc->bind_layout->vk.layout,
 	};
 	vkr = vkAllocateDescriptorSets(ctx->device, &set_desc, &set);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_DescriptorSet) {};
 
 	return (R4_DescriptorSet) {
@@ -1775,6 +1791,7 @@ API void
 R4_FreeDescriptorSet(R4_Context* ctx, R4_DescriptorSet* descriptor_set)
 {
 	Trace();
+	// TODO
 }
 
 API void
@@ -1874,7 +1891,7 @@ R4_MakeCommandAllocator(R4_Context* ctx, R4_Result* r, R4_Queue* target_queue)
 		.queueFamilyIndex = target_queue->vk.family_index,
 	};
 	vkr = vkCreateCommandPool(ctx->device, &cmdpool_desc, NULL, &cmdpool);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_CommandAllocator) {};
 	return (R4_CommandAllocator) {
 		.vk.pool = cmdpool,
@@ -1900,7 +1917,7 @@ R4_MakeCommandList(R4_Context* ctx, R4_Result* r, R4_CommandListType type, R4_Co
 		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
 	};
 	vkr = vkAllocateCommandBuffers(ctx->device, &cmdbuffer_desc, &cmdbuffer);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return (R4_CommandList) {};
 	return (R4_CommandList) {
 		.vk.buffer = cmdbuffer,
@@ -1922,7 +1939,7 @@ R4_ResetCommandAllocator(R4_Context* ctx, R4_Result* r, R4_CommandAllocator* cmd
 	Trace();
 	VkResult vkr;
 	vkr = vkResetCommandPool(ctx->device, cmd_allocator->vk.pool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return;
 }
 
@@ -1932,13 +1949,13 @@ R4_BeginCommandList(R4_Context* ctx, R4_Result* r, R4_CommandList* cmdlist, R4_C
 	Trace();
 	VkResult vkr;
 	vkr = vkResetCommandBuffer(cmdlist->vk.buffer, 0);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return;
 	VkCommandBufferBeginInfo begin_desc = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 	};
 	vkr = vkBeginCommandBuffer(cmdlist->vk.buffer, &begin_desc);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return;
 }
 
@@ -1948,7 +1965,7 @@ R4_EndCommandList(R4_Context* ctx, R4_Result* r, R4_CommandList* cmdlist)
 	Trace();
 	VkResult vkr;
 	vkr = vkEndCommandBuffer(cmdlist->vk.buffer);
-	if (!CheckResult_(vkr, r))
+	if (!CheckResult_(ctx, vkr, r))
 		return;
 }
 
@@ -2129,9 +2146,9 @@ R4_CmdSetViewports(R4_CommandList* cmdlist, intz count, R4_Viewport const viewpo
 		R4_Viewport const* viewport = &viewports[i];
 		vkviewports[i] = (VkViewport) {
 			.x = viewport->x,
-			.y = viewport->y,
+			.y = viewport->y + viewport->height,
 			.width = viewport->width,
-			.height = viewport->height,
+			.height = -viewport->height,
 			.minDepth = viewport->min_depth,
 			.maxDepth = viewport->max_depth,
 		};
@@ -2265,7 +2282,18 @@ R4_CmdDraw(R4_CommandList* cmdlist, int64 start_vertex, int64 vertex_count, int6
 	vkCmdDraw(cmdlist->vk.buffer, (uint32)vertex_count, (uint32)instance_count, (uint32)start_vertex, (uint32)start_instance);
 }
 
-API void R4_CmdDrawIndexed         (R4_CommandList* cmdlist, int64 start_index, int64 index_count, int64 start_instance, int64 instance_count, int64 base_vertex);
+API void
+R4_CmdDrawIndexed(R4_CommandList* cmdlist, int64 start_index, int64 index_count, int64 start_instance, int64 instance_count, int64 base_vertex)
+{
+	Trace();
+	SafeAssert(start_index >= 0 && start_index <= UINT32_MAX);
+	SafeAssert(index_count >= 0 && index_count <= UINT32_MAX);
+	SafeAssert(start_instance >= 0 && start_instance <= UINT32_MAX);
+	SafeAssert(instance_count >= 0 && instance_count <= UINT32_MAX);
+	SafeAssert(base_vertex >= INT32_MIN && base_vertex <= INT32_MAX);
+	vkCmdDrawIndexed(cmdlist->vk.buffer, (uint32)index_count, (uint32)instance_count, (uint32)start_index, (int32)base_vertex, (uint32)start_instance);
+}
+
 API void R4_CmdDispatch            (R4_CommandList* cmdlist, int64 x, int64 y, int64 z);
 API void R4_CmdDispatchMesh        (R4_CommandList* cmdlist, int64 x, int64 y, int64 z);
 
