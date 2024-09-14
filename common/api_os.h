@@ -3,11 +3,6 @@
 
 #include "common_basic.h"
 
-#ifdef SafeAssert_OnFailure
-#   undef SafeAssert_OnFailure
-#endif
-#define SafeAssert_OnFailure(expr, file, line, func) OS_ExitWithErrorMessage("SafeAssert() error\nFile: " __FILE__ "\nFunc: %s\nLine: %i\nExpr: " expr, __func__, line)
-
 enum
 {
 	OS_Limits_MaxGamepadCount = 16,
@@ -204,6 +199,10 @@ API void    OS_LogOut       (char const* fmt, ...);
 API void    OS_LogErr       (char const* fmt, ...);
 API NO_RETURN void OS_ExitWithErrorMessage(char const* fmt, ...);
 
+API ThreadContext*      OS_GetThreadContext(void);
+API ThreadContextLogger OS_DefaultLogger(void);
+API NO_RETURN void      OS_DefaultAssertionFailureProc(String expr, String func, String file, int32 line);
+
 API int32 EntryPoint(int32 argc, char const* const* argv);
 
 #ifdef CONFIG_DEBUG
@@ -305,6 +304,7 @@ struct OS_ThreadDesc
 {
 	OS_ThreadProc* proc;
 	void* user_data;
+	void* thread_context;
 	
 	String name;
 	

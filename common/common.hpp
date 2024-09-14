@@ -181,21 +181,30 @@ struct ScratchScope
 	}
 };
 
-#define _defer__cat_(a, b) a ## b
-#define _defer__cat(a, b) _defer__cat_(a, b)
-#define defer DeferredLambda _defer__cat(_deferred_lambda_, __LINE__) = [&]
+// #define _defer__cat_(a, b) a ## b
+// #define _defer__cat(a, b) _defer__cat_(a, b)
+// #define defer(...) auto _defer__cat(_deferred_lambda_, __LINE__) = MakeDeferredLambda_([&]() -> void {__VA_ARGS__;})
 
-template <typename T>
-struct DeferredLambda
-{
-	T lambda;
-	inline DeferredLambda(T lambda)
-		: lambda((T&&)lambda)
-	{}
-	inline ~DeferredLambda()
-	{
-		lambda();
-	}
-};
+// template <typename T>
+// struct DeferredLambda
+// {
+// 	T lambda;
+// 	inline DeferredLambda(T&& lambda)
+// 		: lambda(lambda)
+// 	{}
+// 	inline DeferredLambda(DeferredLambda&& other)
+// 		: lambda(other.lambda)
+// 	{ other.lambda = NULL; }
+// 	inline ~DeferredLambda()
+// 	{
+// 		if (lambda)
+// 			lambda();
+// 	}
+// };
+
+// template <typename T>
+// static inline DeferredLambda<T>
+// MakeDeferredLambda_(T&& lambda)
+// { return lambda; }
 
 #endif

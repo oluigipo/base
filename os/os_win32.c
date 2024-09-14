@@ -191,7 +191,6 @@ struct
 	uint64 time_started;
 	SYSTEM_INFO system_info;
 	RTL_OSVERSIONINFOW version_info;
-	DWORD tls_index;
 	DWORD main_thread_id;
 	Arena* polling_event_output_arena;
 	OS_Capabilities caps;
@@ -255,21 +254,6 @@ struct
 }
 static g_win32;
 
-struct ThreadLocal_
-{
-	struct
-	{
-		uint8* memory;
-		intsize chunk_size;
-		intsize chunk_count;
-	} scratch;
-	struct
-	{
-		HANDLE timer;
-	} sleep;
-}
-typedef ThreadLocal_;
-
 static OS_KeyboardKey const g_keyboard_key_table[256] = {
 	[0] = OS_KeyboardKey_Any,
 	
@@ -320,26 +304,6 @@ static OS_KeyboardKey const g_keyboard_key_table[256] = {
 	OS_KeyboardKey_Numpad5, OS_KeyboardKey_Numpad6, OS_KeyboardKey_Numpad7, OS_KeyboardKey_Numpad8,
 	OS_KeyboardKey_Numpad9,
 };
-
-static void
-SetupThreadScratchMemory_(intsize chunk_size, intsize chunk_count)
-{
-	Trace();
-	SafeAssert(chunk_size >= 0 && chunk_count >= 0 && IsPowerOf2(chunk_size));
-	
-	uint8* memory = VirtualAlloc(NULL, (SIZE_T)(chunk_size*chunk_count), MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
-	SafeAssert(memory);
-	intz pad = AlignUp(SignedSizeof(Arena), 15);
-	for (intsize i = 0; i < chunk_count; ++i)
-		*(Arena*)(memory + chunk_size*i) = ArenaFromMemory(memory + chunk_size*i + pad, chunk_size - pad);
-	
-	ThreadLocal_* thread_local_mem = TlsGetValue(g_win32.tls_index);
-	if (!thread_local_mem)
-		ExitProcess(255);
-	thread_local_mem->scratch.memory = memory;
-	thread_local_mem->scratch.chunk_size = chunk_size;
-	thread_local_mem->scratch.chunk_count = chunk_count;
-}
 
 static inline wchar_t*
 StringToWide_(Arena* output_arena, String str)
@@ -633,26 +597,6 @@ MonitorEnumProc_(HMONITOR monitor, HDC hdc, LPRECT rect, LPARAM lparam)
 		args->caps->monitors[index].scaling_percentage = (int32)scale_factor;
 	
 	return TRUE;
-}
-
-//- Sleep
-static void
-SetupThreadSleepTimer_(void)
-{
-	ThreadLocal_* thread_local_mem = TlsGetValue(g_win32.tls_index);
-	if (!thread_local_mem)
-		ExitProcess(255);
-	
-	HANDLE timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-	if (!timer)
-	{
-		timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
-		OS_LogErr("[WARN] win32: failed to create waitable timer with flag CREATE_WAITABLE_TIMER_HIGH_RESOLUTION");
-	}
-	if (!timer)
-		OS_LogErr("[WARN] win32: failed to create waitable timer\n");
-	
-	thread_local_mem->sleep.timer = timer;
 }
 
 //- Input
@@ -1699,32 +1643,19 @@ ThreadProc_(LPVOID arg)
 	Trace();
 	OS_ThreadDesc thread_desc = *(OS_ThreadDesc*)arg;
 	OS_HeapFree(arg);
-	
-	ThreadLocal_* thread_local_mem = LocalAlloc(LPTR, sizeof(ThreadLocal_));
-	SafeAssert(TlsSetValue(g_win32.tls_index, thread_local_mem));
-	
-	if (!thread_desc.scratch_chunk_size)
-		thread_desc.scratch_chunk_size = 16<<20;
-	if (!thread_desc.scratch_chunk_count)
-		thread_desc.scratch_chunk_count = 3;
-	SetupThreadScratchMemory_(thread_desc.scratch_chunk_size, thread_desc.scratch_chunk_count);
-	if (g_win32.inited_sleep)
-		SetupThreadSleepTimer_();
+
+	ThreadContext* thread_context = ThisThreadContext();
+	thread_context->logger = OS_DefaultLogger();
+	thread_context->assertion_failure_proc = OS_DefaultAssertionFailureProc;
 	
 	int32 result = thread_desc.proc(thread_desc.user_data);
 	
-	VirtualFree(thread_local_mem->scratch.memory, 0, MEM_RELEASE);
-	LocalFree((HLOCAL)thread_local_mem);
 	return (DWORD)result;
 }
 
 static DWORD WINAPI
 AudioThreadProc_(void* user_data)
 {
-	ThreadLocal_* thread_local_mem = LocalAlloc(LPTR, sizeof(ThreadLocal_));
-	SafeAssert(TlsSetValue(g_win32.tls_index, thread_local_mem));
-	SetupThreadScratchMemory_(16<<20, 3);
-	
 	if (g_win32.set_thread_description)
 		g_win32.set_thread_description(GetCurrentThread(), L"Win32AudioThreadProc");
 	
@@ -1949,14 +1880,12 @@ wmain(int argc_, wchar_t** argv_)
 	GetNativeSystemInfo(&g_win32.system_info);
 	g_win32.version_info = (RTL_OSVERSIONINFOW) { sizeof(RTL_OSVERSIONINFOW) };
 	RtlGetVersion(&g_win32.version_info);
-	
-	// thread-local storage
-	ThreadLocal_* thread_local_mem = LocalAlloc(LPTR, sizeof(ThreadLocal_));
-	g_win32.tls_index = TlsAlloc();
-	SafeAssert(g_win32.tls_index != TLS_OUT_OF_INDEXES);
-	SafeAssert(thread_local_mem);
-	SafeAssert(TlsSetValue(g_win32.tls_index, thread_local_mem));
-	SetupThreadScratchMemory_(16<<20, 3);
+
+	{
+		ThreadContext* thread_context = ThisThreadContext();
+		thread_context->logger = OS_DefaultLogger();
+		thread_context->assertion_failure_proc = OS_DefaultAssertionFailureProc;
+	}
 	
 	// argc & argv
 	int32 argc;
@@ -1998,10 +1927,6 @@ wmain(int argc_, wchar_t** argv_)
 		TerminateThread(g_win32.audio_render_thread, 0);
 		CloseHandle(g_win32.audio_render_thread);
 	}
-	
-	TlsFree(g_win32.tls_index);
-	LocalFree((HLOCAL)thread_local_mem);
-	//TraceDeinit();
 	
 	return result;
 }
@@ -2071,10 +1996,7 @@ OS_Init(int32 systems)
 	
 	//------------------------------------------------------------------------
 	if (systems & OS_Init_Sleep)
-	{
-		SetupThreadSleepTimer_();
 		g_win32.inited_sleep = true;
-	}
 	
 	//------------------------------------------------------------------------
 	if (systems & OS_Init_Audio)
@@ -2289,16 +2211,31 @@ OS_SleepPrecise(uint64 ns)
 	if (ns > 1*1000000)
 	{
 		ns -= 1*1000000;
-		ThreadLocal_* thread_local_mem = TlsGetValue(g_win32.tls_index);
-		if (thread_local_mem && thread_local_mem->sleep.timer)
+
+		thread_local static bool initialized_timer;
+		thread_local static HANDLE timer;
+
+		if (!initialized_timer)
+		{
+			timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+			if (!timer)
+			{
+				timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
+				OS_LogErr("[WARN] win32: failed to create waitable timer with flag CREATE_WAITABLE_TIMER_HIGH_RESOLUTION");
+			}
+			if (!timer)
+				OS_LogErr("[WARN] win32: failed to create waitable timer\n");
+		}
+
+		if (timer)
 		{
 			LARGE_INTEGER large_int = { .QuadPart = -(int64)ns / 100 };
-			if (!SetWaitableTimer(thread_local_mem->sleep.timer, &large_int, 0, NULL, NULL, 0))
+			if (!SetWaitableTimer(timer, &large_int, 0, NULL, NULL, 0))
 				goto lbl_simple_sleep;
 			
 			{
 				Trace(); TraceName(Str("WaitForSingleObject"));
-				DWORD result = WaitForSingleObject(thread_local_mem->sleep.timer, (DWORD)(ns / 1000000) + 1);
+				DWORD result = WaitForSingleObject(timer, (DWORD)(ns / 1000000) + 1);
 				(void)result;
 			}
 		}
@@ -2355,32 +2292,48 @@ API Arena*
 OS_ScratchArena(Arena* const* conflict, intsize conflict_count)
 {
 	Trace();
-	ThreadLocal_* thread_local_mem = TlsGetValue(g_win32.tls_index);
-	SafeAssert(thread_local_mem);
-	
-	if (!conflict_count)
-		return (Arena*)thread_local_mem->scratch.memory;
-	
-	for (intsize arena_index = 0; arena_index < thread_local_mem->scratch.chunk_count; ++arena_index)
-	{
-		Arena* arena = (Arena*)(thread_local_mem->scratch.memory + thread_local_mem->scratch.chunk_size*arena_index);
-		bool ok = true;
-		
-		for (intsize i = 0; i < conflict_count; ++i)
-		{
-			if (arena == conflict[i])
-			{
-				ok = false;
-				break;
-			}
-		}
-		
-		if (ok)
-			return arena;
-	}
-	
-	SafeAssert(!"Could not find an Arena available when calling OS_ScratchArena()");
-	return NULL;
+	Arena* arena = ScratchArena(conflict_count, conflict);
+	SafeAssert(arena);
+	return arena;
+}
+
+API void
+OS_DefaultLoggerProc(ThreadContextLogger* logger, int32 level, String str)
+{
+	Trace();
+	if (level < logger->minimum_level)
+		return;
+
+	String prefix = {};
+	if (level >= LOG_FATAL)
+		prefix = Str("[FATAL] ");
+	else if (level >= LOG_ERROR)
+		prefix = Str("[ERROR] ");
+	else if (level >= LOG_WARN)
+		prefix = Str("[WARN] ");
+	else if (level >= LOG_INFO)
+		prefix = Str("[INFO] ");
+	else if (level >= LOG_DEBUG)
+		prefix = Str("[DEBUG] ");
+
+	OS_LogErr("%S%S\n", prefix, str);
+}
+
+API ThreadContextLogger
+OS_DefaultLogger(void)
+{
+	Trace();
+	return (ThreadContextLogger) {
+		.proc = OS_DefaultLoggerProc,
+		.user_data = NULL,
+		.minimum_level = 0,
+	};
+}
+
+API NO_RETURN void
+OS_DefaultAssertionFailureProc(String expr, String func, String file, int32 line)
+{
+	OS_ExitWithErrorMessage("Assertion failure!\nFile: %S\nLine: %i\nFunc: %S\nExpr: %S", file, line, func, expr);
 }
 
 API uint64

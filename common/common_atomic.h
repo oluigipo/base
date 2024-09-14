@@ -6,54 +6,74 @@
 #if defined(__clang__) || defined(__GNUC__)
 
 #define _DEFINE_ATOMIC_PROCS(op, X) \
-	static inline FORCE_INLINE uint32 Atomic ## op ## 32 X(uint32, uint32, __ATOMIC_SEQ_CST) \
-	static inline FORCE_INLINE uint64 Atomic ## op ## 64 X(uint64, uint64, __ATOMIC_SEQ_CST) \
-	static inline FORCE_INLINE void*  Atomic ## op ## Ptr X(void*, intptr, __ATOMIC_SEQ_CST) \
-	static inline FORCE_INLINE uint32 Atomic ## op ## 32Acq X(uint32, uint32, __ATOMIC_ACQUIRE) \
-	static inline FORCE_INLINE uint64 Atomic ## op ## 64Acq X(uint64, uint64, __ATOMIC_ACQUIRE) \
-	static inline FORCE_INLINE void*  Atomic ## op ## PtrAcq X(void*, intptr, __ATOMIC_ACQUIRE) \
-	static inline FORCE_INLINE uint32 Atomic ## op ## 32Rel X(uint32, uint32, __ATOMIC_RELEASE) \
-	static inline FORCE_INLINE uint64 Atomic ## op ## 64Rel X(uint64, uint64, __ATOMIC_RELEASE) \
-	static inline FORCE_INLINE void*  Atomic ## op ## PtrRel X(void*, intptr, __ATOMIC_RELEASE) \
-	static inline FORCE_INLINE uint32 Atomic ## op ## 32AcqRel X(uint32, uint32, __ATOMIC_ACQ_REL) \
-	static inline FORCE_INLINE uint64 Atomic ## op ## 64AcqRel X(uint64, uint64, __ATOMIC_ACQ_REL) \
-	static inline FORCE_INLINE void*  Atomic ## op ## PtrAcqRel X(void*, intptr, __ATOMIC_ACQ_REL) \
-	static inline FORCE_INLINE uint32 Atomic ## op ## 32Relaxed X(uint32, uint32, __ATOMIC_RELAXED) \
-	static inline FORCE_INLINE uint64 Atomic ## op ## 64Relaxed X(uint64, uint64, __ATOMIC_RELAXED) \
-	static inline FORCE_INLINE void*  Atomic ## op ## PtrRelaxed X(void*, intptr, __ATOMIC_RELAXED)
+	static inline FORCE_INLINE int32 Atomic ## op ## 32 X(int32, int32, __ATOMIC_SEQ_CST) \
+	static inline FORCE_INLINE int64 Atomic ## op ## 64 X(int64, int64, __ATOMIC_SEQ_CST) \
+	static inline FORCE_INLINE void* Atomic ## op ## Ptr X(void*, intptr, __ATOMIC_SEQ_CST) \
+	static inline FORCE_INLINE int32 Atomic ## op ## 32Acq X(int32, int32, __ATOMIC_ACQUIRE) \
+	static inline FORCE_INLINE int64 Atomic ## op ## 64Acq X(int64, int64, __ATOMIC_ACQUIRE) \
+	static inline FORCE_INLINE void* Atomic ## op ## PtrAcq X(void*, intptr, __ATOMIC_ACQUIRE) \
+	static inline FORCE_INLINE int32 Atomic ## op ## 32Rel X(int32, int32, __ATOMIC_RELEASE) \
+	static inline FORCE_INLINE int64 Atomic ## op ## 64Rel X(int64, int64, __ATOMIC_RELEASE) \
+	static inline FORCE_INLINE void* Atomic ## op ## PtrRel X(void*, intptr, __ATOMIC_RELEASE) \
+	static inline FORCE_INLINE int32 Atomic ## op ## 32AcqRel X(int32, int32, __ATOMIC_ACQ_REL) \
+	static inline FORCE_INLINE int64 Atomic ## op ## 64AcqRel X(int64, int64, __ATOMIC_ACQ_REL) \
+	static inline FORCE_INLINE void* Atomic ## op ## PtrAcqRel X(void*, intptr, __ATOMIC_ACQ_REL) \
+	static inline FORCE_INLINE int32 Atomic ## op ## 32Relaxed X(int32, int32, __ATOMIC_RELAXED) \
+	static inline FORCE_INLINE int64 Atomic ## op ## 64Relaxed X(int64, int64, __ATOMIC_RELAXED) \
+	static inline FORCE_INLINE void* Atomic ## op ## PtrRelaxed X(void*, intptr, __ATOMIC_RELAXED)
+#define _DEFINE_ATOMIC_PROCS_WITHOUT_RELEASE(op, X) \
+	static inline FORCE_INLINE int32 Atomic ## op ## 32 X(int32, int32, __ATOMIC_SEQ_CST) \
+	static inline FORCE_INLINE int64 Atomic ## op ## 64 X(int64, int64, __ATOMIC_SEQ_CST) \
+	static inline FORCE_INLINE void* Atomic ## op ## Ptr X(void*, intptr, __ATOMIC_SEQ_CST) \
+	static inline FORCE_INLINE int32 Atomic ## op ## 32Acq X(int32, int32, __ATOMIC_ACQUIRE) \
+	static inline FORCE_INLINE int64 Atomic ## op ## 64Acq X(int64, int64, __ATOMIC_ACQUIRE) \
+	static inline FORCE_INLINE void* Atomic ## op ## PtrAcq X(void*, intptr, __ATOMIC_ACQUIRE) \
+	static inline FORCE_INLINE int32 Atomic ## op ## 32Relaxed X(int32, int32, __ATOMIC_RELAXED) \
+	static inline FORCE_INLINE int64 Atomic ## op ## 64Relaxed X(int64, int64, __ATOMIC_RELAXED) \
+	static inline FORCE_INLINE void* Atomic ## op ## PtrRelaxed X(void*, intptr, __ATOMIC_RELAXED)
 
 #define _DEFINE_ATOMIC_PROCS_RETURNING_VOID(op, X) \
-	static inline FORCE_INLINE void Atomic ## op ## 32 X(uint32, uint32, __ATOMIC_SEQ_CST) \
-	static inline FORCE_INLINE void Atomic ## op ## 64 X(uint64, uint64, __ATOMIC_SEQ_CST) \
+	static inline FORCE_INLINE void Atomic ## op ## 32 X(int32, int32, __ATOMIC_SEQ_CST) \
+	static inline FORCE_INLINE void Atomic ## op ## 64 X(int64, int64, __ATOMIC_SEQ_CST) \
 	static inline FORCE_INLINE void Atomic ## op ## Ptr X(void*, intptr, __ATOMIC_SEQ_CST) \
-	static inline FORCE_INLINE void Atomic ## op ## 32Acq X(uint32, uint32, __ATOMIC_ACQUIRE) \
-	static inline FORCE_INLINE void Atomic ## op ## 64Acq X(uint64, uint64, __ATOMIC_ACQUIRE) \
+	static inline FORCE_INLINE void Atomic ## op ## 32Acq X(int32, int32, __ATOMIC_ACQUIRE) \
+	static inline FORCE_INLINE void Atomic ## op ## 64Acq X(int64, int64, __ATOMIC_ACQUIRE) \
 	static inline FORCE_INLINE void Atomic ## op ## PtrAcq X(void*, intptr, __ATOMIC_ACQUIRE) \
-	static inline FORCE_INLINE void Atomic ## op ## 32Rel X(uint32, uint32, __ATOMIC_RELEASE) \
-	static inline FORCE_INLINE void Atomic ## op ## 64Rel X(uint64, uint64, __ATOMIC_RELEASE) \
+	static inline FORCE_INLINE void Atomic ## op ## 32Rel X(int32, int32, __ATOMIC_RELEASE) \
+	static inline FORCE_INLINE void Atomic ## op ## 64Rel X(int64, int64, __ATOMIC_RELEASE) \
 	static inline FORCE_INLINE void Atomic ## op ## PtrRel X(void*, intptr, __ATOMIC_RELEASE) \
-	static inline FORCE_INLINE void Atomic ## op ## 32AcqRel X(uint32, uint32, __ATOMIC_ACQ_REL) \
-	static inline FORCE_INLINE void Atomic ## op ## 64AcqRel X(uint64, uint64, __ATOMIC_ACQ_REL) \
+	static inline FORCE_INLINE void Atomic ## op ## 32AcqRel X(int32, int32, __ATOMIC_ACQ_REL) \
+	static inline FORCE_INLINE void Atomic ## op ## 64AcqRel X(int64, int64, __ATOMIC_ACQ_REL) \
 	static inline FORCE_INLINE void Atomic ## op ## PtrAcqRel X(void*, intptr, __ATOMIC_ACQ_REL) \
-	static inline FORCE_INLINE void Atomic ## op ## 32Relaxed X(uint32, uint32, __ATOMIC_RELAXED) \
-	static inline FORCE_INLINE void Atomic ## op ## 64Relaxed X(uint64, uint64, __ATOMIC_RELAXED) \
+	static inline FORCE_INLINE void Atomic ## op ## 32Relaxed X(int32, int32, __ATOMIC_RELAXED) \
+	static inline FORCE_INLINE void Atomic ## op ## 64Relaxed X(int64, int64, __ATOMIC_RELAXED) \
+	static inline FORCE_INLINE void Atomic ## op ## PtrRelaxed X(void*, intptr, __ATOMIC_RELAXED)
+#define _DEFINE_ATOMIC_PROCS_RETURNING_VOID_WITHOUT_ACQUIRE(op, X) \
+	static inline FORCE_INLINE void Atomic ## op ## 32 X(int32, int32, __ATOMIC_SEQ_CST) \
+	static inline FORCE_INLINE void Atomic ## op ## 64 X(int64, int64, __ATOMIC_SEQ_CST) \
+	static inline FORCE_INLINE void Atomic ## op ## Ptr X(void*, intptr, __ATOMIC_SEQ_CST) \
+	static inline FORCE_INLINE void Atomic ## op ## 32Rel X(int32, int32, __ATOMIC_RELEASE) \
+	static inline FORCE_INLINE void Atomic ## op ## 64Rel X(int64, int64, __ATOMIC_RELEASE) \
+	static inline FORCE_INLINE void Atomic ## op ## PtrRel X(void*, intptr, __ATOMIC_RELEASE) \
+	static inline FORCE_INLINE void Atomic ## op ## 32Relaxed X(int32, int32, __ATOMIC_RELAXED) \
+	static inline FORCE_INLINE void Atomic ## op ## 64Relaxed X(int64, int64, __ATOMIC_RELAXED) \
 	static inline FORCE_INLINE void Atomic ## op ## PtrRelaxed X(void*, intptr, __ATOMIC_RELAXED)
 
 #define _DEFINE_ATOMIC_PROCS_RETURNING_BOOL(op, X) \
-	static inline FORCE_INLINE bool Atomic ## op ## 32 X(uint32, uint32, __ATOMIC_SEQ_CST) \
-	static inline FORCE_INLINE bool Atomic ## op ## 64 X(uint64, uint64, __ATOMIC_SEQ_CST) \
+	static inline FORCE_INLINE bool Atomic ## op ## 32 X(int32, int32, __ATOMIC_SEQ_CST) \
+	static inline FORCE_INLINE bool Atomic ## op ## 64 X(int64, int64, __ATOMIC_SEQ_CST) \
 	static inline FORCE_INLINE bool Atomic ## op ## Ptr X(void*, intptr, __ATOMIC_SEQ_CST) \
-	static inline FORCE_INLINE bool Atomic ## op ## 32Acq X(uint32, uint32, __ATOMIC_ACQUIRE) \
-	static inline FORCE_INLINE bool Atomic ## op ## 64Acq X(uint64, uint64, __ATOMIC_ACQUIRE) \
+	static inline FORCE_INLINE bool Atomic ## op ## 32Acq X(int32, int32, __ATOMIC_ACQUIRE) \
+	static inline FORCE_INLINE bool Atomic ## op ## 64Acq X(int64, int64, __ATOMIC_ACQUIRE) \
 	static inline FORCE_INLINE bool Atomic ## op ## PtrAcq X(void*, intptr, __ATOMIC_ACQUIRE) \
-	static inline FORCE_INLINE bool Atomic ## op ## 32Rel X(uint32, uint32, __ATOMIC_RELEASE) \
-	static inline FORCE_INLINE bool Atomic ## op ## 64Rel X(uint64, uint64, __ATOMIC_RELEASE) \
+	static inline FORCE_INLINE bool Atomic ## op ## 32Rel X(int32, int32, __ATOMIC_RELEASE) \
+	static inline FORCE_INLINE bool Atomic ## op ## 64Rel X(int64, int64, __ATOMIC_RELEASE) \
 	static inline FORCE_INLINE bool Atomic ## op ## PtrRel X(void*, intptr, __ATOMIC_RELEASE) \
-	static inline FORCE_INLINE bool Atomic ## op ## 32AcqRel X(uint32, uint32, __ATOMIC_ACQ_REL) \
-	static inline FORCE_INLINE bool Atomic ## op ## 64AcqRel X(uint64, uint64, __ATOMIC_ACQ_REL) \
+	static inline FORCE_INLINE bool Atomic ## op ## 32AcqRel X(int32, int32, __ATOMIC_ACQ_REL) \
+	static inline FORCE_INLINE bool Atomic ## op ## 64AcqRel X(int64, int64, __ATOMIC_ACQ_REL) \
 	static inline FORCE_INLINE bool Atomic ## op ## PtrAcqRel X(void*, intptr, __ATOMIC_ACQ_REL) \
-	static inline FORCE_INLINE bool Atomic ## op ## 32Relaxed X(uint32, uint32, __ATOMIC_RELAXED) \
-	static inline FORCE_INLINE bool Atomic ## op ## 64Relaxed X(uint64, uint64, __ATOMIC_RELAXED) \
+	static inline FORCE_INLINE bool Atomic ## op ## 32Relaxed X(int32, int32, __ATOMIC_RELAXED) \
+	static inline FORCE_INLINE bool Atomic ## op ## 64Relaxed X(int64, int64, __ATOMIC_RELAXED) \
 	static inline FORCE_INLINE bool Atomic ## op ## PtrRelaxed X(void*, intptr, __ATOMIC_RELAXED)
 
 #define X_LOAD(Type, ArithType, ordering)             (void* ptr) { return __atomic_load_n((Type*)ptr, ordering); }
@@ -68,8 +88,8 @@
 #define X_INC(Type, ArithType, ordering)              (void* ptr) { return (Type)__atomic_add_fetch((Type*)ptr, (ArithType)1, ordering); }
 #define X_DEC(Type, ArithType, ordering)              (void* ptr) { return (Type)__atomic_sub_fetch((Type*)ptr, (ArithType)1, ordering); }
 
-_DEFINE_ATOMIC_PROCS(Load, X_LOAD);
-_DEFINE_ATOMIC_PROCS_RETURNING_VOID(Store, X_STORE);
+_DEFINE_ATOMIC_PROCS_WITHOUT_RELEASE(Load, X_LOAD);
+_DEFINE_ATOMIC_PROCS_RETURNING_VOID_WITHOUT_ACQUIRE(Store, X_STORE);
 _DEFINE_ATOMIC_PROCS(Exchange, X_EXCHANGE);
 _DEFINE_ATOMIC_PROCS_RETURNING_BOOL(CompareExchange, X_COMPARE_EXCHANGE);
 _DEFINE_ATOMIC_PROCS(AddFetch, X_ADD_FETCH);

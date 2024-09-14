@@ -158,6 +158,7 @@ extern const unsigned char name ## _end[];
 #if defined(__clang__)
 #	define Assume(...) __builtin_assume(__VA_ARGS__)
 #	define Debugbreak() __builtin_debugtrap()
+#	define Trap() __builtin_trap()
 #	define Likely(...) __builtin_expect(!!(__VA_ARGS__), 1)
 #	define Unlikely(...) __builtin_expect((__VA_ARGS__), 0)
 #	define Unreachable() __builtin_unreachable()
@@ -172,6 +173,7 @@ extern const unsigned char name ## _end[];
 #elif defined(_MSC_VER)
 #	define Assume(...) __assume(__VA_ARGS__)
 #	define Debugbreak() __debugbreak()
+#	define Trap() __debugbreak()
 #	define Likely(...) (__VA_ARGS__)
 #	define Unlikely(...) (__VA_ARGS__)
 #	define Unreachable() __assume(0)
@@ -185,6 +187,7 @@ extern const unsigned char name ## _end[];
 #elif defined(__GNUC__)
 #	define Assume(...) do { if (!(__VA_ARGS__)) __builtin_unreachable(); } while (0)
 #	define Debugbreak() __asm__ __volatile__ ("int $3")
+#	define Trap() __builtin_trap()
 #	define Likely(...) __builtin_expect(!!(__VA_ARGS__), 1)
 #	define Unlikely(...) __builtin_expect((__VA_ARGS__), 0)
 #	define Unreachable() __builtin_unreachable()
@@ -237,57 +240,6 @@ extern const unsigned char name ## _end[];
 #else
 #	define CONFIG_IF_ENHANCED_ENUMS(...)
 #endif
-
-//~ ASSERT
-#ifndef Assert_IsDebuggerPresent_
-#	ifdef _WIN32
-EXTERN_C __declspec(dllimport) int __stdcall IsDebuggerPresent(void);
-#		define Assert_IsDebuggerPresent_() IsDebuggerPresent()
-#	else
-#		define Assert_IsDebuggerPresent_() true
-#	endif
-#endif
-
-//- NOTE(ljre): SafeAssert -- always present, side-effects allowed, memory safety assert
-#ifndef SafeAssert_OnFailure
-#	define SafeAssert_OnFailure(expr, file, line, func) Unreachable()
-#endif
-#define SafeAssert(...) do {                                                  \
-		bool not_ok = !(__VA_ARGS__);                                         \
-		if (Unlikely(not_ok)) {                                               \
-			if (Assert_IsDebuggerPresent_())                                  \
-				Debugbreak();                                                 \
-			SafeAssert_OnFailure(#__VA_ARGS__, __FILE__, __LINE__, __func__); \
-		}                                                                     \
-	} while (0)
-
-//- NOTE(ljre): Assert -- set to Assume() on release, logic safety assert
-#ifndef CONFIG_DEBUG
-#	define Assert(...) Assume(__VA_ARGS__)
-#else //CONFIG_DEBUG
-#	ifndef Assert_OnFailure
-#		define Assert_OnFailure(expr, file, line, func) Unreachable()
-#	endif
-#	define Assert(...) do {                                               \
-		if (Unlikely(!(__VA_ARGS__))) {                                   \
-			if (Assert_IsDebuggerPresent_())                              \
-				Debugbreak();                                             \
-			Assert_OnFailure(#__VA_ARGS__, __FILE__, __LINE__, __func__); \
-		}                                                                 \
-	} while (0)
-#endif //CONFIG_DEBUG
-
-#ifdef CONFIG_OS_ANDROID
-#	include <android/log.h>
-//#	undef Trace
-//#	define Trace() __android_log_print(ANDROID_LOG_INFO, "NativeExample", "[Trace] %s\n", __func__)
-#	undef Assert_OnFailure
-#	define Assert_OnFailure(expr, file, line, func) do { __android_log_print(ANDROID_LOG_FATAL, "NativeExample", "[Assert] file %s at line %i:\n\tFunction: %s\n\tExpr: %s\n", file, line, func, expr); Unreachable(); } while (0)
-#	undef SafeAssert_OnFailure
-#	define SafeAssert_OnFailure Assert_OnFailure
-#	undef Assert_IsDebuggerPresent_
-#	define Assert_IsDebuggerPresent_() false
-#endif //CONFIG_OS_ANDROID
 
 typedef uint8_t   uint8;
 typedef uint16_t  uint16;
@@ -381,6 +333,41 @@ struct Allocator
 	AllocatorProc* proc;
 	void* instance;
 };
+
+Allocator typedef SingleAllocator;         // Alloc; single allocation
+Allocator typedef SingleResizingAllocator; // Alloc, Resize; single allocation
+Allocator typedef MultiAllocator;          // Alloc
+Allocator typedef MultiResizingAllocator;  // Alloc, Resize, Free
+Allocator typedef ArenaAllocator;          // Alloc, Pop
+
+enum
+{
+	LOG_DEBUG = 0,
+	LOG_INFO = 10,
+	LOG_WARN = 20,
+	LOG_ERROR = 30,
+	LOG_FATAL = 40,
+};
+
+struct ThreadContextLogger typedef ThreadContextLogger;
+typedef void ThreadContextLoggerProc(ThreadContextLogger* logger, int32 level, String string);
+
+struct ThreadContextLogger
+{
+	ThreadContextLoggerProc* proc;
+	void* user_data;
+	int32 minimum_level;
+};
+
+typedef void ThreadContextAssertionFailureProc(String expr, String func, String file, int32 line);
+
+struct ThreadContext
+{
+	Arena scratch[2]; // 4 MiB each
+	ThreadContextLogger logger;
+	ThreadContextAssertionFailureProc* assertion_failure_proc;
+}
+typedef ThreadContext;
 
 #define INTSIZE_MAX PTRDIFF_MAX
 #define INTSIZE_MIN PTRDIFF_MIN

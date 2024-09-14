@@ -9,6 +9,8 @@
 #endif
 #include <vulkan/vulkan.h>
 
+#include "render4_handlepool.h"
+
 struct R4_Context
 {
 	Allocator allocator;
@@ -29,8 +31,11 @@ struct R4_Context
 
 	void* user_data;
 	R4_OnErrorCallback* on_error;
-
 	R4_ContextInfo info;
+
+	HandlePool_ hpool_heap;
+	HandlePool_ hpool_rtv;
+	HandlePool_ hpool_dsv;
 };
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL
@@ -107,6 +112,40 @@ CheckAllocatorErr_(AllocatorError err, R4_Result* r)
 		else
 			*r = R4_Result_AllocatorError;
 	}
+	return false;
+}
+
+static bool
+CheckHandleCreation_(R4_Context* ctx, void* handle, R4_Result* r)
+{
+	if (handle)
+	{
+		if (r)
+			*r = R4_Result_Ok;
+		return true;
+	}
+
+	if (r)
+		*r = R4_Result_OutOfHandles;
+	if (ctx->on_error)
+		ctx->on_error(ctx->user_data, R4_Result_OutOfHandles, r);
+	return false;
+}
+
+static bool
+CheckHandleFetch_(R4_Context* ctx, void* impl, R4_Result* r)
+{
+	if (impl)
+	{
+		if (r)
+			*r = R4_Result_Ok;
+		return true;
+	}
+
+	if (r)
+		*r = R4_Result_InvalidHandle;
+	if (ctx->on_error)
+		ctx->on_error(ctx->user_data, R4_Result_InvalidHandle, r);
 	return false;
 }
 
@@ -892,6 +931,34 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 		.has_raytracing = has_raytracing,
 	};
 
+	// =============================================================================
+	// create handle pools
+	int32 max_rtvs = desc->max_render_target_views;
+	int32 max_dsvs = desc->max_depth_stencil_views;
+	int32 max_samplers = desc->max_samplers;
+	int32 max_image_views = desc->max_image_views;
+	int32 max_buffer_views = desc->max_buffer_views;
+	if (!max_rtvs)
+		max_rtvs = 1024;
+	if (!max_dsvs)
+		max_dsvs = 1024;
+	if (!max_samplers)
+		max_samplers = 1024;
+	if (!max_image_views)
+		max_image_views = 1<<20;
+	if (!max_buffer_views)
+		max_buffer_views = 1<<20;
+
+	ctx->hpool_heap = InitHandlePool_(1024, sizeof(R4_VK_Heap), allocator, &err);
+	if (!CheckAllocatorErr_(err, r))
+		goto lbl_error;
+	ctx->hpool_rtv = InitHandlePool_(max_rtvs, sizeof(R4_VK_RenderTargetView), allocator, &err);
+	if (!CheckAllocatorErr_(err, r))
+		goto lbl_error;
+	ctx->hpool_dsv = InitHandlePool_(max_dsvs, sizeof(R4_VK_DepthStencilView), allocator, &err);
+	if (!CheckAllocatorErr_(err, r))
+		goto lbl_error;
+
 	return ctx;
 
 lbl_error:
@@ -919,6 +986,24 @@ API void
 R4_DestroyContext(R4_Context* ctx, R4_Result* r)
 {
 	Trace();
+	for (intz i = 0; i < ctx->hpool_heap.allocated_count; ++i)
+	{
+		R4_VK_Heap* impl = FetchByIndexFromHandlePool_(&ctx->hpool_heap, i);
+		if (impl && impl->memory)
+			vkFreeMemory(ctx->device, impl->memory, NULL);
+	}
+	for (intz i = 0; i < ctx->hpool_rtv.allocated_count; ++i)
+	{
+		R4_VK_RenderTargetView* impl = FetchByIndexFromHandlePool_(&ctx->hpool_rtv, i);
+		if (impl && impl->image_view)
+			vkDestroyImageView(ctx->device, impl->image_view, NULL);
+	}
+	for (intz i = 0; i < ctx->hpool_dsv.allocated_count; ++i)
+	{
+		R4_VK_DepthStencilView* impl = FetchByIndexFromHandlePool_(&ctx->hpool_dsv, i);
+		if (impl && impl->image_view)
+			vkDestroyImageView(ctx->device, impl->image_view, NULL);
+	}
 	for (intz i = 0; i < ArrayLength(ctx->completion_fences); ++i)
 		if (ctx->completion_fences[i])
 			vkDestroyFence(ctx->device, ctx->completion_fences[i], NULL);
@@ -1026,6 +1111,11 @@ R4_MakeHeap(R4_Context* ctx, R4_Result* r, R4_HeapType type, int64 size)
 	Trace();
 	VkResult vkr;
 	VkDeviceMemory memory = NULL;
+	R4_Heap handle = NULL;
+	R4_VK_Heap* heap_impl = AllocateFromHandlePool_(&ctx->hpool_heap, &handle, NULL);
+	if (!CheckHandleCreation_(ctx, handle, r))
+		return NULL;
+
 	uint32 memory_type;
 	switch (type)
 	{
@@ -1044,17 +1134,24 @@ R4_MakeHeap(R4_Context* ctx, R4_Result* r, R4_HeapType type, int64 size)
 	};
 	vkr = vkAllocateMemory(ctx->device, &memory_desc, NULL, &memory);
 	if (!CheckResult_(ctx, vkr, r))
-		return (R4_Heap) {};
-	return (R4_Heap) {
-		.vk.memory = memory,
-	};
+	{
+		FreeFromHandlePool_(&ctx->hpool_heap, handle);
+		return NULL;
+	}
+	heap_impl->memory = memory;
+	return handle;
 }
 
 API void
-R4_FreeHeap(R4_Context* ctx, R4_Heap* heap)
+R4_FreeHeap(R4_Context* ctx, R4_Heap heap)
 {
 	Trace();
-	// TODO
+	R4_VK_Heap* heap_impl = FetchFromHandlePool_(&ctx->hpool_heap, heap, NULL);
+	if (heap_impl)
+	{
+		vkFreeMemory(ctx->device, heap_impl->memory, NULL);
+		FreeFromHandlePool_(&ctx->hpool_heap, heap);
+	}
 }
 
 // =============================================================================
@@ -1067,14 +1164,18 @@ R4_MakeUploadBuffer(R4_Context* ctx, R4_Result* r, R4_UploadBufferDesc const* de
 	SafeAssert(desc->heap_offset >= 0);
 	VkResult vkr;
 	VkBuffer buffer = NULL;
-	VkDeviceMemory device_memory = desc->heap->vk.memory;
+
+	R4_VK_Heap* heap_impl = FetchFromHandlePool_(&ctx->hpool_heap, desc->heap, NULL);
+	if (!CheckHandleFetch_(ctx, heap_impl, r))
+		return (R4_Buffer) {};
+	VkDeviceMemory device_memory = heap_impl->memory;
 	VkDeviceSize offset = (uint64)desc->heap_offset;
 
 	VkBufferCreateInfo buffer_desc = VulkanBufferDescFromBufferDesc_(&desc->buffer_desc);
 	vkr = vkCreateBuffer(ctx->device, &buffer_desc, NULL, &buffer);
 	if (!CheckResult_(ctx, vkr, r))
 		return (R4_Buffer) {};
-	vkr = vkBindBufferMemory(ctx->device, buffer, desc->heap->vk.memory, offset);
+	vkr = vkBindBufferMemory(ctx->device, buffer, device_memory, offset);
 	if (!CheckResult_(ctx, vkr, r))
 	{
 		vkDestroyBuffer(ctx->device, buffer, NULL);
@@ -1096,14 +1197,17 @@ R4_MakePlacedBuffer(R4_Context* ctx, R4_Result* r, R4_PlacedBufferDesc const* de
 	SafeAssert(desc->heap_offset >= 0);
 	VkResult vkr;
 	VkBuffer buffer = NULL;
-	VkDeviceMemory device_memory = desc->heap->vk.memory;
+	R4_VK_Heap* heap_impl = FetchFromHandlePool_(&ctx->hpool_heap, desc->heap, NULL);
+	if (!CheckHandleFetch_(ctx, heap_impl, r))
+		return (R4_Buffer) {};
+	VkDeviceMemory device_memory = heap_impl->memory;
 	VkDeviceSize offset = (uint64)desc->heap_offset;
 
 	VkBufferCreateInfo buffer_desc = VulkanBufferDescFromBufferDesc_(&desc->buffer_desc);
 	vkr = vkCreateBuffer(ctx->device, &buffer_desc, NULL, &buffer);
 	if (!CheckResult_(ctx, vkr, r))
 		return (R4_Buffer) {};
-	vkr = vkBindBufferMemory(ctx->device, buffer, desc->heap->vk.memory, offset);
+	vkr = vkBindBufferMemory(ctx->device, buffer, device_memory, offset);
 	if (!CheckResult_(ctx, vkr, r))
 	{
 		vkDestroyBuffer(ctx->device, buffer, NULL);
@@ -1133,14 +1237,17 @@ R4_MakePlacedImage(R4_Context* ctx, R4_Result* r, R4_PlacedImageDesc const* desc
 	SafeAssert(desc->heap_offset >= 0);
 	VkResult vkr;
 	VkImage image = NULL;
-	VkDeviceMemory device_memory = desc->heap->vk.memory;
+	R4_VK_Heap* heap_impl = FetchFromHandlePool_(&ctx->hpool_heap, desc->heap, NULL);
+	if (!CheckHandleFetch_(ctx, heap_impl, r))
+		return (R4_Image) {};
+	VkDeviceMemory device_memory = heap_impl->memory;
 	VkDeviceSize offset = (uint64)desc->heap_offset;
 
 	VkImageCreateInfo image_info = VulkanImageDescFromImageDesc_(&desc->image_desc, desc->initial_state);
 	vkr = vkCreateImage(ctx->device, &image_info, NULL, &image);
 	if (!CheckResult_(ctx, vkr, r))
 		return (R4_Image) {};
-	vkr = vkBindImageMemory(ctx->device, image, desc->heap->vk.memory, offset);
+	vkr = vkBindImageMemory(ctx->device, image, device_memory, offset);
 	if (!CheckResult_(ctx, vkr, r))
 	{
 		vkDestroyImage(ctx->device, image, NULL);
@@ -1271,6 +1378,11 @@ API R4_RenderTargetView
 R4_MakeRenderTargetView(R4_Context* ctx, R4_Result* r, R4_RenderTargetViewDesc const* desc)
 {
 	Trace();
+	R4_RenderTargetView handle = NULL;
+	R4_VK_RenderTargetView* impl = AllocateFromHandlePool_(&ctx->hpool_rtv, &handle, NULL);
+	if (!CheckHandleCreation_(ctx, handle, r))
+		return NULL;
+
 	VkResult vkr;
 	VkImageView view = NULL;
 	VkImageViewCreateInfo view_desc = {
@@ -1292,20 +1404,25 @@ R4_MakeRenderTargetView(R4_Context* ctx, R4_Result* r, R4_RenderTargetViewDesc c
 	};
 	vkr = vkCreateImageView(ctx->device, &view_desc, NULL, &view);
 	if (!CheckResult_(ctx, vkr, r))
-		return (R4_RenderTargetView) {};
+	{
+		FreeFromHandlePool_(&ctx->hpool_rtv, handle);
+		return NULL;
+	}
 
-	return (R4_RenderTargetView) {
-		.vk.image_view = view,
-	};
+	impl->image_view = view;
+	return handle;
 }
 
 API void
-R4_FreeRenderTargetView(R4_Context* ctx, R4_RenderTargetView* render_target_view)
+R4_FreeRenderTargetView(R4_Context* ctx, R4_RenderTargetView render_target_view)
 {
 	Trace();
-	if (render_target_view->vk.image_view)
-		vkDestroyImageView(ctx->device, render_target_view->vk.image_view, NULL);
-	*render_target_view = (R4_RenderTargetView) {};
+	R4_VK_RenderTargetView* impl = FetchFromHandlePool_(&ctx->hpool_rtv, render_target_view, NULL);
+	if (impl)
+	{
+		vkDestroyImageView(ctx->device, impl->image_view, NULL);
+		FreeFromHandlePool_(&ctx->hpool_rtv, render_target_view);
+	}
 }
 
 API R4_DepthStencilView
@@ -1314,17 +1431,18 @@ R4_MakeDepthStencilView(R4_Context* ctx, R4_Result* r, R4_DepthStencilViewDesc c
 	Trace();
 	VkResult vkr;
 	VkImageView view = NULL;
-	return (R4_DepthStencilView) {
-		.vk.image_view = view,
-	};
+	return NULL;
 }
 
 API void
-R4_FreeDepthStencilView(R4_Context* ctx, R4_DepthStencilView* depth_stencil_view)
+R4_FreeDepthStencilView(R4_Context* ctx, R4_DepthStencilView depth_stencil_view)
 {
-	if (depth_stencil_view->vk.image_view)
-		vkDestroyImageView(ctx->device, depth_stencil_view->vk.image_view, NULL);
-	*depth_stencil_view = (R4_DepthStencilView) {};
+	R4_VK_DepthStencilView* impl = FetchFromHandlePool_(&ctx->hpool_dsv, depth_stencil_view, NULL);
+	if (impl)
+	{
+		vkDestroyImageView(ctx->device, impl->image_view, NULL);
+		FreeFromHandlePool_(&ctx->hpool_dsv, depth_stencil_view);
+	}
 }
 
 // =============================================================================
@@ -1563,7 +1681,7 @@ R4_MakeGraphicsPipeline(R4_Context* ctx, R4_Result* r, R4_GraphicsPipelineDesc c
 		intz binding_index = -1;
 
 		if (input->instance_step_rate)
-			input_rate = VK_VERTEX_INPUT_RATE_VERTEX;
+			input_rate = VK_VERTEX_INPUT_RATE_INSTANCE;
 		else
 			input_rate = VK_VERTEX_INPUT_RATE_VERTEX;
 
@@ -1970,7 +2088,7 @@ R4_EndCommandList(R4_Context* ctx, R4_Result* r, R4_CommandList* cmdlist)
 }
 
 API void
-R4_CmdBeginRenderpass(R4_CommandList* cmdlist, R4_Renderpass const* renderpass)
+R4_CmdBeginRenderpass(R4_Context* ctx, R4_CommandList* cmdlist, R4_Renderpass const* renderpass)
 {
 	Trace();
 
@@ -2000,25 +2118,27 @@ R4_CmdBeginRenderpass(R4_CommandList* cmdlist, R4_Renderpass const* renderpass)
 		R4_RenderpassRenderTarget const* render_target = &renderpass->render_targets[i];
 		if (!render_target->render_target_view)
 			break;
-
-		color_attachments[color_attachment_count++] = (VkRenderingAttachmentInfo) {
-			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-			.loadOp = load_table[render_target->load],
-			.storeOp = store_table[render_target->store],
-			.imageView = render_target->render_target_view->vk.image_view,
-			.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-			.clearValue.color.float32 = {
-				render_target->clear_color[0],
-				render_target->clear_color[1],
-				render_target->clear_color[2],
-				render_target->clear_color[3],
-			},
-		};
+		R4_VK_RenderTargetView* impl = FetchFromHandlePool_(&ctx->hpool_rtv, render_target->render_target_view, NULL);
+		if (CheckHandleFetch_(ctx, impl, NULL))
+			color_attachments[color_attachment_count++] = (VkRenderingAttachmentInfo) {
+				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+				.loadOp = load_table[render_target->load],
+				.storeOp = store_table[render_target->store],
+				.imageView = impl->image_view,
+				.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				.clearValue.color.float32 = {
+					render_target->clear_color[0],
+					render_target->clear_color[1],
+					render_target->clear_color[2],
+					render_target->clear_color[3],
+				},
+			};
 	}
 
 	if (renderpass->depth_stencil.depth_stencil_view)
 	{
 		R4_RenderpassDepthStencil const* depth_stencil = &renderpass->depth_stencil;
+		R4_VK_DepthStencilView* impl = FetchFromHandlePool_(&ctx->hpool_dsv, depth_stencil->depth_stencil_view, NULL);
 		if (!renderpass->no_depth)
 			has_depth = true;
 		if (!renderpass->no_stencil)
@@ -2028,7 +2148,7 @@ R4_CmdBeginRenderpass(R4_CommandList* cmdlist, R4_Renderpass const* renderpass)
 			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 			.loadOp = load_table[depth_stencil->load],
 			.storeOp = store_table[depth_stencil->store],
-			.imageView = depth_stencil->depth_stencil_view->vk.image_view,
+			.imageView = impl->image_view,
 			.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 			.clearValue.depthStencil = {
 				.depth = depth_stencil->clear_depth,
@@ -2055,7 +2175,7 @@ R4_CmdBeginRenderpass(R4_CommandList* cmdlist, R4_Renderpass const* renderpass)
 }
 
 API void
-R4_CmdEndRenderpass(R4_CommandList* cmdlist)
+R4_CmdEndRenderpass(R4_Context* ctx, R4_CommandList* cmdlist)
 {
 	Trace();
 	vkCmdEndRendering(cmdlist->vk.buffer);

@@ -12,21 +12,9 @@
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 
-static_assert(sizeof(R4_D3D12_Queue)            <= sizeof(R4_Queue), "");
-static_assert(sizeof(R4_D3D12_Buffer)           <= sizeof(R4_Buffer), "");
-static_assert(sizeof(R4_D3D12_Image)            <= sizeof(R4_Image), "");
-static_assert(sizeof(R4_D3D12_Heap)             <= sizeof(R4_Heap), "");
-static_assert(sizeof(R4_D3D12_CommandAllocator) <= sizeof(R4_CommandAllocator), "");
-static_assert(sizeof(R4_D3D12_CommandList)      <= sizeof(R4_CommandList), "");
-static_assert(sizeof(R4_D3D12_Pipeline)         <= sizeof(R4_Pipeline), "");
-static_assert(sizeof(R4_D3D12_PipelineLayout)   <= sizeof(R4_PipelineLayout), "");
-static_assert(sizeof(R4_D3D12_DescriptorHeap)   <= sizeof(R4_DescriptorHeap), "");
-static_assert(sizeof(R4_D3D12_DescriptorSet)    <= sizeof(R4_DescriptorSet), "");
-static_assert(sizeof(R4_D3D12_BufferView)       <= sizeof(R4_BufferView), "");
-static_assert(sizeof(R4_D3D12_ImageView)        <= sizeof(R4_ImageView), "");
-static_assert(sizeof(R4_D3D12_Sampler)          <= sizeof(R4_Sampler), "");
-static_assert(sizeof(R4_D3D12_RenderTargetView) <= sizeof(R4_RenderTargetView), "");
-static_assert(sizeof(R4_D3D12_DepthStencilView) <= sizeof(R4_DepthStencilView), "");
+static_assert(sizeof(void*) >= sizeof(uint64), "must");
+
+#include "render4_handlepool.h"
 
 struct ViewPool_
 {
@@ -47,8 +35,13 @@ struct R4_Context
 	struct ID3D12CommandQueue* direct_queue;
 	struct ID3D12CommandQueue* compute_queue;
 	struct ID3D12CommandQueue* copy_queue;
+	uint64 resc_descriptor_size;
+	uint64 sampler_descriptor_size;
 	R4_ContextInfo info;
 	bool debug_layer_enabled;
+
+	R4_OnErrorCallback* on_error;
+	void* user_data;
 
 	struct ID3D12Fence* fence;
 	void* fence_event;
@@ -59,10 +52,25 @@ struct R4_Context
 	struct ID3D12DescriptorHeap* sampler_heap;
 	struct ID3D12DescriptorHeap* cbv_srv_uav_heap;
 
-	ViewPool_ rtv_pool;
-	ViewPool_ dsv_pool;
 	ViewPool_ sampler_pool;
 	ViewPool_ cbv_srv_uav_pool;
+
+	CppHandlePool_<R4_D3D12_Queue> hpool_queue;
+	CppHandlePool_<R4_D3D12_Buffer> hpool_buffer;
+	CppHandlePool_<R4_D3D12_Image> hpool_image;
+	CppHandlePool_<R4_D3D12_Heap> hpool_heap;
+	CppHandlePool_<R4_D3D12_CommandAllocator> hpool_cmdalloc;
+	CppHandlePool_<R4_D3D12_CommandList> hpool_cmdlist;
+	CppHandlePool_<R4_D3D12_Pipeline> hpool_pipeline;
+	CppHandlePool_<R4_D3D12_PipelineLayout> hpool_pipelayout;
+	CppHandlePool_<R4_D3D12_BindLayout> hpool_bindlayout;
+	CppHandlePool_<R4_D3D12_DescriptorHeap> hpool_descheap;
+	CppHandlePool_<R4_D3D12_DescriptorSet> hpool_descset;
+	CppHandlePool_<R4_D3D12_BufferView> hpool_bufferview;
+	CppHandlePool_<R4_D3D12_ImageView> hpool_imageview;
+	CppHandlePool_<R4_D3D12_Sampler> hpool_sampler;
+	CppHandlePool_<R4_D3D12_RenderTargetView> hpool_rtv;
+	CppHandlePool_<R4_D3D12_DepthStencilView> hpool_dsv;
 }
 typedef R4_Context;
 
@@ -113,7 +121,7 @@ FreeViewPool_(ViewPool_* pool, Allocator allocator, AllocatorError* err)
 }
 
 static bool
-CheckHr_(HRESULT hr, R4_Result* r)
+CheckHr_(R4_Context* ctx, HRESULT hr, R4_Result* r)
 {
 	if (SUCCEEDED(hr))
 	{
@@ -122,28 +130,30 @@ CheckHr_(HRESULT hr, R4_Result* r)
 		return true;
 	}
 		
-	OS_LogErr("ERROR: HR: %u\n", (unsigned int)hr);
-	if (r)
+	Log(LOG_ERROR, "ERROR: HR: %u\n", (unsigned int)hr);
+	R4_Result result;
+	if (hr == DXGI_ERROR_DEVICE_HUNG ||
+		hr == DXGI_ERROR_DEVICE_REMOVED ||
+		hr == DXGI_ERROR_DEVICE_RESET ||
+		hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR)
 	{
-		if (hr == DXGI_ERROR_DEVICE_HUNG ||
-			hr == DXGI_ERROR_DEVICE_REMOVED ||
-			hr == DXGI_ERROR_DEVICE_RESET ||
-			hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR)
-		{
-			*r = R4_Result_DeviceLost;
-		}
-		else if (hr == E_OUTOFMEMORY)
-			*r = R4_Result_DeviceOutOfMemory;
-		else
-			*r = R4_Result_Failure;
+		result = R4_Result_DeviceLost;
 	}
+	else if (hr == E_OUTOFMEMORY)
+		result = R4_Result_DeviceOutOfMemory;
+	else
+		result = R4_Result_Failure;
 	if (IsDebuggerPresent())
 		Debugbreak();
+	if (r)
+		*r = result;
+	if (ctx->on_error)
+		ctx->on_error(ctx->user_data, result, r);
 	return false;
 }
 
 static bool
-CheckAllocatorErr_(AllocatorError err, R4_Result* r)
+CheckAllocatorErr_(R4_Context* ctx, AllocatorError err, R4_Result* r)
 {
 	if (!err)
 	{
@@ -152,14 +162,73 @@ CheckAllocatorErr_(AllocatorError err, R4_Result* r)
 		return true;
 	}
 
-	OS_LogErr("ERROR: ALLOCATOR: %u\n", (unsigned int)err);
+	Log(LOG_ERROR, "ERROR: ALLOCATOR: %u\n", (unsigned int)err);
+	R4_Result result;
+	if (err == AllocatorError_OutOfMemory)
+		result = R4_Result_AllocatorOutOfMemory;
+	else
+		result = R4_Result_AllocatorError;
 	if (r)
+		*r = result;
+	if (ctx->on_error)
+		ctx->on_error(ctx->user_data, result, r);
+	return false;
+}
+
+static bool
+CheckHandle_(R4_Context* ctx, void* handle, R4_Result* r)
+{
+	if (handle)
 	{
-		if (err == AllocatorError_OutOfMemory)
-			*r = R4_Result_AllocatorOutOfMemory;
-		else
-			*r = R4_Result_AllocatorError;
+		if (r)
+			*r = R4_Result_Ok;
+		return true;
 	}
+
+	Log(LOG_ERROR, "ERROR: could not allocate handle\n");
+	R4_Result result;
+	if (r)
+		result = R4_Result_OutOfHandles;
+	if (r)
+		*r = result;
+	if (ctx->on_error)
+		ctx->on_error(ctx->user_data, result, r);
+	return false;
+}
+
+static bool
+CheckHandleCreation_(R4_Context* ctx, void* handle, R4_Result* r)
+{
+	if (handle)
+	{
+		if (r)
+			*r = R4_Result_Ok;
+		return true;
+	}
+
+	Log(LOG_ERROR, "ERROR: could not allocate handle\n");
+	if (r)
+		*r = R4_Result_OutOfHandles;
+	if (ctx->on_error)
+		ctx->on_error(ctx->user_data, R4_Result_OutOfHandles, r);
+	return false;
+}
+
+static bool
+CheckHandleFetch_(R4_Context* ctx, void* impl, R4_Result* r)
+{
+	if (impl)
+	{
+		if (r)
+			*r = R4_Result_Ok;
+		return true;
+	}
+
+	Log(LOG_ERROR, "ERROR: could not fetch handle\n");
+	if (r)
+		*r = R4_Result_InvalidHandle;
+	if (ctx->on_error)
+		ctx->on_error(ctx->user_data, R4_Result_InvalidHandle, r);
 	return false;
 }
 
@@ -331,7 +400,8 @@ D3d12LogicOpFromLogicOp_(R4_LogicOp op)
 
 	switch (op)
 	{
-
+		default: Unreachable(); break;
+		case R4_LogicOp_Null: break;
 	}
 
 	return result;
@@ -344,6 +414,7 @@ D3d12CullModeFromCullMode_(R4_CullMode mode)
 
 	switch (mode)
 	{
+		default: Unreachable(); break;
 		case R4_CullMode_None: result = D3D12_CULL_MODE_NONE; break;
 		case R4_CullMode_Back: result = D3D12_CULL_MODE_BACK; break;
 		case R4_CullMode_Front: result = D3D12_CULL_MODE_FRONT; break;
@@ -359,7 +430,16 @@ D3d12CompFuncFromCompFunc_(R4_ComparisonFunc func)
 
 	switch (func)
 	{
-
+		default: Unreachable(); break;
+		case R4_ComparisonFunc_Null: break;
+		case R4_ComparisonFunc_Never: result = D3D12_COMPARISON_FUNC_NEVER; break;
+		case R4_ComparisonFunc_Always: result = D3D12_COMPARISON_FUNC_ALWAYS; break;
+		case R4_ComparisonFunc_Equal: result = D3D12_COMPARISON_FUNC_EQUAL; break;
+		case R4_ComparisonFunc_NotEqual: result = D3D12_COMPARISON_FUNC_NOT_EQUAL; break;
+		case R4_ComparisonFunc_Less: result = D3D12_COMPARISON_FUNC_LESS; break;
+		case R4_ComparisonFunc_LessEqual: result = D3D12_COMPARISON_FUNC_LESS_EQUAL; break;
+		case R4_ComparisonFunc_Greater: result = D3D12_COMPARISON_FUNC_GREATER; break;
+		case R4_ComparisonFunc_GreaterEqual: result = D3D12_COMPARISON_FUNC_GREATER_EQUAL; break;
 	}
 
 	return result;
@@ -534,14 +614,22 @@ RowPitchFromWidthAndFormat_(int64 width, R4_Format format)
 }
 
 static ID3D12Resource*
-D3d12ResourceFromResource_(R4_Resource resource)
+D3d12ResourceFromResource_(R4_Context* ctx, R4_Resource resource)
 {
 	ID3D12Resource* result = NULL;
 
 	if (resource.buffer)
-		result = resource.buffer->d3d12.resource;
+	{
+		R4_D3D12_Buffer* impl = FetchFromCppHandlePool_(&ctx->hpool_buffer, resource.buffer, NULL);
+		if (impl)
+			result = impl->resource;
+	}
 	else if (resource.image)
-		result = resource.image->d3d12.resource;
+	{
+		R4_D3D12_Image* impl = FetchFromCppHandlePool_(&ctx->hpool_image, resource.image, NULL);
+		if (impl)
+			result = impl->resource;
+	}
 	
 	return result;
 }
@@ -619,11 +707,49 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 	AllocatorError err;
 	HRESULT hr;
 	R4_Context* d3d12 = AllocatorNew<R4_Context>(&allocator, &err);
-	if (!CheckAllocatorErr_(err, r))
+	if (err || !d3d12)
+	{
+		if (r)
+			*r = R4_Result_AllocatorOutOfMemory;
 		return NULL;
+	}
 	d3d12->allocator = allocator;
+	d3d12->on_error = desc->on_error;
+	d3d12->user_data = desc->user_data;
 
 	{
+		int32 max_rtvs = desc->max_render_target_views;
+		int32 max_dsvs = desc->max_depth_stencil_views;
+		int32 max_samplers = desc->max_samplers;
+		int32 max_image_views = desc->max_image_views;
+		int32 max_buffer_views = desc->max_buffer_views;
+		if (!max_rtvs)
+			max_rtvs = 1024;
+		if (!max_dsvs)
+			max_dsvs = 1024;
+		if (!max_samplers)
+			max_samplers = 1024;
+		if (!max_image_views)
+			max_image_views = 1<<20;
+		if (!max_buffer_views)
+			max_buffer_views = 1<<20;
+
+		d3d12->hpool_heap = InitCppHandlePool_<R4_D3D12_Heap>(1024, allocator, &err);
+		if (!CheckAllocatorErr_(d3d12, err, r))
+			goto lbl_error;
+		d3d12->hpool_rtv = InitCppHandlePool_<R4_D3D12_RenderTargetView>(max_rtvs, allocator, &err);
+		if (!CheckAllocatorErr_(d3d12, err, r))
+			goto lbl_error;
+		d3d12->hpool_dsv = InitCppHandlePool_<R4_D3D12_DepthStencilView>(max_dsvs, allocator, &err);
+		if (!CheckAllocatorErr_(d3d12, err, r))
+			goto lbl_error;
+		d3d12->hpool_buffer = InitCppHandlePool_<R4_D3D12_Buffer>(1024*32, allocator, &err);
+		if (!CheckAllocatorErr_(d3d12, err, r))
+			goto lbl_error;
+		d3d12->hpool_image = InitCppHandlePool_<R4_D3D12_Image>(1024*32, allocator, &err);
+		if (!CheckAllocatorErr_(d3d12, err, r))
+			goto lbl_error;
+
 		if (desc->debug_mode)
 		{
 			HMODULE dll_d3d12 = GetModuleHandleW(L"d3d12.dll");
@@ -645,7 +771,7 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 		}
 
 		hr = CreateDXGIFactory1(IID_PPV_ARGS(&d3d12->factory4));
-		if (!CheckHr_(hr, r))
+		if (!CheckHr_(d3d12, hr, r))
 			goto lbl_error;
 
 		for (UINT i = 0;; ++i)
@@ -665,10 +791,10 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 			goto lbl_error;
 
 		hr = D3D12CreateDevice(d3d12->adapter1, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d3d12->device));
-		if (!CheckHr_(hr, r))
+		if (!CheckHr_(d3d12, hr, r))
 			goto lbl_error;
 		hr = d3d12->device->QueryInterface(IID_PPV_ARGS(&d3d12->device2));
-		if (!CheckHr_(hr, r))
+		if (!CheckHr_(d3d12, hr, r))
 			goto lbl_error;
 
 		if (d3d12->debug_layer_enabled && IsDebuggerPresent())
@@ -688,7 +814,7 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 			.Type = D3D12_COMMAND_LIST_TYPE_DIRECT,
 		};
 		hr = d3d12->device->CreateCommandQueue(&direct_queue_desc, IID_PPV_ARGS(&d3d12->direct_queue));
-		if (!CheckHr_(hr, r))
+		if (!CheckHr_(d3d12, hr, r))
 			goto lbl_error;
 
 		HWND hwnd = OS_W32_HwndFromWindow(*desc->os_window);
@@ -703,10 +829,10 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 			.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
 		};
 		hr = d3d12->factory4->CreateSwapChainForHwnd(d3d12->direct_queue, hwnd, &swapchain_desc, NULL, NULL, &d3d12->swapchain1);
-		if (!CheckHr_(hr, r))
+		if (!CheckHr_(d3d12, hr, r))
 			goto lbl_error;
 		hr = d3d12->swapchain1->QueryInterface(IID_PPV_ARGS(&d3d12->swapchain3));
-		if (!CheckHr_(hr, r))
+		if (!CheckHr_(d3d12, hr, r))
 			goto lbl_error;
 
 		hr = d3d12->factory4->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
@@ -717,18 +843,21 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 		{
 			ID3D12Resource* backbuffer = NULL;
 			hr = d3d12->swapchain3->GetBuffer(i, IID_PPV_ARGS(&backbuffer));
-			if (!CheckHr_(hr, r))
+			if (!CheckHr_(d3d12, hr, r))
 				goto lbl_error;
-			desc->out_backbuffer_images[i] = { .d3d12 = { backbuffer }, };
+			R4_D3D12_Image* impl = AllocateFromCppHandlePool_(&d3d12->hpool_image, &desc->out_backbuffer_images[i], NULL);
+			if (!CheckHandleCreation_(d3d12, impl, r))
+				goto lbl_error;
+			impl->resource = backbuffer;
 		}
 
 		hr = d3d12->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&d3d12->fence));
-		if (!CheckHr_(hr, r))
+		if (!CheckHr_(d3d12, hr, r))
 			goto lbl_error;
 		d3d12->fence_event = CreateEventW(NULL, FALSE, FALSE, NULL);
 		if (!d3d12->fence_event)
 		{
-			CheckHr_(E_OUTOFMEMORY, r);
+			CheckHr_(d3d12, E_OUTOFMEMORY, r);
 			goto lbl_error;
 		}
 
@@ -739,7 +868,7 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 				.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE,
 			};
 			hr = d3d12->device->CreateCommandQueue(&direct_queue_desc, IID_PPV_ARGS(&d3d12->compute_queue));
-			if (!CheckHr_(hr, r))
+			if (!CheckHr_(d3d12, hr, r))
 				goto lbl_error;
 			*desc->out_compute_queue = { .d3d12 = { d3d12->compute_queue, D3D12_COMMAND_LIST_TYPE_COMPUTE } };
 		}
@@ -749,26 +878,13 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 				.Type = D3D12_COMMAND_LIST_TYPE_COPY,
 			};
 			hr = d3d12->device->CreateCommandQueue(&direct_queue_desc, IID_PPV_ARGS(&d3d12->copy_queue));
-			if (!CheckHr_(hr, r))
+			if (!CheckHr_(d3d12, hr, r))
 				goto lbl_error;
 			*desc->out_copy_queue = { .d3d12 = { d3d12->copy_queue, D3D12_COMMAND_LIST_TYPE_COPY } };
 		}
 
-		int32 max_rtvs = desc->max_render_target_views;
-		int32 max_dsvs = desc->max_depth_stencil_views;
-		int32 max_samplers = desc->max_samplers;
-		int32 max_image_views = desc->max_image_views;
-		int32 max_buffer_views = desc->max_buffer_views;
-		if (!max_rtvs)
-			max_rtvs = 1024;
-		if (!max_dsvs)
-			max_dsvs = 1024;
-		if (!max_samplers)
-			max_samplers = 1024;
-		if (!max_image_views)
-			max_image_views = 1<<20;
-		if (!max_buffer_views)
-			max_buffer_views = 1<<20;
+		d3d12->resc_descriptor_size = d3d12->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		d3d12->sampler_descriptor_size = d3d12->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
 
 		D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc = {
 			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
@@ -776,7 +892,7 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
 		};
 		hr = d3d12->device->CreateDescriptorHeap(&rtv_heap_desc, IID_PPV_ARGS(&d3d12->rtv_heap));
-		if (!CheckHr_(hr, r))
+		if (!CheckHr_(d3d12, hr, r))
 			goto lbl_error;
 
 		D3D12_DESCRIPTOR_HEAP_DESC dsv_heap_desc = {
@@ -785,7 +901,7 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
 		};
 		hr = d3d12->device->CreateDescriptorHeap(&dsv_heap_desc, IID_PPV_ARGS(&d3d12->dsv_heap));
-		if (!CheckHr_(hr, r))
+		if (!CheckHr_(d3d12, hr, r))
 			goto lbl_error;
 
 		D3D12_DESCRIPTOR_HEAP_DESC sampler_heap_desc = {
@@ -794,7 +910,7 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
 		};
 		hr = d3d12->device->CreateDescriptorHeap(&sampler_heap_desc, IID_PPV_ARGS(&d3d12->sampler_heap));
-		if (!CheckHr_(hr, r))
+		if (!CheckHr_(d3d12, hr, r))
 			goto lbl_error;
 
 		SafeAssert(max_image_views >= 0 && max_buffer_views >= 0);
@@ -804,20 +920,14 @@ R4_MakeContext(Allocator allocator, R4_Result* r, R4_ContextDesc const* desc)
 			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
 		};
 		hr = d3d12->device->CreateDescriptorHeap(&cbv_srv_uav_heap_desc, IID_PPV_ARGS(&d3d12->cbv_srv_uav_heap));
-		if (!CheckHr_(hr, r))
+		if (!CheckHr_(d3d12, hr, r))
 			goto lbl_error;
 
-		d3d12->rtv_pool = InitViewPool_(max_rtvs, allocator, &err);
-		if (!CheckAllocatorErr_(err, r))
-			goto lbl_error;
-		d3d12->dsv_pool = InitViewPool_(max_dsvs, allocator, &err);
-		if (!CheckAllocatorErr_(err, r))
-			goto lbl_error;
 		d3d12->sampler_pool = InitViewPool_(max_samplers, allocator, &err);
-		if (!CheckAllocatorErr_(err, r))
+		if (!CheckAllocatorErr_(d3d12, err, r))
 			goto lbl_error;
 		d3d12->cbv_srv_uav_pool = InitViewPool_(max_image_views + max_buffer_views, allocator, &err);
-		if (!CheckAllocatorErr_(err, r))
+		if (!CheckAllocatorErr_(d3d12, err, r))
 			goto lbl_error;
 	}
 
@@ -849,10 +959,26 @@ R4_DestroyContext(R4_Context* ctx, R4_Result* r)
 	Trace();
 	AllocatorError err;
 
+	for (intz i = 0; i < ctx->hpool_image.allocated_count; ++i)
+	{
+		R4_D3D12_Image* impl = FetchByIndexFromCppHandlePool_(&ctx->hpool_image, i);
+		if (impl && impl->resource)
+			impl->resource->Release();
+	}
+	for (intz i = 0; i < ctx->hpool_buffer.allocated_count; ++i)
+	{
+		R4_D3D12_Buffer* impl = FetchByIndexFromCppHandlePool_(&ctx->hpool_buffer, i);
+		if (impl && impl->resource)
+			impl->resource->Release();
+	}
+	for (intz i = 0; i < ctx->hpool_heap.allocated_count; ++i)
+	{
+		R4_D3D12_Heap* impl = FetchByIndexFromCppHandlePool_(&ctx->hpool_heap, i);
+		if (impl && impl->heap)
+			impl->heap->Release();
+	}
 	FreeViewPool_(&ctx->cbv_srv_uav_pool, ctx->allocator, &err);
 	FreeViewPool_(&ctx->sampler_pool, ctx->allocator, &err);
-	FreeViewPool_(&ctx->dsv_pool, ctx->allocator, &err);
-	FreeViewPool_(&ctx->rtv_pool, ctx->allocator, &err);
 	if (ctx->dsv_heap)
 		ctx->dsv_heap->Release();
 	if (ctx->sampler_heap)
@@ -882,8 +1008,12 @@ R4_DestroyContext(R4_Context* ctx, R4_Result* r)
 	{
 		Allocator allocator = ctx->allocator;
 		AllocatorDelete(&allocator, ctx, &err);
-		if (!CheckAllocatorErr_(err, r))
+		if (err)
+		{
+			if (r)
+				*r = R4_Result_AllocatorError;
 			return;
+		}
 	}
 }
 
@@ -892,7 +1022,7 @@ R4_PresentAndSync(R4_Context* ctx, R4_Result* r, int32 sync_interval)
 {
 	Trace();
 	HRESULT hr = ctx->swapchain3->Present((UINT)sync_interval, 0);
-	CheckHr_(hr, r);
+	CheckHr_(ctx, hr, r);
 }
 
 API intz
@@ -904,12 +1034,12 @@ R4_AcquireNextBackbuffer(R4_Context* ctx, R4_Result* r)
 
 	ctx->fence_counter += 1;
 	hr = ctx->direct_queue->Signal(ctx->fence, ctx->fence_counter);
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 		return 0;
 	if (ctx->fence->GetCompletedValue() < ctx->fence_counter)
 	{
 		hr = ctx->fence->SetEventOnCompletion(ctx->fence_counter, ctx->fence_event);
-		if (!CheckHr_(hr, r))
+		if (!CheckHr_(ctx, hr, r))
 			return 0;
 		if (WaitForSingleObject(ctx->fence_event, INFINITE) != WAIT_OBJECT_0)
 			return 0;
@@ -925,13 +1055,13 @@ R4_ExecuteCommandLists(R4_Context* ctx, R4_Result* r, R4_Queue* queue, bool last
 	AllocatorError err;
 
 	Slice<ID3D12CommandList*> lists = AllocatorNewSlice<ID3D12CommandList*>(&ctx->allocator, cmdlist_count, &err);
-	if (!CheckAllocatorErr_(err, r))
+	if (!CheckAllocatorErr_(ctx, err, r))
 		return;
 	for (intz i = 0; i < lists.count; ++i)
 		lists[i] = cmdlists[i]->d3d12.list;
 	queue->d3d12.queue->ExecuteCommandLists(lists.count, &lists[0]);
 	AllocatorDeleteSlice(&ctx->allocator, lists, &err);
-	if (!CheckAllocatorErr_(err, r))
+	if (!CheckAllocatorErr_(ctx, err, r))
 		return;
 }
 
@@ -944,19 +1074,19 @@ R4_WaitRemainingWorkOnQueue(R4_Context* ctx, R4_Result* r, R4_Queue* queue)
 	HANDLE tmp_event = CreateEventW(NULL, FALSE, FALSE, NULL);
 	if (!tmp_event)
 	{
-		CheckHr_(E_OUTOFMEMORY, r);
+		CheckHr_(ctx, E_OUTOFMEMORY, r);
 		return;
 	}
 	ID3D12Fence* tmp_fence;
 	hr = ctx->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&tmp_fence));
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 	{
 		CloseHandle(tmp_event);
 		return;
 	}
 
 	hr = queue->d3d12.queue->Signal(tmp_fence, 1);
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 	{
 		tmp_fence->Release();
 		CloseHandle(tmp_event);
@@ -966,7 +1096,7 @@ R4_WaitRemainingWorkOnQueue(R4_Context* ctx, R4_Result* r, R4_Queue* queue)
 	if (tmp_fence->GetCompletedValue() < 1)
 	{
 		hr = tmp_fence->SetEventOnCompletion(1, tmp_event);
-		if (!CheckHr_(hr, r))
+		if (!CheckHr_(ctx, hr, r))
 		{
 			tmp_fence->Release();
 			CloseHandle(tmp_event);
@@ -974,7 +1104,7 @@ R4_WaitRemainingWorkOnQueue(R4_Context* ctx, R4_Result* r, R4_Queue* queue)
 		}
 		DWORD wait_result = WaitForSingleObject(tmp_event, INFINITE);
 		if (wait_result != WAIT_OBJECT_0)
-			CheckHr_(ERROR_WAIT_1, r);
+			CheckHr_(ctx, ERROR_WAIT_1, r);
 	}
 	tmp_fence->Release();
 	CloseHandle(tmp_event);
@@ -989,6 +1119,10 @@ R4_MakeHeap(R4_Context* ctx, R4_Result* r, R4_HeapType type, int64 size)
 	Trace();
 	SafeAssert(size >= 0);
 	HRESULT hr;
+	R4_Heap handle = NULL;
+	R4_D3D12_Heap* impl = AllocateFromCppHandlePool_(&ctx->hpool_heap, &handle, NULL);
+	if (!CheckHandleCreation_(ctx, handle, r))
+		return NULL;
 
 	ID3D12Heap* heap = NULL;
 	D3D12_HEAP_DESC heap_desc = {
@@ -1003,17 +1137,26 @@ R4_MakeHeap(R4_Context* ctx, R4_Result* r, R4_HeapType type, int64 size)
 		.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
 	};
 	hr = ctx->device->CreateHeap(&heap_desc, IID_PPV_ARGS(&heap));
-	if (!CheckHr_(hr, r))
-		return {};
-	return { .d3d12 = { heap } };
+	if (!CheckHr_(ctx, hr, r))
+	{
+		FreeFromHandlePool_(&ctx->hpool_queue, handle);
+		return NULL;
+	}
+
+	impl->heap = heap;
+	return handle;
 }
 
 API void
-R4_FreeHeap(R4_Context* ctx, R4_Heap* heap)
+R4_FreeHeap(R4_Context* ctx, R4_Heap heap)
 {
 	Trace();
-	auto* d3d12_heap = (R4_D3D12_Heap*)heap;
-	d3d12_heap->heap->Release();
+	R4_D3D12_Heap* heap_impl = FetchFromCppHandlePool_(&ctx->hpool_heap, heap, NULL);
+	if (heap_impl)
+	{
+		heap_impl->heap->Release();
+		FreeFromHandlePool_(&ctx->hpool_heap, heap);
+	}
 }
 
 // =============================================================================
@@ -1025,20 +1168,31 @@ R4_MakeUploadBuffer(R4_Context* ctx, R4_Result* r, R4_UploadBufferDesc const* de
 	Trace();
 	SafeAssert(desc->heap_offset >= 0);
 	HRESULT hr;
-	ID3D12Resource* resource = NULL;
+	R4_Buffer handle = NULL;
+	R4_D3D12_Buffer* impl = AllocateFromCppHandlePool_(&ctx->hpool_buffer, &handle, NULL);
+
+	R4_D3D12_Heap* heap_impl = FetchFromCppHandlePool_(&ctx->hpool_heap, desc->heap, NULL);
+	if (!CheckHandle_(ctx, heap_impl, r))
+	{
+		FreeFromHandlePool_(&ctx->hpool_buffer, handle);
+		return NULL;
+	}
+
 	D3D12_RESOURCE_DESC resource_desc = D3d12ResourceDescFromBufferDesc_(&desc->buffer_desc);
 	hr = ctx->device->CreatePlacedResource(
-		desc->heap->d3d12.heap,
+		heap_impl->heap,
 		(UINT64)desc->heap_offset,
 		&resource_desc,
 		D3D12_RESOURCE_STATE_GENERIC_READ,
 		NULL,
-		IID_PPV_ARGS(&resource));
-	if (!CheckHr_(hr, r))
+		IID_PPV_ARGS(&impl->resource));
+	if (!CheckHr_(ctx, hr, r))
+	{
+		FreeFromHandlePool_(&ctx->hpool_buffer, handle);
 		return {};
-	return {
-		.d3d12 = { resource },
-	};
+	}
+
+	return handle;
 }
 
 API R4_Buffer
@@ -1047,28 +1201,42 @@ R4_MakePlacedBuffer(R4_Context* ctx, R4_Result* r, R4_PlacedBufferDesc const* de
 	Trace();
 	SafeAssert(desc->heap_offset >= 0);
 	HRESULT hr;
-	ID3D12Resource* resource = NULL;
+	R4_Buffer handle = NULL;
+	R4_D3D12_Buffer* impl = AllocateFromCppHandlePool_(&ctx->hpool_buffer, &handle, NULL);
+
+	R4_D3D12_Heap* heap_impl = FetchFromCppHandlePool_(&ctx->hpool_heap, desc->heap, NULL);
+	if (!CheckHandle_(ctx, heap_impl, r))
+	{
+		FreeFromHandlePool_(&ctx->hpool_buffer, handle);
+		return NULL;
+	}
+
 	D3D12_RESOURCE_DESC resource_desc = D3d12ResourceDescFromBufferDesc_(&desc->buffer_desc);
 	hr = ctx->device->CreatePlacedResource(
-		desc->heap->d3d12.heap,
+		heap_impl->heap,
 		(UINT64)desc->heap_offset,
 		&resource_desc,
 		D3d12StatesFromResourceStates_(desc->initial_state),
 		NULL,
-		IID_PPV_ARGS(&resource));
-	if (!CheckHr_(hr, r))
-		return {};
-	return {
-		.d3d12 = { resource },
-	};
+		IID_PPV_ARGS(&impl->resource));
+	if (!CheckHr_(ctx, hr, r))
+	{
+		FreeFromHandlePool_(&ctx->hpool_buffer, handle);
+		return NULL;
+	}
+	return handle;
 }
 
 API void
-R4_FreeBuffer(R4_Context* ctx, R4_Buffer* buffer)
+R4_FreeBuffer(R4_Context* ctx, R4_Buffer buffer)
 {
 	Trace();
-	buffer->d3d12.resource->Release();
-	*buffer = {};
+	R4_D3D12_Buffer* impl = FetchFromCppHandlePool_(&ctx->hpool_buffer, buffer, NULL);
+	if (impl)
+	{
+		impl->resource->Release();
+		FreeFromHandlePool_(&ctx->hpool_buffer, buffer);
+	}
 }
 
 API R4_Image
@@ -1077,7 +1245,18 @@ R4_MakePlacedImage(R4_Context* ctx, R4_Result* r, R4_PlacedImageDesc const* desc
 	Trace();
 	SafeAssert(desc->heap_offset >= 0);
 	HRESULT hr;
-	ID3D12Resource* resource = NULL;
+	R4_Image handle = NULL;
+	R4_D3D12_Image* impl = AllocateFromCppHandlePool_(&ctx->hpool_image, &handle, NULL);
+	if (!CheckHandleCreation_(ctx, handle, r))
+		return NULL;
+
+	R4_D3D12_Heap* heap_impl = FetchFromCppHandlePool_(&ctx->hpool_heap, desc->heap, NULL);
+	if (!CheckHandleFetch_(ctx, heap_impl, r))
+	{
+		FreeFromHandlePool_(&ctx->hpool_image, handle);
+		return NULL;
+	}
+	
 	D3D12_RESOURCE_DESC resource_desc = D3d12ResourceDescFromImageDesc_(&desc->image_desc);
 	D3D12_CLEAR_VALUE clear_value = {
 		.Format = DxgiFormatFromFormat_(desc->clear_format),
@@ -1096,25 +1275,30 @@ R4_MakePlacedImage(R4_Context* ctx, R4_Result* r, R4_PlacedImageDesc const* desc
 		};
 	}
 	hr = ctx->device->CreatePlacedResource(
-		desc->heap->d3d12.heap,
+		heap_impl->heap,
 		(UINT64)desc->heap_offset,
 		&resource_desc,
 		D3d12StatesFromResourceStates_(desc->initial_state),
 		clear_value.Format ? &clear_value : NULL,
-		IID_PPV_ARGS(&resource));
-	if (!CheckHr_(hr, r))
-		return {};
-	return {
-		.d3d12 = { resource },
-	};
+		IID_PPV_ARGS(&impl->resource));
+	if (!CheckHr_(ctx, hr, r))
+	{
+		FreeFromHandlePool_(&ctx->hpool_image, handle);
+		return NULL;
+	}
+	return handle;
 }
 
 API void
-R4_FreeImage(R4_Context* ctx, R4_Image* image)
+R4_FreeImage(R4_Context* ctx, R4_Image image)
 {
 	Trace();
-	image->d3d12.resource->Release();
-	*image = {};
+	R4_D3D12_Image* impl = FetchFromCppHandlePool_(&ctx->hpool_image, image, NULL);
+	if (impl)
+	{
+		impl->resource->Release();
+		FreeFromHandlePool_(&ctx->hpool_image, image);
+	}
 }
 
 API R4_MemoryRequirements
@@ -1155,10 +1339,10 @@ R4_MapResource(R4_Context* ctx, R4_Result* r, R4_Resource resource, int32 subres
 	Trace();
 	SafeAssert(subresource >= 0);
 	HRESULT hr;
-	ID3D12Resource* resc = D3d12ResourceFromResource_(resource);
+	ID3D12Resource* resc = D3d12ResourceFromResource_(ctx, resource);
 	SafeAssert(resc);
 	hr = resc->Map((UINT)subresource, NULL, out_memory);
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 		return;
 }
 
@@ -1167,10 +1351,10 @@ R4_UnmapResource(R4_Context* ctx, R4_Result* r, R4_Resource resource, int32 subr
 {
 	Trace();
 	SafeAssert(subresource >= 0);
-	ID3D12Resource* resc = D3d12ResourceFromResource_(resource);
+	ID3D12Resource* resc = D3d12ResourceFromResource_(ctx, resource);
 	SafeAssert(resc);
 	resc->Unmap((UINT)subresource, NULL);
-	CheckHr_(ERROR_SUCCESS, r);
+	CheckHr_(ctx, ERROR_SUCCESS, r);
 }
 
 // =============================================================================
@@ -1180,12 +1364,15 @@ API R4_ImageView
 R4_MakeImageView(R4_Context* ctx, R4_Result* r, R4_ImageViewDesc const* desc)
 {
 	Trace();
-	int32 index = AllocateFromViewPool_(&ctx->cbv_srv_uav_pool);
+	R4_D3D12_Image* image_impl = FetchFromCppHandlePool_(&ctx->hpool_image, desc->image, NULL);
+	if (!CheckHandleFetch_(ctx, desc->image, r))
+		return {};
+
+	intz index = AllocateFromViewPool_(&ctx->cbv_srv_uav_pool);
 	SafeAssert(index >= 0);
 	uint64 increment = ctx->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	uint64 heap_start = ctx->cbv_srv_uav_heap->GetCPUDescriptorHandleForHeapStart().ptr;
 	uint64 ptr = heap_start + (uint64)index * increment;
-	ID3D12Resource* resource = desc->image->d3d12.resource;
 
 	if (desc->type == R4_DescriptorType_ImageSampled ||
 		desc->type == R4_DescriptorType_ImageShaderStorage)
@@ -1198,7 +1385,7 @@ R4_MakeImageView(R4_Context* ctx, R4_Result* r, R4_ImageViewDesc const* desc)
 				.MipLevels = (UINT)-1,
 			},
 		};
-		ctx->device->CreateShaderResourceView(resource, &srv_desc, {ptr});
+		ctx->device->CreateShaderResourceView(image_impl->resource, &srv_desc, {ptr});
 	}
 	else if (desc->type == R4_DescriptorType_ImageShaderReadWrite)
 	{
@@ -1207,7 +1394,7 @@ R4_MakeImageView(R4_Context* ctx, R4_Result* r, R4_ImageViewDesc const* desc)
 			.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D,
 			.Texture2D = {},
 		};
-		ctx->device->CreateUnorderedAccessView(resource, NULL, &uav_desc, {ptr});
+		ctx->device->CreateUnorderedAccessView(image_impl->resource, NULL, &uav_desc, {ptr});
 	}
 	else
 		Unreachable();
@@ -1240,36 +1427,44 @@ API R4_RenderTargetView
 R4_MakeRenderTargetView(R4_Context* ctx, R4_Result* r, R4_RenderTargetViewDesc const* desc)
 {
 	Trace();
-	int32 index = AllocateFromViewPool_(&ctx->rtv_pool);
+	R4_D3D12_Image* image_impl = FetchFromCppHandlePool_(&ctx->hpool_image, desc->image, NULL);
+	if (!CheckHandleFetch_(ctx, desc->image, r))
+		return {};
+	R4_RenderTargetView handle = NULL;
+	intz index;
+	R4_D3D12_RenderTargetView* impl = AllocateFromCppHandlePool_(&ctx->hpool_rtv, &handle, &index);
+	if (!CheckHandle_(ctx, handle, r))
+		return NULL;
 	SafeAssert(index >= 0);
 	uint64 increment = ctx->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 	uint64 heap_start = ctx->rtv_heap->GetCPUDescriptorHandleForHeapStart().ptr;
 	uint64 ptr = heap_start + (uint64)index * increment;
-	ctx->device->CreateRenderTargetView(desc->image->d3d12.resource, NULL, {ptr});
-	return { .d3d12 = { ptr } };
+	ctx->device->CreateRenderTargetView(image_impl->resource, NULL, {ptr});
+	impl->rtv_ptr = ptr;
+	return handle;
 }
 
 API void
-R4_FreeRenderTargetView(R4_Context* ctx, R4_RenderTargetView* render_target_view)
+R4_FreeRenderTargetView(R4_Context* ctx, R4_RenderTargetView render_target_view)
 {
 	Trace();
-	uint64 increment = ctx->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-	uint64 heap_start = ctx->rtv_heap->GetCPUDescriptorHandleForHeapStart().ptr;
-	uint64 ptr = render_target_view->d3d12.rtv_ptr;
-	SafeAssert(ptr >= heap_start);
-	ptr -= heap_start;
-	ptr /= increment;
-	SafeAssert(ptr >= 0 && ptr <= INT32_MAX);
-	FreeFromViewPool_(&ctx->rtv_pool, (int32)ptr);
-
-	*render_target_view = {};
+	void* impl = FetchFromCppHandlePool_(&ctx->hpool_rtv, render_target_view, NULL);
+	if (impl)
+		FreeFromHandlePool_(&ctx->hpool_rtv, render_target_view);
 }
 
 API R4_DepthStencilView
 R4_MakeDepthStencilView(R4_Context* ctx, R4_Result* r, R4_DepthStencilViewDesc const* desc)
 {
 	Trace();
-	int32 index = AllocateFromViewPool_(&ctx->dsv_pool);
+	R4_D3D12_Image* image_impl = FetchFromCppHandlePool_(&ctx->hpool_image, desc->image, NULL);
+	if (!CheckHandleFetch_(ctx, desc->image, r))
+		return {};
+	R4_DepthStencilView handle = NULL;
+	intz index;
+	R4_D3D12_DepthStencilView* impl = AllocateFromCppHandlePool_(&ctx->hpool_dsv, &handle, &index);
+	if (!CheckHandle_(ctx, handle, r))
+		return NULL;
 	SafeAssert(index >= 0);
 	uint64 increment = ctx->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
 	uint64 heap_start = ctx->dsv_heap->GetCPUDescriptorHandleForHeapStart().ptr;
@@ -1280,24 +1475,18 @@ R4_MakeDepthStencilView(R4_Context* ctx, R4_Result* r, R4_DepthStencilViewDesc c
 		.Flags = D3D12_DSV_FLAG_NONE,
 		.Texture2D = {},
 	};
-	ctx->device->CreateDepthStencilView(desc->image->d3d12.resource, &dsv_desc, {ptr});
-	return { .d3d12 = { ptr } };
+	ctx->device->CreateDepthStencilView(image_impl->resource, &dsv_desc, {ptr});
+	impl->dsv_ptr = ptr;
+	return handle;
 }
 
 API void
-R4_FreeDepthStencilView(R4_Context* ctx, R4_DepthStencilView* depth_stencil_view)
+R4_FreeDepthStencilView(R4_Context* ctx, R4_DepthStencilView depth_stencil_view)
 {
 	Trace();
-	uint64 increment = ctx->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-	uint64 heap_start = ctx->dsv_heap->GetCPUDescriptorHandleForHeapStart().ptr;
-	uint64 ptr = depth_stencil_view->d3d12.dsv_ptr;
-	SafeAssert(ptr >= heap_start);
-	ptr -= heap_start;
-	ptr /= increment;
-	SafeAssert(ptr >= 0 && ptr <= INT32_MAX);
-	FreeFromViewPool_(&ctx->dsv_pool, (int32)ptr);
-
-	*depth_stencil_view = {};
+	void* impl = FetchFromCppHandlePool_(&ctx->hpool_rtv, depth_stencil_view, NULL);
+	if (impl)
+		FreeFromHandlePool_(&ctx->hpool_rtv, depth_stencil_view);
 }
 
 // =============================================================================
@@ -1541,11 +1730,11 @@ R4_MakePipelineLayout(R4_Context* ctx, R4_Result* r, R4_PipelineLayoutDesc const
 		.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
 	};
 	hr = D3D12SerializeRootSignature(&rootsig_desc, D3D_ROOT_SIGNATURE_VERSION_1_0, &rootsig_blob, NULL);
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 		return {};
 	hr = ctx->device->CreateRootSignature(0, rootsig_blob->GetBufferPointer(), rootsig_blob->GetBufferSize(), IID_PPV_ARGS(&rootsig));
 	rootsig_blob->Release();
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 		return {};
 
 	R4_D3D12_PipelineLayout layout = {
@@ -1693,7 +1882,7 @@ R4_MakeGraphicsPipeline(R4_Context* ctx, R4_Result* r, R4_GraphicsPipelineDesc c
 	};
 
 	hr = ctx->device->CreateGraphicsPipelineState(&pipeline_desc, IID_PPV_ARGS(&pipeline));
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 		return {};
 	return {
 		.d3d12 = { pipeline },
@@ -1748,12 +1937,12 @@ R4_MakeDescriptorHeap(R4_Context* ctx, R4_Result* r, R4_DescriptorHeapDesc const
 		.NodeMask = 1,
 	};
 	hr = ctx->device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&resc_heap));
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 		return {};
 	heap_desc.NumDescriptors = (UINT)(resc_count * desc->buffering_count);
 	heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
 	hr = ctx->device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&sampler_heap));
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 	{
 		resc_heap->Release();
 		return {};
@@ -1833,18 +2022,17 @@ R4_UpdateDescriptorSets(R4_Context* ctx, intz write_count, R4_DescriptorSetWrite
 {
 	Trace();
 	ArenaSavepoint scratch = ArenaSave(OS_ScratchArena(NULL, 0));
+	intz total_write_count;
 
 	// NOTE(ljre): CBV SRV UAV descriptors copy
-	switch (0) case 0:
+	total_write_count = 0;
+	for (intz i = 0; i < write_count; ++i)
 	{
-		intz total_write_count = 0;
-		for (intz i = 0; i < write_count; ++i)
-		{
-			if (!writes[i].samplers)
-				total_write_count += writes[i].count;
-		}
-		if (!total_write_count)
-			break;
+		if (!writes[i].samplers)
+			total_write_count += writes[i].count;
+	}
+	if (total_write_count)
+	{
 		D3D12_CPU_DESCRIPTOR_HANDLE* dst_range_starts = ArenaPushArray(scratch.arena, D3D12_CPU_DESCRIPTOR_HANDLE, total_write_count);
 		D3D12_CPU_DESCRIPTOR_HANDLE* src_range_starts = ArenaPushArray(scratch.arena, D3D12_CPU_DESCRIPTOR_HANDLE, total_write_count);
 		UINT* dst_range_counts = ArenaPushArray(scratch.arena, UINT, total_write_count);
@@ -1853,6 +2041,39 @@ R4_UpdateDescriptorSets(R4_Context* ctx, intz write_count, R4_DescriptorSetWrite
 		for (intz i = 0; i < write_count; ++i)
 		{
 			R4_DescriptorSetWrite const* write = &writes[i];
+			if (write->type == R4_DescriptorType_Sampler)
+				continue;
+
+			R4_D3D12_BindLayout* bind_layout = &write->bind_layout->d3d12;
+			uint64 table_start_offset = UINT64_MAX;
+			D3D12_DESCRIPTOR_RANGE_TYPE expected_type = (D3D12_DESCRIPTOR_RANGE_TYPE)0;
+			switch (write->type)
+			{
+				default: Unreachable(); break;
+				case R4_DescriptorType_ImageSampled:
+				case R4_DescriptorType_ImageShaderStorage:
+				case R4_DescriptorType_BufferShaderStorage:
+				case R4_DescriptorType_DynamicBufferShaderStorage: expected_type = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; break;
+				case R4_DescriptorType_ImageShaderReadWrite:
+				case R4_DescriptorType_BufferShaderReadWrite:
+				case R4_DescriptorType_DynamicBufferShaderReadWrite: expected_type = D3D12_DESCRIPTOR_RANGE_TYPE_UAV; break;
+				case R4_DescriptorType_UniformBuffer:
+				case R4_DescriptorType_DynamicUniformBuffer: expected_type = D3D12_DESCRIPTOR_RANGE_TYPE_CBV; break;
+			}
+			for (intz j = 0; j < bind_layout->resc_entry_count; ++j)
+			{
+				intz index = j + bind_layout->sampler_entry_count;
+				intz entry_first_slot = bind_layout->entries[index].first_slot;
+				intz entry_count = bind_layout->entries[index].count;
+				if (bind_layout->entries[index].type == expected_type &&
+					entry_first_slot + j < entry_count)
+				{
+					table_start_offset = bind_layout->entries[index].offset_from_table_start + (uint64)(j + entry_first_slot) * ctx->resc_descriptor_size;
+					break;
+				}
+			}
+			SafeAssert(table_start_offset != UINT64_MAX);
+
 			for (intz j = 0; j < write->count; ++j)
 			{
 				uint64 cpu_ptr;
@@ -1867,7 +2088,7 @@ R4_UpdateDescriptorSets(R4_Context* ctx, intz write_count, R4_DescriptorSetWrite
 				SafeAssert(write_index < total_write_count);
 				src_range_starts[write_index] = {cpu_ptr};
 				src_range_counts[write_index] = 1;
-				dst_range_starts[write_index] = {write->dst_set->d3d12.view_cpu_ptr};
+				dst_range_starts[write_index] = {write->dst_set->d3d12.view_cpu_ptr + table_start_offset};
 				dst_range_counts[write_index] = 1;
 				++write_index;
 			}
@@ -1880,16 +2101,14 @@ R4_UpdateDescriptorSets(R4_Context* ctx, intz write_count, R4_DescriptorSetWrite
 	}
 
 	// NOTE(ljre): Samplers descriptors copy
-	switch (0) case 0:
+	total_write_count = 0;
+	for (intz i = 0; i < write_count; ++i)
 	{
-		intz total_write_count = 0;
-		for (intz i = 0; i < write_count; ++i)
-		{
-			if (writes[i].samplers)
-				total_write_count += writes[i].count;
-		}
-		if (!total_write_count)
-			break;
+		if (writes[i].samplers)
+			total_write_count += writes[i].count;
+	}
+	if (total_write_count)
+	{
 		D3D12_CPU_DESCRIPTOR_HANDLE* dst_range_starts = ArenaPushArray(scratch.arena, D3D12_CPU_DESCRIPTOR_HANDLE, total_write_count);
 		D3D12_CPU_DESCRIPTOR_HANDLE* src_range_starts = ArenaPushArray(scratch.arena, D3D12_CPU_DESCRIPTOR_HANDLE, total_write_count);
 		UINT* dst_range_counts = ArenaPushArray(scratch.arena, UINT, total_write_count);
@@ -1898,6 +2117,24 @@ R4_UpdateDescriptorSets(R4_Context* ctx, intz write_count, R4_DescriptorSetWrite
 		for (intz i = 0; i < write_count; ++i)
 		{
 			R4_DescriptorSetWrite const* write = &writes[i];
+			if (write->type != R4_DescriptorType_Sampler)
+				continue;
+
+			R4_D3D12_BindLayout* bind_layout = &write->bind_layout->d3d12;
+			uint64 table_start_offset = UINT64_MAX;
+			for (intz j = 0; j < bind_layout->sampler_entry_count; ++j)
+			{
+				intz index = j;
+				intz entry_first_slot = bind_layout->entries[index].first_slot;
+				intz entry_count = bind_layout->entries[index].count;
+				if (bind_layout->entries[index].type == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER &&
+					j + entry_first_slot < entry_count)
+				{
+					table_start_offset = bind_layout->entries[index].offset_from_table_start + (uint64)(j + entry_first_slot) * ctx->resc_descriptor_size;
+					break;
+				}
+			}
+			SafeAssert(table_start_offset != UINT64_MAX);
 			for (intz j = 0; j < write->count; ++j)
 			{
 				uint64 cpu_ptr;
@@ -1910,7 +2147,7 @@ R4_UpdateDescriptorSets(R4_Context* ctx, intz write_count, R4_DescriptorSetWrite
 				SafeAssert(write_index < total_write_count);
 				src_range_starts[write_index] = {cpu_ptr};
 				src_range_counts[write_index] = 1;
-				dst_range_starts[write_index] = {write->dst_set->d3d12.sampler_cpu_ptr};
+				dst_range_starts[write_index] = {write->dst_set->d3d12.sampler_cpu_ptr + table_start_offset};
 				dst_range_counts[write_index] = 1;
 				++write_index;
 			}
@@ -1942,7 +2179,7 @@ R4_MakeCommandAllocator(R4_Context* ctx, R4_Result* r, R4_Queue* target_queue)
 	HRESULT hr;
 	ID3D12CommandAllocator* cmdalloc = NULL;
 	hr = ctx->device->CreateCommandAllocator((D3D12_COMMAND_LIST_TYPE)target_queue->d3d12.command_type, IID_PPV_ARGS(&cmdalloc));
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 		return {};
 	return {
 		.d3d12 = { cmdalloc },
@@ -1965,10 +2202,10 @@ R4_MakeCommandList(R4_Context* ctx, R4_Result* r, R4_CommandListType type, R4_Co
 	HRESULT hr;
 	ID3D12GraphicsCommandList* cmdlist = NULL;
 	hr = ctx->device->CreateCommandList(1, D3d12CommandListTypeFromType_(type), allocator->d3d12.allocator, NULL, IID_PPV_ARGS(&cmdlist));
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 		return {};
 	hr = cmdlist->Close();
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 		return {};
 	return {
 		.d3d12 = { cmdlist },
@@ -1993,7 +2230,7 @@ R4_ResetCommandAllocator(R4_Context* ctx, R4_Result* r, R4_CommandAllocator* cmd
 	Trace();
 	HRESULT hr;
 	hr = cmd_allocator->d3d12.allocator->Reset();
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 		return;
 }
 
@@ -2003,7 +2240,7 @@ R4_BeginCommandList(R4_Context* ctx, R4_Result* r, R4_CommandList* cmdlist, R4_C
 	Trace();
 	HRESULT hr;
 	hr = cmdlist->d3d12.list->Reset(cmd_allocator->d3d12.allocator, NULL);
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 		return;
 }
 
@@ -2013,12 +2250,12 @@ R4_EndCommandList(R4_Context* ctx, R4_Result* r, R4_CommandList* cmdlist)
 	Trace();
 	HRESULT hr;
 	hr = cmdlist->d3d12.list->Close();
-	if (!CheckHr_(hr, r))
+	if (!CheckHr_(ctx, hr, r))
 		return;
 }
 
 API void
-R4_CmdBeginRenderpass(R4_CommandList* cmdlist, R4_Renderpass const* renderpass)
+R4_CmdBeginRenderpass(R4_Context* ctx, R4_CommandList* cmdlist, R4_Renderpass const* renderpass)
 {
 	Trace();
 	D3D12_CPU_DESCRIPTOR_HANDLE rtvs_to_bind[ArrayLength(renderpass->render_targets)] = {};
@@ -2028,11 +2265,17 @@ R4_CmdBeginRenderpass(R4_CommandList* cmdlist, R4_Renderpass const* renderpass)
 		R4_RenderpassRenderTarget const* rendertarget = &renderpass->render_targets[i];
 		if (!rendertarget->render_target_view)
 			break;
-		rtvs_to_bind[rtvs_to_bind_count++] = { rendertarget->render_target_view->d3d12.rtv_ptr };
+		R4_D3D12_RenderTargetView* impl = FetchFromCppHandlePool_(&ctx->hpool_rtv, rendertarget->render_target_view, NULL);
+		if (CheckHandleFetch_(ctx, impl, NULL))
+			rtvs_to_bind[rtvs_to_bind_count++] = { impl->rtv_ptr };
 	}
+
 	D3D12_CPU_DESCRIPTOR_HANDLE dsv = {};
 	if (renderpass->depth_stencil.depth_stencil_view)
-		dsv = { renderpass->depth_stencil.depth_stencil_view->d3d12.dsv_ptr };
+	{
+		R4_D3D12_DepthStencilView* impl = FetchFromCppHandlePool_(&ctx->hpool_dsv, renderpass->depth_stencil.depth_stencil_view, NULL);
+		dsv = { impl->dsv_ptr };
+	}
 	cmdlist->d3d12.list->OMSetRenderTargets((UINT)rtvs_to_bind_count, rtvs_to_bind, FALSE, dsv.ptr ? &dsv : NULL);
 
 	for (intz i = 0; i < ArrayLength(renderpass->render_targets); ++i)
@@ -2041,7 +2284,7 @@ R4_CmdBeginRenderpass(R4_CommandList* cmdlist, R4_Renderpass const* renderpass)
 		if (!rendertarget->render_target_view)
 			break;
 		if (rendertarget->load == R4_AttachmentLoadOp_Clear)
-			cmdlist->d3d12.list->ClearRenderTargetView({rendertarget->render_target_view->d3d12.rtv_ptr}, rendertarget->clear_color, 0, NULL);
+			cmdlist->d3d12.list->ClearRenderTargetView(rtvs_to_bind[i], rendertarget->clear_color, 0, NULL);
 	}
 	if (renderpass->depth_stencil.depth_stencil_view && renderpass->depth_stencil.load == R4_AttachmentLoadOp_Clear)
 	{
@@ -2057,14 +2300,14 @@ R4_CmdBeginRenderpass(R4_CommandList* cmdlist, R4_Renderpass const* renderpass)
 }
 
 API void
-R4_CmdEndRenderpass(R4_CommandList* cmdlist)
+R4_CmdEndRenderpass(R4_Context* ctx, R4_CommandList* cmdlist)
 {
 	Trace();
 	// TODO(ljre): nothing to do here i believe?
 }
 
 API void
-R4_CmdResourceBarrier(R4_CommandList* cmdlist, R4_ResourceBarriers const* barriers)
+R4_CmdResourceBarrier(R4_Context* ctx, R4_CommandList* cmdlist, R4_ResourceBarriers const* barriers)
 {
 	Trace();
 	ArenaSavepoint scratch = ArenaSave(OS_ScratchArena(NULL, 0));
@@ -2076,12 +2319,15 @@ R4_CmdResourceBarrier(R4_CommandList* cmdlist, R4_ResourceBarriers const* barrie
 		// NOTE(ljre): in d3d12, resources in a upload heap can only be in `GENERIC_READ` state
 		if (barrier->from_state == R4_ResourceState_Preinitialized)
 			continue;
+		R4_D3D12_Buffer* buffer_impl = FetchFromCppHandlePool_(&ctx->hpool_buffer, barrier->buffer, NULL);
+		if (!CheckHandleFetch_(ctx, buffer_impl, NULL))
+			continue;
 
 		ArenaPushStructInit(scratch.arena, D3D12_RESOURCE_BARRIER, {
 			.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
 			.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE,
 			.Transition = {
-				.pResource = barrier->buffer->d3d12.resource,
+				.pResource = buffer_impl->resource,
 				.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
 				.StateBefore = D3d12StatesFromResourceStates_(barrier->from_state),
 				.StateAfter = D3d12StatesFromResourceStates_(barrier->to_state),
@@ -2092,12 +2338,16 @@ R4_CmdResourceBarrier(R4_CommandList* cmdlist, R4_ResourceBarriers const* barrie
 	for (intz i = 0; i < barriers->image_barrier_count; ++i)
 	{
 		R4_ImageBarrier const* barrier = &barriers->image_barriers[i];
+		R4_D3D12_Image* image_impl = FetchFromCppHandlePool_(&ctx->hpool_image, barrier->image, NULL);
+		if (!CheckHandleFetch_(ctx, image_impl, NULL))
+			continue;
+
 		SafeAssert(barrier->subresource >= 0);
 		ArenaPushStructInit(scratch.arena, D3D12_RESOURCE_BARRIER, {
 			.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
 			.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE,
 			.Transition = {
-				.pResource = barrier->image->d3d12.resource,
+				.pResource = image_impl->resource,
 				.Subresource = (UINT)barrier->subresource,
 				.StateBefore = D3d12StatesFromResourceStates_(barrier->from_state),
 				.StateAfter = D3d12StatesFromResourceStates_(barrier->to_state),
@@ -2113,7 +2363,7 @@ R4_CmdResourceBarrier(R4_CommandList* cmdlist, R4_ResourceBarriers const* barrie
 }
 
 API void
-R4_CmdSetDescriptorHeap(R4_CommandList* cmdlist, R4_DescriptorHeap* heap)
+R4_CmdSetDescriptorHeap(R4_Context* ctx, R4_CommandList* cmdlist, R4_DescriptorHeap* heap)
 {
 	Trace();
 	ID3D12DescriptorHeap* heaps[2] = {
@@ -2124,14 +2374,14 @@ R4_CmdSetDescriptorHeap(R4_CommandList* cmdlist, R4_DescriptorHeap* heap)
 }
 
 API void
-R4_CmdSetPrimitiveType(R4_CommandList* cmdlist, R4_PrimitiveType type)
+R4_CmdSetPrimitiveType(R4_Context* ctx, R4_CommandList* cmdlist, R4_PrimitiveType type)
 {
 	Trace();
 	cmdlist->d3d12.list->IASetPrimitiveTopology(D3d12TopologyFromPrimitiveType_(type));
 }
 
 API void
-R4_CmdSetViewports(R4_CommandList* cmdlist, intz count, R4_Viewport const viewports[])
+R4_CmdSetViewports(R4_Context* ctx, R4_CommandList* cmdlist, intz count, R4_Viewport const viewports[])
 {
 	Trace();
 	SafeAssert(count >= 0 && count <= 8);
@@ -2151,7 +2401,7 @@ R4_CmdSetViewports(R4_CommandList* cmdlist, intz count, R4_Viewport const viewpo
 }
 
 API void
-R4_CmdSetScissors(R4_CommandList* cmdlist, intz count, R4_Rect const rects[])
+R4_CmdSetScissors(R4_Context* ctx, R4_CommandList* cmdlist, intz count, R4_Rect const rects[])
 {
 	Trace();
 	SafeAssert(count >= 0 && count <= 8);
@@ -2171,21 +2421,21 @@ R4_CmdSetScissors(R4_CommandList* cmdlist, intz count, R4_Rect const rects[])
 }
 
 API void
-R4_CmdSetPipeline(R4_CommandList* cmdlist, R4_Pipeline* pipeline)
+R4_CmdSetPipeline(R4_Context* ctx, R4_CommandList* cmdlist, R4_Pipeline* pipeline)
 {
 	Trace();
 	cmdlist->d3d12.list->SetPipelineState(pipeline->d3d12.pipeline);
 }
 
 API void
-R4_CmdSetPipelineLayout(R4_CommandList* cmdlist, R4_PipelineLayout* pipeline_layout)
+R4_CmdSetPipelineLayout(R4_Context* ctx, R4_CommandList* cmdlist, R4_PipelineLayout* pipeline_layout)
 {
 	Trace();
 	cmdlist->d3d12.list->SetGraphicsRootSignature(pipeline_layout->d3d12.rootsig);
 }
 
 API void
-R4_CmdSetVertexBuffers(R4_CommandList* cmdlist, intz first_slot, intz count, R4_VertexBuffer const buffers[])
+R4_CmdSetVertexBuffers(R4_Context* ctx, R4_CommandList* cmdlist, intz first_slot, intz count, R4_VertexBuffer const buffers[])
 {
 	Trace();
 	SafeAssert(first_slot >= 0);
@@ -2193,11 +2443,14 @@ R4_CmdSetVertexBuffers(R4_CommandList* cmdlist, intz first_slot, intz count, R4_
 	SafeAssert(count >= 0 && count <= ArrayLength(vbuffers));
 	for (intz i = 0; i < count; ++i)
 	{
+		R4_D3D12_Buffer* buffer_impl = FetchFromCppHandlePool_(&ctx->hpool_buffer, buffers[i].buffer, NULL);
+		if (!CheckHandleFetch_(ctx, buffer_impl, NULL))
+			continue;
 		SafeAssert(buffers[i].offset >= 0);
 		SafeAssert(buffers[i].size >= 0 && buffers[i].size <= UINT_MAX);
 		SafeAssert(buffers[i].stride >= 0 && buffers[i].stride <= UINT_MAX);
 		vbuffers[i] = {
-			.BufferLocation = buffers[i].buffer->d3d12.resource->GetGPUVirtualAddress() + (UINT64)buffers[i].offset,
+			.BufferLocation = buffer_impl->resource->GetGPUVirtualAddress() + (UINT64)buffers[i].offset,
 			.SizeInBytes = (UINT)buffers[i].size,
 			.StrideInBytes = (UINT)buffers[i].stride,
 		};
@@ -2206,13 +2459,16 @@ R4_CmdSetVertexBuffers(R4_CommandList* cmdlist, intz first_slot, intz count, R4_
 }
 
 API void
-R4_CmdSetIndexBuffer(R4_CommandList* cmdlist, R4_IndexBuffer const* buffer)
+R4_CmdSetIndexBuffer(R4_Context* ctx, R4_CommandList* cmdlist, R4_IndexBuffer const* buffer)
 {
 	Trace();
 	SafeAssert(buffer->offset >= 0);
 	SafeAssert(buffer->size >= 0 && buffer->size <= UINT_MAX);
+	R4_D3D12_Buffer* buffer_impl = FetchFromCppHandlePool_(&ctx->hpool_buffer, buffer->buffer, NULL);
+	if (!CheckHandleFetch_(ctx, buffer_impl, NULL))
+		return;
 	D3D12_INDEX_BUFFER_VIEW ibuffer = {
-		.BufferLocation = buffer->buffer->d3d12.resource->GetGPUVirtualAddress() + (UINT64)buffer->offset,
+		.BufferLocation = buffer_impl->resource->GetGPUVirtualAddress() + (UINT64)buffer->offset,
 		.SizeInBytes = (UINT)buffer->size,
 		.Format = DxgiFormatFromFormat_(buffer->index_format),
 	};
@@ -2220,7 +2476,7 @@ R4_CmdSetIndexBuffer(R4_CommandList* cmdlist, R4_IndexBuffer const* buffer)
 }
 
 API void
-R4_CmdPushConstants(R4_CommandList* cmdlist, R4_PushConstant const* push_constant)
+R4_CmdPushConstants(R4_Context* ctx, R4_CommandList* cmdlist, R4_PushConstant const* push_constant)
 {
 	Trace();
 	SafeAssert(push_constant->constant_index >= 0);
@@ -2234,7 +2490,7 @@ R4_CmdPushConstants(R4_CommandList* cmdlist, R4_PushConstant const* push_constan
 }
 
 API void
-R4_CmdSetDescriptorSets(R4_CommandList* cmdlist, R4_DescriptorSets const* sets)
+R4_CmdSetDescriptorSets(R4_Context* ctx, R4_CommandList* cmdlist, R4_DescriptorSets const* sets)
 {
 	Trace();
 	SafeAssert(sets->first_set >= 0);
@@ -2258,9 +2514,9 @@ R4_CmdSetDescriptorSets(R4_CommandList* cmdlist, R4_DescriptorSets const* sets)
 	}
 }
 
-API void R4_CmdComputeSetPipelineLayout(R4_CommandList* cmdlist, R4_PipelineLayout* pipeline_layout);
-API void R4_CmdComputePushConstants    (R4_CommandList* cmdlist, R4_PushConstant const* push_constant);
-API void R4_CmdComputeSetDescriptorSet (R4_CommandList* cmdlist, R4_DescriptorSet* descriptor_set);
+API void R4_CmdComputeSetPipelineLayout(R4_Context* ctx, R4_CommandList* cmdlist, R4_PipelineLayout* pipeline_layout);
+API void R4_CmdComputePushConstants    (R4_Context* ctx, R4_CommandList* cmdlist, R4_PushConstant const* push_constant);
+API void R4_CmdComputeSetDescriptorSet (R4_Context* ctx, R4_CommandList* cmdlist, R4_DescriptorSet* descriptor_set);
 
 API void
 R4_CmdDraw(R4_CommandList* cmdlist, int64 start_vertex, int64 vertex_count, int64 start_instance, int64 instance_count)
@@ -2298,9 +2554,15 @@ R4_CmdDispatch(R4_CommandList* cmdlist, int64 x, int64 y, int64 z)
 API void R4_CmdDispatchMesh        (R4_CommandList* cmdlist, int64 x, int64 y, int64 z);
 
 API void
-R4_CmdCopyBuffer(R4_CommandList* cmdlist, R4_Buffer* dest, R4_Buffer* source, intz region_count, R4_BufferCopyRegion const regions[])
+R4_CmdCopyBuffer(R4_Context* ctx, R4_CommandList* cmdlist, R4_Buffer dest, R4_Buffer source, intz region_count, R4_BufferCopyRegion const regions[])
 {
 	Trace();
+	R4_D3D12_Buffer* dest_impl = FetchFromCppHandlePool_(&ctx->hpool_buffer, dest, NULL);
+	if (!CheckHandleFetch_(ctx, dest, NULL))
+		return;
+	R4_D3D12_Buffer* source_impl = FetchFromCppHandlePool_(&ctx->hpool_buffer, source, NULL);
+	if (!CheckHandleFetch_(ctx, source_impl, NULL))
+		return;
 	for (intz i = 0; i < region_count; ++i)
 	{
 		R4_BufferCopyRegion const* region = &regions[i];
@@ -2308,16 +2570,22 @@ R4_CmdCopyBuffer(R4_CommandList* cmdlist, R4_Buffer* dest, R4_Buffer* source, in
 		SafeAssert(region->src_offset >= 0);
 		SafeAssert(region->size >= 0);
 		cmdlist->d3d12.list->CopyBufferRegion(
-			dest->d3d12.resource, (UINT64)region->dst_offset,
-			source->d3d12.resource, (UINT64)region->src_offset,
+			dest_impl->resource, (UINT64)region->dst_offset,
+			source_impl->resource, (UINT64)region->src_offset,
 			(UINT64)region->size);
 	}
 }
 
 API void
-R4_CmdCopyImage(R4_CommandList* cmdlist, R4_Image* dest, R4_Image* source, intz region_count, R4_ImageCopyRegion const regions[])
+R4_CmdCopyImage(R4_Context* ctx, R4_CommandList* cmdlist, R4_Image dest, R4_Image source, intz region_count, R4_ImageCopyRegion const regions[])
 {
 	Trace();
+	R4_D3D12_Image* dest_impl = FetchFromCppHandlePool_(&ctx->hpool_image, dest, NULL);
+	if (!CheckHandleFetch_(ctx, dest, NULL))
+		return;
+	R4_D3D12_Image* source_impl = FetchFromCppHandlePool_(&ctx->hpool_image, source, NULL);
+	if (!CheckHandleFetch_(ctx, source_impl, NULL))
+		return;
 	for (intz i = 0; i < region_count; ++i)
 	{
 		R4_ImageCopyRegion const* region = &regions[i];
@@ -2327,12 +2595,12 @@ R4_CmdCopyImage(R4_CommandList* cmdlist, R4_Image* dest, R4_Image* source, intz 
 		SafeAssert(region->dst_y >= 0);
 		SafeAssert(region->dst_z >= 0);
 		D3D12_TEXTURE_COPY_LOCATION dst_loc = {
-			.pResource = dest->d3d12.resource,
+			.pResource = dest_impl->resource,
 			.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
 			.SubresourceIndex = (UINT)region->dst_subresource,
 		};
 		D3D12_TEXTURE_COPY_LOCATION src_loc = {
-			.pResource = source->d3d12.resource,
+			.pResource = source_impl->resource,
 			.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
 			.SubresourceIndex = (UINT)region->src_subresource,
 		};
@@ -2351,20 +2619,26 @@ R4_CmdCopyImage(R4_CommandList* cmdlist, R4_Image* dest, R4_Image* source, intz 
 }
 
 API void
-R4_CmdCopyBufferToImage(R4_CommandList* cmdlist, R4_Image* dest, R4_Buffer* source, intz region_count, R4_BufferImageCopyRegion const regions[])
+R4_CmdCopyBufferToImage(R4_Context* ctx, R4_CommandList* cmdlist, R4_Image dest, R4_Buffer source, intz region_count, R4_BufferImageCopyRegion const regions[])
 {
 	Trace();
+	R4_D3D12_Image* dest_impl = FetchFromCppHandlePool_(&ctx->hpool_image, dest, NULL);
+	if (!CheckHandleFetch_(ctx, dest, NULL))
+		return;
+	R4_D3D12_Buffer* source_impl = FetchFromCppHandlePool_(&ctx->hpool_buffer, source, NULL);
+	if (!CheckHandleFetch_(ctx, source_impl, NULL))
+		return;
 	for (intz i = 0; i < region_count; ++i)
 	{
 		R4_BufferImageCopyRegion const* region = &regions[i];
 		SafeAssert(region->image_subresource >= 0);
 		D3D12_TEXTURE_COPY_LOCATION dst_loc = {
-			.pResource = dest->d3d12.resource,
+			.pResource = dest_impl->resource,
 			.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
 			.SubresourceIndex = (UINT)region->image_subresource,
 		};
 		D3D12_TEXTURE_COPY_LOCATION src_loc = {
-			.pResource = source->d3d12.resource,
+			.pResource = source_impl->resource,
 			.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
 			.PlacedFootprint = {
 				.Offset = (UINT64)region->buffer_offset,

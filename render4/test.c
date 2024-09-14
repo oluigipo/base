@@ -121,7 +121,7 @@ EntryPoint(int32 argc, const char* const* argv)
 	for (intz i = 0; i < ArrayLength(swapchain_images); ++i)
 	{
 		swapchain_views[i] = R4_MakeRenderTargetView(r4, NULL, &(R4_RenderTargetViewDesc) {
-			.image = &swapchain_images[i],
+			.image = swapchain_images[i],
 			.format = R4_Format_R8G8B8A8_UNorm,
 		});
 	}
@@ -138,14 +138,14 @@ EntryPoint(int32 argc, const char* const* argv)
 	};
 
 	R4_Buffer vbuf_upload = BumpAllocateUploadBuffer_(r4, &upload_heap_bump_offset, &(R4_UploadBufferDesc) {
-		.heap = &upload_heap,
+		.heap = upload_heap,
 		.buffer_desc = {
 			.size = sizeof(vertices),
 			.usage_flags = R4_ResourceUsageFlag_TransferSrc,
 		},
 	});
 	R4_Buffer vbuf = BumpAllocateBuffer_(r4, &default_heap_bump_offset, &(R4_PlacedBufferDesc) {
-		.heap = &default_heap,
+		.heap = default_heap,
 		.initial_state = R4_ResourceState_TransferDst,
 		.buffer_desc = {
 			.size = sizeof(vertices),
@@ -155,14 +155,14 @@ EntryPoint(int32 argc, const char* const* argv)
 
 	intz texture_size = 512*512*4;
 	R4_Buffer texture_upload = BumpAllocateUploadBuffer_(r4, &upload_heap_bump_offset, &(R4_UploadBufferDesc) {
-		.heap = &upload_heap,
+		.heap = upload_heap,
 		.buffer_desc = {
 			.size = texture_size,
 			.usage_flags = R4_ResourceUsageFlag_TransferSrc,
 		},
 	});
 	R4_Image texture = BumpAllocateImage_(r4, &default_heap_bump_offset, &(R4_PlacedImageDesc) {
-		.heap = &default_heap,
+		.heap = default_heap,
 		.initial_state = R4_ResourceState_Null,
 		.image_desc = {
 			.width = 512,
@@ -173,7 +173,7 @@ EntryPoint(int32 argc, const char* const* argv)
 		},
 	});
 	R4_ImageView texture_view = R4_MakeImageView(r4, NULL, &(R4_ImageViewDesc) {
-		.image = &texture,
+		.image = texture,
 		.format = R4_Format_R8G8B8A8_SRgb,
 		.type = R4_DescriptorType_ImageSampled,
 	});
@@ -181,9 +181,9 @@ EntryPoint(int32 argc, const char* const* argv)
 	R4_Sampler sampler = R4_MakeSampler(r4, NULL, &(R4_SamplerDesc) {});
 
 	void* mem = NULL;
-	R4_MapResource(r4, NULL, R4_BufferResource(&vbuf_upload), 0, sizeof(vertices), &mem);
+	R4_MapResource(r4, NULL, R4_BufferResource(vbuf_upload), 0, sizeof(vertices), &mem);
 	memcpy(mem, vertices, sizeof(vertices));
-	R4_UnmapResource(r4, NULL, R4_BufferResource(&vbuf_upload), 0);
+	R4_UnmapResource(r4, NULL, R4_BufferResource(vbuf_upload), 0);
 
 	mem = NULL;
 	{
@@ -191,9 +191,9 @@ EntryPoint(int32 argc, const char* const* argv)
 		void* pixels = stbi_load("render4/test_image.png", &width, &height, &_, 4);
 		SafeAssert(pixels);
 		SafeAssert(width == 512 && height == 512);
-		R4_MapResource(r4, NULL, R4_BufferResource(&texture_upload), 0, texture_size, &mem);
+		R4_MapResource(r4, NULL, R4_BufferResource(texture_upload), 0, texture_size, &mem);
 		MemoryCopy(mem, pixels, width*height*4);
-		R4_UnmapResource(r4, NULL, R4_BufferResource(&texture_upload), 0);
+		R4_UnmapResource(r4, NULL, R4_BufferResource(texture_upload), 0);
 	}
 
 	R4_BindLayout bind_layout = R4_MakeBindLayout(r4, NULL, &(R4_BindLayoutDesc) {
@@ -286,7 +286,7 @@ EntryPoint(int32 argc, const char* const* argv)
 	bool first_frame = true;
 	while (running)
 	{
-		ArenaSavepoint scratch = ArenaSave(OS_ScratchArena(NULL, 0));
+		ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
 		intsize event_count;
 		OS_Event* events = OS_PollEvents(false, scratch.arena, &event_count);
 		for (intsize i = 0; i < event_count; ++i)
@@ -301,14 +301,15 @@ EntryPoint(int32 argc, const char* const* argv)
 
 		R4_CommandAllocator* allocator = &allocators[image_index];
 		R4_CommandList* cmdlist = &cmdlists[image_index];
-		R4_RenderTargetView* backbuffer_view = &swapchain_views[image_index];
-		R4_Image* backbuffer = &swapchain_images[image_index];
+		R4_RenderTargetView backbuffer_view = swapchain_views[image_index];
+		R4_Image backbuffer = swapchain_images[image_index];
 		R4_DescriptorSet* descriptor_set = &descriptor_sets[image_index];
 		R4_ResetCommandAllocator(r4, NULL, allocator);
 		R4_BeginCommandList(r4, NULL, cmdlist, allocator);
 
 		R4_DescriptorSetWrite descriptor_set_writes[2] = {
 			[0] = {
+				.bind_layout = &bind_layout,
 				.dst_set = descriptor_set,
 				.dst_binding = 0,
 				.type = R4_DescriptorType_ImageSampled,
@@ -321,6 +322,7 @@ EntryPoint(int32 argc, const char* const* argv)
 				},
 			},
 			[1] = {
+				.bind_layout = &bind_layout,
 				.dst_set = descriptor_set,
 				.dst_binding = 1,
 				.type = R4_DescriptorType_Sampler,
@@ -333,18 +335,18 @@ EntryPoint(int32 argc, const char* const* argv)
 		if (first_frame)
 		{
 			first_frame = false;
-			R4_CmdCopyBuffer(cmdlist, &vbuf, &vbuf_upload, 1, (R4_BufferCopyRegion[1]) {
+			R4_CmdCopyBuffer(r4, cmdlist, vbuf, vbuf_upload, 1, (R4_BufferCopyRegion[1]) {
 				[0] = {
 					.dst_offset = 0,
 					.src_offset = 0,
 					.size = sizeof(vertices),
 				},
 			});
-			R4_CmdResourceBarrier(cmdlist, &(R4_ResourceBarriers) {
+			R4_CmdResourceBarrier(r4, cmdlist, &(R4_ResourceBarriers) {
 				.buffer_barrier_count = 1,
 				.buffer_barriers = (R4_BufferBarrier[1]) {
 					[0] = {
-						.buffer = &texture_upload,
+						.buffer = texture_upload,
 						.from_state = R4_ResourceState_Preinitialized,
 						.to_state = R4_ResourceState_TransferSrc,
 						.to_access = R4_AccessMask_TransferSrc,
@@ -354,7 +356,7 @@ EntryPoint(int32 argc, const char* const* argv)
 				.image_barrier_count = 1,
 				.image_barriers = (R4_ImageBarrier[1]) {
 					[0] = {
-						.image = &texture,
+						.image = texture,
 						.from_state = R4_ResourceState_Null,
 						.to_state = R4_ResourceState_TransferDst,
 						.to_access = R4_AccessMask_TransferDst,
@@ -362,18 +364,18 @@ EntryPoint(int32 argc, const char* const* argv)
 					},
 				},
 			});
-			R4_CmdCopyBufferToImage(cmdlist, &texture, &texture_upload, 1, &(R4_BufferImageCopyRegion) {
+			R4_CmdCopyBufferToImage(r4, cmdlist, texture, texture_upload, 1, &(R4_BufferImageCopyRegion) {
 				.buffer_width_in_pixels = 512,
 				.buffer_height_in_pixels = 512,
 				.image_width = 512,
 				.image_height = 512,
 				.image_format = R4_Format_R8G8B8A8_SRgb,
 			});
-			R4_CmdResourceBarrier(cmdlist, &(R4_ResourceBarriers) {
+			R4_CmdResourceBarrier(r4, cmdlist, &(R4_ResourceBarriers) {
 				.buffer_barrier_count = 1,
 				.buffer_barriers = (R4_BufferBarrier[1]) {
 					[0] = {
-						.buffer = &vbuf,
+						.buffer = vbuf,
 						.from_state = R4_ResourceState_TransferDst,
 						.from_access = R4_AccessMask_TransferDst,
 						.from_stage = R4_StageMask_Transfer,
@@ -385,7 +387,7 @@ EntryPoint(int32 argc, const char* const* argv)
 				.image_barrier_count = 1,
 				.image_barriers = (R4_ImageBarrier[1]) {
 					[0] = {
-						.image = &texture,
+						.image = texture,
 						.from_state = R4_ResourceState_TransferDst,
 						.from_access = R4_AccessMask_TransferDst,
 						.from_stage = R4_StageMask_Transfer,
@@ -397,7 +399,7 @@ EntryPoint(int32 argc, const char* const* argv)
 			});
 		}
 
-		R4_CmdResourceBarrier(cmdlist, &(R4_ResourceBarriers) {
+		R4_CmdResourceBarrier(r4, cmdlist, &(R4_ResourceBarriers) {
 			.image_barrier_count = 1,
 			.image_barriers = (R4_ImageBarrier[1]) {
 				[0] = {
@@ -410,7 +412,7 @@ EntryPoint(int32 argc, const char* const* argv)
 				},
 			},
 		});
-		R4_CmdBeginRenderpass(cmdlist, &(R4_Renderpass) {
+		R4_CmdBeginRenderpass(r4, cmdlist, &(R4_Renderpass) {
 			.render_area = { 0, 0, 1280, 720 },
 			.render_targets[0] = {
 				.render_target_view = backbuffer_view,
@@ -420,27 +422,27 @@ EntryPoint(int32 argc, const char* const* argv)
 			},
 		});
 
-		R4_CmdSetViewports(cmdlist, 1, (R4_Viewport[]) {
+		R4_CmdSetViewports(r4, cmdlist, 1, (R4_Viewport[]) {
 			[0] = { 0, 0, 1280, 720, 0.0f, 1.0f },
 		});
-		R4_CmdSetScissors(cmdlist, 1, (R4_Rect[]) {
+		R4_CmdSetScissors(r4, cmdlist, 1, (R4_Rect[]) {
 			[0] = { 0, 0, 1280, 720 },
 		});
-		R4_CmdSetPrimitiveType(cmdlist, R4_PrimitiveType_TriangleList);
-		R4_CmdSetPipelineLayout(cmdlist, &pipeline_layout);
-		R4_CmdSetPipeline(cmdlist, &pipeline);
-		R4_CmdSetDescriptorHeap(cmdlist, &descriptor_heap);
-		R4_CmdSetDescriptorSets(cmdlist, &(R4_DescriptorSets) {
+		R4_CmdSetPrimitiveType(r4, cmdlist, R4_PrimitiveType_TriangleList);
+		R4_CmdSetPipelineLayout(r4, cmdlist, &pipeline_layout);
+		R4_CmdSetPipeline(r4, cmdlist, &pipeline);
+		R4_CmdSetDescriptorHeap(r4, cmdlist, &descriptor_heap);
+		R4_CmdSetDescriptorSets(r4, cmdlist, &(R4_DescriptorSets) {
 			.pipeline_layout = &pipeline_layout,
 			.count = 1,
 			.sets = &descriptor_set,
 		});
-		R4_CmdSetVertexBuffers(cmdlist, 0, 1, &(R4_VertexBuffer) {
-			.buffer = &vbuf,
+		R4_CmdSetVertexBuffers(r4, cmdlist, 0, 1, &(R4_VertexBuffer) {
+			.buffer = vbuf,
 			.size = sizeof(vertices),
 			.stride = sizeof(struct Vertex),
 		});
-		R4_CmdPushConstants(cmdlist, &(R4_PushConstant) {
+		R4_CmdPushConstants(r4, cmdlist, &(R4_PushConstant) {
 			.pipeline_layout = &pipeline_layout,
 			.shader_visibility = R4_ShaderVisibility_Vertex,
 			.count = 1,
@@ -448,8 +450,8 @@ EntryPoint(int32 argc, const char* const* argv)
 		});
 		R4_CmdDraw(cmdlist, 0, 3, 0, 1);
 
-		R4_CmdEndRenderpass(cmdlist);
-		R4_CmdResourceBarrier(cmdlist, &(R4_ResourceBarriers) {
+		R4_CmdEndRenderpass(r4, cmdlist);
+		R4_CmdResourceBarrier(r4, cmdlist, &(R4_ResourceBarriers) {
 			.image_barrier_count = 1,
 			.image_barriers = (R4_ImageBarrier[1]) {
 				[0] = {
@@ -477,15 +479,11 @@ EntryPoint(int32 argc, const char* const* argv)
 	R4_FreeCommandAllocator(r4, &allocators[1]);
 	R4_FreeCommandAllocator(r4, &allocators[2]);
 	R4_FreeDescriptorHeap(r4, &descriptor_heap);
-	R4_FreeBuffer(r4, &texture_upload);
-	R4_FreeImage(r4, &texture);
-	R4_FreeBuffer(r4, &vbuf_upload);
-	R4_FreeBuffer(r4, &vbuf);
-	R4_FreeHeap(r4, &default_heap);
-	R4_FreeHeap(r4, &upload_heap);
-	R4_FreeRenderTargetView(r4, &swapchain_views[0]);
-	R4_FreeRenderTargetView(r4, &swapchain_views[1]);
-	R4_FreeRenderTargetView(r4, &swapchain_views[2]);
+	R4_FreeHeap(r4, default_heap);
+	R4_FreeHeap(r4, upload_heap);
+	R4_FreeRenderTargetView(r4, swapchain_views[0]);
+	R4_FreeRenderTargetView(r4, swapchain_views[1]);
+	R4_FreeRenderTargetView(r4, swapchain_views[2]);
 	// R4_FreeSampler(r4, &sampler);
 	R4_DestroyContext(r4, NULL);
 	OS_DestroyWindow(window);

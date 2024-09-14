@@ -17,6 +17,50 @@
 
 #include "common_basic.h"
 
+//~ ASSERT
+#ifndef Assert_IsDebuggerPresent_
+#	ifdef _WIN32
+EXTERN_C __declspec(dllimport) int __stdcall IsDebuggerPresent(void);
+#		define Assert_IsDebuggerPresent_() IsDebuggerPresent()
+#	else
+#		define Assert_IsDebuggerPresent_() true
+#	endif
+#endif
+
+//- NOTE(ljre): SafeAssert -- always present, side-effects allowed, memory safety assert
+#define SafeAssert(...) do {                                                  \
+		if (Unlikely(!(__VA_ARGS__))) {                                       \
+			if (Assert_IsDebuggerPresent_())                                  \
+				Debugbreak();                                                 \
+			AssertionFailure(#__VA_ARGS__, __func__, __FILE__, __LINE__); \
+		}                                                                     \
+	} while (0)
+
+//- NOTE(ljre): Assert -- set to Assume() on release, logic safety assert
+#ifndef CONFIG_DEBUG
+#	define Assert(...) Assume(__VA_ARGS__)
+#else //CONFIG_DEBUG
+#	define Assert(...) do {                                               \
+		if (Unlikely(!(__VA_ARGS__))) {                                   \
+			if (Assert_IsDebuggerPresent_())                              \
+				Debugbreak();                                             \
+			AssertionFailure(#__VA_ARGS__, __func__, __FILE__, __LINE__); \
+		}                                                                 \
+	} while (0)
+#endif //CONFIG_DEBUG
+
+#ifdef CONFIG_OS_ANDROID
+#	include <android/log.h>
+//#	undef Trace
+//#	define Trace() __android_log_print(ANDROID_LOG_INFO, "NativeExample", "[Trace] %s\n", __func__)
+#	undef Assert_OnFailure
+#	define Assert_OnFailure(expr, file, line, func) do { __android_log_print(ANDROID_LOG_FATAL, "NativeExample", "[Assert] file %s at line %i:\n\tFunction: %s\n\tExpr: %s\n", file, line, func, expr); Unreachable(); } while (0)
+#	undef SafeAssert_OnFailure
+#	define SafeAssert_OnFailure Assert_OnFailure
+#	undef Assert_IsDebuggerPresent_
+#	define Assert_IsDebuggerPresent_() false
+#endif //CONFIG_OS_ANDROID
+
 #ifndef __cplusplus
 #	define Buf(x) (Buffer) BufInit(x)
 #	define BufNull (Buffer) { 0 }
@@ -124,6 +168,7 @@ static inline intz StringVPrintfSize(const char* fmt, va_list args);
 static inline intz StringPrintfSize(const char* fmt, ...);
 
 static inline Arena ArenaFromMemory(void* memory, intz size);
+static inline Arena* ArenaBootstrap(Arena arena);
 static inline void* ArenaPush(Arena* arena, intz size);
 static inline void* ArenaPushDirty(Arena* arena, intz size);
 static inline void* ArenaPushAligned(Arena* arena, intz size, intz alignment);
@@ -150,6 +195,11 @@ static inline FORCE_INLINE intz   HashMsi(uint32 log2_of_cap, uint64 hash, intz 
 static inline Allocator AllocatorFromArena(Arena* arena);
 static inline Allocator NullAllocator(void);
 static inline bool IsNullAllocator(Allocator allocator);
+
+static inline Arena*         ScratchArena(intz conflict_count, Arena* const conflicts[]);
+static inline void           Log(int32 level, char const* fmt, ...);
+static inline ThreadContext* ThisThreadContext(void);
+NO_RETURN static inline void FORCE_NOINLINE AssertionFailure(char const* expr, char const* func, char const* file, int32 line);
 
 //~ API Implementation
 #ifdef CONFIG_ARCH_X86FAMILY
@@ -1653,6 +1703,14 @@ ArenaFromMemory(void* memory, intz size)
 	return result;
 }
 
+static inline Arena*
+ArenaBootstrap(Arena arena)
+{
+	Arena* ptr = (Arena*)ArenaPushAligned(&arena, sizeof(Arena), alignof(Arena));
+	*ptr = arena;
+	return ptr;
+}
+
 static inline void*
 ArenaEndAligned(Arena* arena, intz alignment)
 {
@@ -2168,6 +2226,86 @@ HashMsi(uint32 log2_of_cap, uint64 hash, intz index)
 	uint32 mask = (1u << exp) - 1;
 	uint32 step = (uint32)(hash >> (64 - exp)) | 1;
 	return (index + step) & mask;
+}
+
+// NOTE(ljre): Thread context stuff
+#ifdef _MSC_VER
+__declspec(selectany) EXTERN_C thread_local
+#elif defined(__GNUC__)
+__attribute__((weak)) EXTERN_C thread_local
+#endif
+struct
+{
+	ThreadContext ctx;
+	alignas(64) uint8 scratch_memory[2][2<<20];
+}
+g_thread_context_impl_;
+
+static inline ThreadContext*
+ThisThreadContext(void)
+{
+	ThreadContext* ctx = &g_thread_context_impl_.ctx;
+	static_assert(ArrayLength(ctx->scratch) == ArrayLength(g_thread_context_impl_.scratch_memory), "must");
+	if (!ctx->scratch[0].memory)
+	{
+		for (intz i = 0; i < ArrayLength(ctx->scratch); ++i)
+			ctx->scratch[i] = ArenaFromMemory(g_thread_context_impl_.scratch_memory[i], sizeof(g_thread_context_impl_.scratch_memory[i]));
+	}
+	return ctx;
+}
+
+static inline Arena*
+ScratchArena(intz conflict_count, Arena* const conflicts[])
+{
+	ThreadContext* thread_context = ThisThreadContext();
+	for (intz i = 0; i < ArrayLength(thread_context->scratch); ++i)
+	{
+		Arena* arena = &thread_context->scratch[i];
+		bool ok = true;
+		for (intz j = 0; j < conflict_count; ++j)
+		{
+			if (arena == conflicts[j])
+			{
+				ok = false;
+				break;
+			}
+		}
+		if (ok)
+			return arena;
+	}
+	return NULL;
+}
+
+static inline void
+Log(int32 level, char const* fmt, ...)
+{
+	ThreadContext* thread_ctx = ThisThreadContext();
+	if (!thread_ctx->logger.proc || level < thread_ctx->logger.minimum_level)
+		return;
+
+	va_list args;
+	va_start(args, fmt);
+	Arena* scratch_arena = ScratchArena(0, NULL);
+	for ArenaTempScope(scratch_arena)
+	{
+		String str = ArenaVPrintf(scratch_arena, fmt, args);
+		thread_ctx->logger.proc(&thread_ctx->logger, level, str);
+	}
+	va_end(args);
+}
+
+NO_RETURN static inline void FORCE_NOINLINE
+AssertionFailure(char const* expr, char const* func, char const* file, int32 line)
+{
+	ThreadContext* thread_ctx = ThisThreadContext();
+	if (thread_ctx->assertion_failure_proc)
+	{
+		String expr_str = StringFromCString(expr);
+		String func_str = StringFromCString(func);
+		String file_str = StringFromCString(file);
+		thread_ctx->assertion_failure_proc(expr_str, func_str, file_str, line);
+	}
+	Trap();
 }
 
 #endif //COMMON_H
