@@ -1,0 +1,11 @@
+fxc bed/shader_quad.hlsl vs_4_0 Vertex
+fxc bed/shader_quad.hlsl ps_4_0 Pixel
+
+define CONFIG_WINDOWS_SUBSYSTEM
+subsystem windows
+
+c bed/bed.c
+c os/os_win32.c
+c render3/render3_d3d11.c
+
+output bed

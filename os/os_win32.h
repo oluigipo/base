@@ -12,6 +12,9 @@ struct WindowData_
 	HWND handle;
 	HDC acquired_hdc; // only useful if opengl
 
+	uint32 high_surrogate;
+	uint32 low_surrogate;
+
 	OS_MouseLockKind mouse_lock;
 	OS_RWLock mouse_state_lock;
 	OS_MouseState mouse_state;

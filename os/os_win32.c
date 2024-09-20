@@ -1776,7 +1776,73 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 			os_event.window_typing.codepoint = codepoint;
 			os_event.window_typing.is_repeat = (repeat_count > 1);
 		} break;
+
+		case WM_CHAR:
+		{
+			uint32 codepoint = (uint32)wparam;
+			int32 repeat_count = (lparam & 0xffff);
+
+			if (IS_HIGH_SURROGATE(wparam) || IS_LOW_SURROGATE(wparam))
+			{
+				if (IS_HIGH_SURROGATE(wparam))
+					window_data->high_surrogate = wparam;
+				else if (IS_LOW_SURROGATE(wparam))
+					window_data->low_surrogate = wparam;
+
+				if (window_data->high_surrogate && window_data->low_surrogate)
+				{
+					codepoint = 0;
+					if (IS_SURROGATE_PAIR(window_data->high_surrogate, window_data->low_surrogate))
+					{
+						codepoint = 0x10000;
+						codepoint += (window_data->high_surrogate & 0x3FF) << 10;
+						codepoint += (window_data->low_surrogate & 0x3FF);
+					}
+				}
+				else
+					break;
+			}
+			window_data->high_surrogate = 0;
+			window_data->low_surrogate = 0;
+
+			if (codepoint < 32 || (codepoint > 0x7f && codepoint <= 0xa0))
+				break;
+			os_event.kind = OS_EventKind_WindowTyping;
+			os_event.window_typing.codepoint = codepoint;
+			os_event.window_typing.is_repeat = repeat_count;
+			os_event.window_typing.ctrl = GetKeyState(VK_CONTROL) & 0x8000;
+			os_event.window_typing.shift = GetKeyState(VK_SHIFT) & 0x8000;
+			os_event.window_typing.alt = GetKeyState(VK_MENU) & 0x8000;
+		} break;
 		
+		case WM_KEYDOWN:
+		case WM_KEYUP:
+		{
+			if (wparam > 0 && wparam < ArrayLength(g_keyboard_key_table))
+			{
+				OS_KeyboardKey key = g_keyboard_key_table[wparam];
+				if (key)
+				{
+					int32 repeat_count = (lparam & 0xffff);
+
+					os_event.kind = (message == WM_KEYDOWN) ? OS_EventKind_WindowKeyPressed : OS_EventKind_WindowKeyReleased;
+					os_event.window_key.key = key;
+					os_event.window_key.is_repeat = (repeat_count > 0);
+					os_event.window_key.ctrl = GetKeyState(VK_CONTROL) & 0x8000;
+					os_event.window_key.shift = GetKeyState(VK_SHIFT) & 0x8000;
+					os_event.window_key.alt = GetKeyState(VK_MENU) & 0x8000;
+				}
+			}
+
+			result = DefWindowProcW(hwnd, message, wparam, lparam);
+		} break;
+
+		case WM_SYSCOMMAND:
+		{
+			if (wparam != SC_KEYMENU || (lparam >> 16) <= 0)
+				result = DefWindowProcW(hwnd, message, wparam, lparam);
+		} break;
+
 		case WM_MOUSEWHEEL:
 		{
 			int32 delta = GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA;

@@ -357,6 +357,8 @@ enum OS_EventKind
 	OS_EventKind_InternalEvent,
 	
 	OS_EventKind_WindowTyping,
+	OS_EventKind_WindowKeyPressed,
+	OS_EventKind_WindowKeyReleased,
 	OS_EventKind_WindowMove,
 	OS_EventKind_WindowResize,
 	OS_EventKind_WindowClose,
@@ -373,7 +375,8 @@ struct OS_Event
 	
 	union
 	{
-		struct { uint32 codepoint; bool is_repeat; } window_typing;
+		struct { uint32 codepoint; bool is_repeat; bool ctrl; bool shift; bool alt; } window_typing;
+		struct { OS_KeyboardKey key; bool is_repeat; bool ctrl; bool shift; bool alt; } window_key;
 		struct { int32 x, y; } window_move;
 		struct { int32 total_width, total_height; int32 user_width, user_height; } window_resize;
 		struct { int32 delta; } window_mouse_wheel;
