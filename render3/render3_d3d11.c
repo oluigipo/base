@@ -199,7 +199,7 @@ R3_QueryInfo(R3_Context* ctx)
 		info.max_render_target_textures = 1;
 		info.max_textures_per_drawcall = 8;
 		info.supported_texture_formats[0] |= (1 << R3_Format_D16);
-		info.supported_texture_formats[0] |= (1 << R3_Format_D24S8);
+		info.supported_texture_formats[0] |= (1U << R3_Format_D24S8);
 		info.supported_texture_formats[0] |= (1 << R3_Format_U8x1Norm);
 		info.supported_texture_formats[0] |= (1 << R3_Format_U8x4Norm);
 		info.supported_texture_formats[0] |= (1 << R3_Format_U8x4Norm_Srgb);
@@ -325,6 +325,14 @@ R3_MakeTexture(R3_Context* ctx, R3_TextureDesc const* desc)
 	R3_Texture out = {};
 	HRESULT hr;
 
+	uint32 width, height, depth;
+	SafeAssert(desc->width >= 0);
+	SafeAssert(desc->height >= 0);
+	SafeAssert(desc->depth >= 0);
+	width = (uint32)desc->width;
+	height = (uint32)desc->height;
+	depth = (uint32)desc->depth;
+
 	D3D11_USAGE usage = D3d11UsageToD3dUsage_(desc->usage);
 	uint32 pixel_size;
 	DXGI_FORMAT format = D3d11FormatToDxgi_(desc->format, &pixel_size, NULL);
@@ -368,17 +376,18 @@ R3_MakeTexture(R3_Context* ctx, R3_TextureDesc const* desc)
 	UINT miplevels = 1;
 	if (desc->mipmap_count)
 	{
+		SafeAssert(desc->mipmap_count >= 0 || desc->mipmap_count == -1);
 		if (desc->mipmap_count == -1)
 			miplevels = 0;
 		else
-			miplevels = desc->mipmap_count;
+			miplevels = (uint32)desc->mipmap_count;
 	}
 
 	D3D11_TEXTURE2D_DESC texture2d_desc = {
-		.Width = desc->width,
-		.Height = desc->height,
+		.Width = width,
+		.Height = height,
 		.MipLevels = miplevels,
-		.ArraySize = desc->depth ? desc->depth : 1,
+		.ArraySize = depth ? depth : 1,
 		.Format = format,
 		.SampleDesc = {
 			.Count = 1,
@@ -393,8 +402,8 @@ R3_MakeTexture(R3_Context* ctx, R3_TextureDesc const* desc)
 	if (desc->initial_data)
 		initial = &(D3D11_SUBRESOURCE_DATA) {
 			.pSysMem = desc->initial_data,
-			.SysMemPitch = desc->width * pixel_size,
-			.SysMemSlicePitch = desc->width * desc->height * pixel_size,
+			.SysMemPitch = width * pixel_size,
+			.SysMemSlicePitch = width * height * pixel_size,
 		};
 
 	hr = ID3D11Device_CreateTexture2D(ctx->api.device, &texture2d_desc, initial, &out.d3d11_tex2d);
@@ -406,7 +415,7 @@ R3_MakeTexture(R3_Context* ctx, R3_TextureDesc const* desc)
 			.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
 			.Texture2D = {
 				.MostDetailedMip = 0,
-				.MipLevels = -1,
+				.MipLevels = (UINT)-1,
 			},
 		};
 		hr = ID3D11Device_CreateShaderResourceView(ctx->api.device, (ID3D11Resource*)out.d3d11_tex2d, &srv_desc, &out.d3d11_srv);
@@ -885,10 +894,10 @@ R3_UpdateTexture(R3_Context* ctx, R3_Texture* texture, void const* memory, uint3
 	D3d11FormatToDxgi_(texture->format, &pixel_size, NULL);
 	SafeAssert(desc.Width  == texture->width);
 	SafeAssert(desc.Height == texture->height);
-	SafeAssert(texture->width * texture->height * pixel_size == size);
+	SafeAssert((uint32)texture->width * (uint32)texture->height * pixel_size == size);
 
-	uint32 row = texture->width * pixel_size;
-	uint32 depth = texture->width * texture->height * pixel_size;
+	uint32 row = (uint32)texture->width * pixel_size;
+	uint32 depth = (uint32)texture->width * (uint32)texture->height * pixel_size;
 	ID3D11DeviceContext_UpdateSubresource(ctx->api.context, (ID3D11Resource*)texture->d3d11_tex2d, slice, NULL, memory, row, depth);
 }
 
@@ -1063,7 +1072,10 @@ R3_Clear(R3_Context* ctx, R3_ClearDesc const* desc)
 		for (intsize i = 0; i < ArrayLength(rtvs); ++i)
 		{
 			if (rtvs[i])
+			{
 				ID3D11DeviceContext_ClearRenderTargetView(ctx->api.context, rtvs[i], desc->color);
+				ID3D11RenderTargetView_Release(rtvs[i]);
+			}
 		}
 	}
 
@@ -1077,6 +1089,7 @@ R3_Clear(R3_Context* ctx, R3_ClearDesc const* desc)
 
 		if (flags)
 			ID3D11DeviceContext_ClearDepthStencilView(ctx->api.context, dsv, flags, desc->depth, desc->stencil);
+		ID3D11DepthStencilView_Release(dsv);
 	}
 }
 
@@ -1304,12 +1317,13 @@ R3_MakeVideoDecoder(R3_Context* ctx, R3_VideoDecoderDesc const* desc)
 		return out;
 	IMFMediaType_Release(type);
 
+	SafeAssert(frame_count >= 0);
 	out.d3d11_mfsource = reader;
 	out.width = width;
 	out.height = height;
 	out.fps_num = framerate_num;
 	out.fps_den = framerate_den;
-	out.frame_count = frame_count;
+	out.frame_count = (uint64)frame_count;
 	return out;
 }
 
@@ -1387,7 +1401,7 @@ R3_DecodeFrame(R3_Context* ctx, R3_VideoDecoder* video, R3_Texture* output_textu
 		.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY,
 		.Texture2DArray = {
 			.MostDetailedMip = 0,
-			.MipLevels = -1,
+			.MipLevels = (UINT)-1,
 			.FirstArraySlice = subresource,
 			.ArraySize = 1,
 		},
@@ -1396,11 +1410,13 @@ R3_DecodeFrame(R3_Context* ctx, R3_VideoDecoder* video, R3_Texture* output_textu
 	hr = ID3D11Device_CreateShaderResourceView(ctx->api.device, (ID3D11Resource*)texture, &viewdesc, &srv);
 	if (CheckHr_(ctx, hr))
 		return false;
-		
+	
+	SafeAssert(texdesc.Width <= INT32_MAX);
+	SafeAssert(texdesc.Height <= INT32_MAX);
 	output_texture->format = R3_Format_U8x4Norm_Bgrx;
 	output_texture->depth = 1;
-	output_texture->width = texdesc.Width;
-	output_texture->height = texdesc.Height;
+	output_texture->width = (int32)texdesc.Width;
+	output_texture->height = (int32)texdesc.Height;
 	output_texture->d3d11_srv = srv;
 	output_texture->d3d11_tex2d = texture;
 	*out_timestamp = (uint64)timestamp;

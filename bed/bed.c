@@ -970,7 +970,7 @@ EntryPoint(int32 argc, const char* const argv[])
 
 		HRESULT hr;
 		D2D1_FACTORY_OPTIONS factory_desc = {
-			// .debugLevel = D2D1_DEBUG_LEVEL_ERROR,
+			.debugLevel = D2D1_DEBUG_LEVEL_ERROR,
 		};
 		hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &IID_ID2D1Factory1, &factory_desc, (void**)&app->d2d_factory);
 		SafeAssert(SUCCEEDED(hr));
@@ -1152,10 +1152,10 @@ EntryPoint(int32 argc, const char* const argv[])
 		IDWriteFontFace1_Release(app->dw_font_face1);
 		IDWriteFontFace_Release(app->dw_font_face);
 		IDWriteFontFile_Release(app->dw_font_file);
-		IDWriteFactory_Release(app->dw_factory);
 		ID2D1SolidColorBrush_Release(app->d2d_brush);
 		ID2D1RenderTarget_Release(app->d2d_rt);
 		ID2D1Factory1_Release(app->d2d_factory);
+		IDWriteFactory_Release(app->dw_factory);
 	}
 
 	String str = StrInit("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\n!@#$%&*()[]{}_-+\nHello, World!\nint main() { puts(\"Hello, World!\"); }");
@@ -1373,6 +1373,13 @@ EntryPoint(int32 argc, const char* const argv[])
 		ArenaRestore(scratch);
 	}
 
+	R3_FreePipeline(app->r3, &app->quads_pipeline);
+	R3_FreeBuffer(app->r3, &app->quads_vbuf);
+	R3_FreeBuffer(app->r3, &app->quads_ibuf);
+	R3_FreeBuffer(app->r3, &app->quads_ubuf);
+	R3_FreeSampler(app->r3, &app->sampler);
+	R3_FreeTexture(app->r3, &app->white_texture);
+	R3_FreeTexture(app->r3, &app->d2d_rt_texture);
 	R3_FreeContext(app->r3);
 	OS_DestroyWindow(app->window);
 	OS_VirtualFree(app->arena->memory, app->arena->reserved);
