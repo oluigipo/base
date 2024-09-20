@@ -306,6 +306,18 @@ TextBufferRemove_(TextBuffer* textbuf, intz offset, intz size)
 	}
 }
 
+static String
+TextBufferStringFromRange_(TextBuffer* textbuf, intz offset, intz size)
+{
+	if (offset < textbuf->gap_start && offset + size > textbuf->gap_start)
+		TextBufferMoveGapToOffset_(textbuf, offset);
+
+	if (offset < textbuf->gap_start)
+		return StrMake(size, textbuf->utf8_text+offset);
+	else
+		return StrMake(size, textbuf->utf8_text+offset+(textbuf->gap_end-textbuf->gap_start));
+}
+
 static void
 TextCursorCmdInsert_(TextCursor* cursor, TextBuffer* textbuf, intz amount, uint32 codepoint)
 {
@@ -582,7 +594,121 @@ TextCursorCmdDeleteBackwardSnakeWord_(TextCursor* cursor, TextBuffer* textbuf, i
 			break;
 		intz start = FindSimpleBoundaryBackward_(textbuf, cursor->offset, SimpleBoundarySnakeWordProc_);
 		TextBufferRemove_(textbuf, start, cursor->offset - start);
+		if (cursor->marker_offset > cursor->offset)
+			cursor->marker_offset -= (cursor->offset - start);
 		cursor->offset = start;
+	}
+}
+
+static void
+TextCursorCmdPaste_(App* app, TextCursor* cursor, TextBuffer* textbuf)
+{
+	Trace();
+	ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
+	OS_ClipboardContents clip = OS_GetClipboard(AllocatorFromArena(scratch.arena), OS_ClipboardContentType_Text, app->window, NULL);
+
+	uint8* mem = TextBufferInsert_(textbuf, cursor->offset, clip.contents.size);
+	if (cursor->marker_offset > cursor->offset)
+		cursor->marker_offset += clip.contents.size;
+	cursor->offset += clip.contents.size;
+
+	MemoryCopy(mem, clip.contents.data, clip.contents.size);
+	ArenaRestore(scratch);
+}
+
+static void
+TextCursorCmdCopy_(App* app, TextCursor* cursor, TextBuffer* textbuf)
+{
+	Trace();
+	intz offset;
+	intz size;
+	if (cursor->offset < cursor->marker_offset)
+	{
+		offset = cursor->offset;
+		size = cursor->marker_offset - cursor->offset;
+	}
+	else
+	{
+		offset = cursor->marker_offset;
+		size = cursor->offset - cursor->marker_offset;
+	}
+
+	String str = TextBufferStringFromRange_(textbuf, offset, size);
+	OS_SetClipboard((OS_ClipboardContents) {
+		.type = OS_ClipboardContentType_Text,
+		.contents = str,
+	}, app->window, NULL);
+}
+
+static void
+TextCursorCmdUpParagraph_(TextCursor* cursor, TextBuffer* textbuf, intz amount)
+{
+	Trace();
+	for (intz i = 0; i < amount; ++i)
+	{
+		bool encontered_non_whitespace_before = false;
+		while (cursor->offset > 0)
+		{
+			TextCursorCmdLeft_(cursor, textbuf, 1);
+			TextCursorCmdStartOfLine_(cursor, textbuf);
+			intz it = cursor->offset;
+			bool has_non_whitespace = false;
+			for (; it < TextBufferSize_(textbuf); ++it)
+			{
+				uint8 sample = TextBufferSample_(textbuf, it);
+				if (sample == '\n')
+					break;
+				if (sample != ' ' && sample != '\t')
+				{
+					has_non_whitespace = true;
+					break;
+				}
+			}
+			if (has_non_whitespace)
+				encontered_non_whitespace_before = true;
+			else if (encontered_non_whitespace_before)
+			{
+				TextCursorCmdEndOfLine_(cursor, textbuf);
+				break;
+			}
+		}
+	}
+}
+
+static void
+TextCursorCmdDownParagraph_(TextCursor* cursor, TextBuffer* textbuf, intz amount)
+{
+	Trace();
+	for (intz i = 0; i < amount; ++i)
+	{
+		bool encontered_non_whitespace_before = false;
+		TextCursorCmdDown_(cursor, textbuf, 1);
+		while (cursor->offset < TextBufferSize_(textbuf))
+		{
+			TextCursorCmdStartOfLine_(cursor, textbuf);
+			intz it = cursor->offset;
+			bool has_non_whitespace = false;
+			for (; it < TextBufferSize_(textbuf); ++it)
+			{
+				uint8 sample = TextBufferSample_(textbuf, it);
+				if (sample == '\n')
+					break;
+				if (sample != ' ' && sample != '\t')
+				{
+					has_non_whitespace = true;
+					break;
+				}
+			}
+
+			if (has_non_whitespace)
+				encontered_non_whitespace_before = true;
+			else if (encontered_non_whitespace_before)
+			{
+				TextCursorCmdEndOfLine_(cursor, textbuf);
+				break;
+			}
+			TextCursorCmdDown_(cursor, textbuf, 1);
+		}
 	}
 }
 
@@ -831,7 +957,7 @@ EntryPoint(int32 argc, const char* const argv[])
 
 	// Init D2D1 & DWrite
 	{
-		int32 const texture_size = 2048;
+		int32 const texture_size = 512;
 		float32 const emsize = 13.0f;
 		app->d2d_rt_texture = R3_MakeTexture(app->r3, &(R3_TextureDesc) {
 			.width = texture_size,
@@ -1021,6 +1147,17 @@ EntryPoint(int32 argc, const char* const argv[])
 		}
 	}
 
+	// Free d2d1 and dwrite
+	{
+		IDWriteFontFace1_Release(app->dw_font_face1);
+		IDWriteFontFace_Release(app->dw_font_face);
+		IDWriteFontFile_Release(app->dw_font_file);
+		IDWriteFactory_Release(app->dw_factory);
+		ID2D1SolidColorBrush_Release(app->d2d_brush);
+		ID2D1RenderTarget_Release(app->d2d_rt);
+		ID2D1Factory1_Release(app->d2d_factory);
+	}
+
 	String str = StrInit("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\n!@#$%&*()[]{}_-+\nHello, World!\nint main() { puts(\"Hello, World!\"); }");
 	app->buffer = (TextBuffer) {
 		.kind = TextBufferKind_OwnedGapBuffer,
@@ -1067,8 +1204,20 @@ EntryPoint(int32 argc, const char* const argv[])
 						else
 							TextCursorCmdRight_(&app->cursor, &app->buffer, 1);
 					} break;
-					case OS_KeyboardKey_Up: TextCursorCmdUp_(&app->cursor, &app->buffer, 1); break;
-					case OS_KeyboardKey_Down: TextCursorCmdDown_(&app->cursor, &app->buffer, 1); break;
+					case OS_KeyboardKey_Up:
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdUpParagraph_(&app->cursor, &app->buffer, 1);
+						else
+							TextCursorCmdUp_(&app->cursor, &app->buffer, 1);
+					} break;
+					case OS_KeyboardKey_Down:
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdDownParagraph_(&app->cursor, &app->buffer, 1);
+						else
+							TextCursorCmdDown_(&app->cursor, &app->buffer, 1);
+					} break;
 					case OS_KeyboardKey_Backspace:
 					{
 						if (event->window_key.ctrl)
@@ -1084,6 +1233,16 @@ EntryPoint(int32 argc, const char* const argv[])
 					{
 						if (event->window_key.ctrl)
 							TextCursorCmdDeleteToMarker_(&app->cursor, &app->buffer);
+					} break;
+					case 'C':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdCopy_(app, &app->cursor, &app->buffer);
+					} break;
+					case 'V':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdPaste_(app, &app->cursor, &app->buffer);
 					} break;
 				}
 			}

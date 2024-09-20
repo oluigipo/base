@@ -329,7 +329,43 @@ WideToString_(Arena* output_arena, LPCWSTR wide)
 	int32 size = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
 	if (size == 0)
 		return StrNull;
+	--size;
 	uint8* str = ArenaPushDirtyAligned(output_arena, size, 1);
+	WideCharToMultiByte(CP_UTF8, 0, wide, -1, (char*)str, size, NULL, NULL);
+	
+	return StrMake(size, str);
+}
+
+static inline wchar_t*
+StringToWideSingle_(SingleAllocator alloc, String str, AllocatorError* out_err)
+{
+	Trace();
+	SafeAssert(str.size < INT32_MAX);
+	
+	int32 size = MultiByteToWideChar(CP_UTF8, 0, (char const*)str.data, (int32)str.size, NULL, 0);
+	if (size == 0)
+		return NULL;
+	wchar_t* wide = AllocatorAllocArray(&alloc, (size + 1), SignedSizeof(wchar_t), alignof(wchar_t), out_err);
+	if (!wide)
+		return NULL;
+	MultiByteToWideChar(CP_UTF8, 0, (char const*)str.data, (int32)str.size, wide, size);
+	wide[size] = 0;
+	
+	return wide;
+}
+
+static inline String
+WideToStringSingle_(SingleAllocator alloc, LPCWSTR wide, AllocatorError* out_err)
+{
+	Trace();
+	
+	int32 size = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+	if (size == 0)
+		return StrNull;
+	--size;
+	uint8* str = AllocatorAlloc(&alloc, size, 1, out_err);
+	if (!str)
+		return StrNull;
 	WideCharToMultiByte(CP_UTF8, 0, wide, -1, (char*)str, size, NULL, NULL);
 	
 	return StrMake(size, str);
@@ -384,6 +420,7 @@ FillOsErr_(OS_Error* out_err, DWORD code)
 {
 	OS_Error err = {
 		.ok = false,
+		.is_system_err = true,
 		.code = code,
 		.what = StrInit("OK"),
 	};
@@ -391,7 +428,7 @@ FillOsErr_(OS_Error* out_err, DWORD code)
 	switch (code)
 	{
 		default: err.what = Str("Unknown error"); break;
-		case 0: err.ok = true; break;
+		case 0: err.ok = true; err.is_system_err = false; break;
 		case ERROR_FILE_NOT_FOUND: err.what = Str("The system cannot find the file specified."); break;
 		case ERROR_PATH_NOT_FOUND: err.what = Str("The system cannot find the path specified."); break;
 		case ERROR_ACCESS_DENIED: err.what = Str("Access is denied."); break;
@@ -3979,6 +4016,134 @@ OS_DeinitConditionVariable(OS_ConditionVariable* var)
 	Trace();
 }
 
+// ===========================================================================
+// ===========================================================================
+// Clipboard
+API OS_ClipboardContents
+OS_GetClipboard(SingleAllocator allocator, OS_ClipboardContentType allowed_types, OS_Window owner_window, OS_Error* out_err)
+{
+	Trace();
+	OS_ClipboardContents result = {};
+	AllocatorError alloc_err = 0;
+	HWND hwnd = NULL;
+	if (owner_window.ptr)
+		hwnd = ((WindowData_*)owner_window.ptr)->handle;
+
+	if (OpenClipboard(hwnd))
+	{
+		// unicode text
+		if (!result.type && !alloc_err && (allowed_types & OS_ClipboardContentType_Text))
+		{
+			HANDLE clipboard_data = GetClipboardData(CF_UNICODETEXT);
+			if (clipboard_data)
+			{
+				wchar_t* wstr = GlobalLock(clipboard_data);
+				if (wstr)
+				{
+					String str = WideToStringSingle_(allocator, wstr, &alloc_err);
+					if (str.size)
+					{
+						result.contents = str;
+						result.type = OS_ClipboardContentType_Text;
+					}
+				}
+				GlobalUnlock(clipboard_data);
+			}
+		}
+
+		// ascii text
+		if (!result.type && !alloc_err && (allowed_types & OS_ClipboardContentType_Text))
+		{
+			// TODO(ljre): This is actually ANSI, and not ASCII... but surely the path above will work
+			//             and perform the conversion before this is reached, right?
+			HANDLE clipboard_data = GetClipboardData(CF_TEXT);
+			if (clipboard_data)
+			{
+				char* str = GlobalLock(clipboard_data);
+				if (str)
+				{
+					intz size = MemoryStrlen(str);
+					uint8* mem = AllocatorAlloc(&allocator, size, 1, &alloc_err);
+					if (mem)
+					{
+						MemoryCopy(mem, str, size);
+						result.contents = StrMake(size, mem);
+						result.type = OS_ClipboardContentType_Text;
+					}
+				}
+				GlobalUnlock(clipboard_data);
+			}
+		}
+
+		CloseClipboard();
+	}
+
+	if (out_err)
+	{
+		if (alloc_err)
+		{
+			*out_err = (OS_Error) {
+				.ok = (alloc_err == 0),
+				.code = (uint32)alloc_err,
+				.is_allocator_err = (alloc_err != 0),
+			};
+		}
+		else
+			FillOsErr_(out_err, GetLastError());
+	}
+	else
+		SafeAssert(!alloc_err);
+
+	return result;
+}
+
+API bool
+OS_SetClipboard(OS_ClipboardContents contents, OS_Window owner_window, OS_Error* out_err)
+{
+	Trace();
+	HWND hwnd = NULL;
+	if (owner_window.ptr)
+		hwnd = ((WindowData_*)owner_window.ptr)->handle;
+
+	if (OpenClipboard(hwnd))
+	{
+		if (EmptyClipboard())
+		{
+			HANDLE clipboard_data = NULL;
+			UINT data_type = 0;
+
+			switch (contents.type)
+			{
+				default: break;
+				case OS_ClipboardContentType_Text:
+				{
+					ArenaSavepoint scratch = ArenaSave(OS_ScratchArena(NULL, 0));
+					wchar_t* wstr = StringToWide_(scratch.arena, contents.contents);
+					intz size = 0;
+					while (wstr[size++]);
+					clipboard_data = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)(size * SignedSizeof(wchar_t)));
+
+					if (clipboard_data)
+					{
+						void* dst = GlobalLock(clipboard_data);
+						MemoryCopy(dst, wstr, size * SignedSizeof(wchar_t));
+						GlobalUnlock(clipboard_data);
+						data_type = CF_UNICODETEXT;
+					}
+					ArenaRestore(scratch);
+				} break;
+			}
+
+			if (clipboard_data)
+				SetClipboardData(data_type, clipboard_data);
+		}
+
+		CloseClipboard();
+	}
+
+	return FillOsErr_(out_err, GetLastError());
+}
+
 //------------------------------------------------------------------------
 //~ API D3D11
 API bool
@@ -4033,11 +4198,11 @@ OS_MakeD3D11Api(OS_D3D11Api* out_api, OS_D3D11ApiDesc const* args)
 	flags |= D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 	
 	D3D_FEATURE_LEVEL feature_levels[] = {
-		// D3D_FEATURE_LEVEL_12_1,
-		// D3D_FEATURE_LEVEL_12_0,
-		// D3D_FEATURE_LEVEL_11_1,
-		// D3D_FEATURE_LEVEL_11_0,
-		// D3D_FEATURE_LEVEL_10_1,
+		D3D_FEATURE_LEVEL_12_1,
+		D3D_FEATURE_LEVEL_12_0,
+		D3D_FEATURE_LEVEL_11_1,
+		D3D_FEATURE_LEVEL_11_0,
+		D3D_FEATURE_LEVEL_10_1,
 		D3D_FEATURE_LEVEL_10_0,
 		D3D_FEATURE_LEVEL_9_3,
 		D3D_FEATURE_LEVEL_9_2,

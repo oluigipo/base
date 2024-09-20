@@ -15,6 +15,8 @@ enum
 struct OS_Error
 {
 	bool ok;
+	bool is_allocator_err;
+	bool is_system_err;
 	uint32 code;
 	String what;
 }
@@ -583,5 +585,25 @@ API bool OS_WaitConditionVariable     (OS_ConditionVariable* var, OS_RWLock* loc
 API void OS_SignalConditionVariable   (OS_ConditionVariable* var);
 API void OS_SignalAllConditionVariable(OS_ConditionVariable* var);
 API void OS_DeinitConditionVariable   (OS_ConditionVariable* var);
+
+// ===========================================================================
+// ===========================================================================
+// Clipboard
+enum OS_ClipboardContentType
+{
+	OS_ClipboardContentType_Null = 0,
+	OS_ClipboardContentType_Text = 1<<0,
+}
+typedef OS_ClipboardContentType;
+
+struct OS_ClipboardContents
+{
+	OS_ClipboardContentType type;
+	Buffer contents;
+}
+typedef OS_ClipboardContents;
+
+API OS_ClipboardContents OS_GetClipboard(SingleAllocator allocator, OS_ClipboardContentType allowed_types, OS_Window owner_window, OS_Error* out_err);
+API bool OS_SetClipboard(OS_ClipboardContents contents, OS_Window owner_window, OS_Error* out_err);
 
 #endif //API_OS_H

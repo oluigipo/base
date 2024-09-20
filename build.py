@@ -340,7 +340,7 @@ def build_win64(objs, libs, defines, incdirs, libdirs, asan, ubsan):
 
     cflags_platform = ['-mlzcnt', '-march=x86-64-v2']
     cflags_debug    = [*CFLAGS_DEBUG, '-g']
-    cflags_opt      = [*CFLAGS_OPT,   '-O2', '-flto']
+    cflags_opt      = [*CFLAGS_OPT,   '-O2']
     linkflags_debug = ['-g']
 
     cflags    = ['-Icommon', '-I.', '-Ithird_party_include', '-I'+middir, '-std=c2x',   *CFLAGS_WARNINGS, *cflags_platform]
