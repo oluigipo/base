@@ -1,7 +1,6 @@
 #include "common.h"
 #include "api_os.h"
 #include "api_render3.h"
-#include "bed.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -11,706 +10,15 @@
 #include "third_party/cd2d.h"
 #include "third_party/cdwrite.h"
 #include <d3d11_1.h>
-
 #include <math.h>
+
+#define BED_API static
+#include "bed.h"
+#include "bed_textbuffer.c"
+#include "bed_textcursor.c"
 
 IncludeBinary(g_quads_vs, "shader_quad_vs.dxil");
 IncludeBinary(g_quads_ps, "shader_quad_ps.dxil");
-
-static bool
-IsStartOfCodepoint_(uint8 ch)
-{
-	return (ch & 0x80) == 0 || (ch & 0x40) == 0;
-}
-
-static void
-TextBufferGetString_(TextBuffer const* textbuf, String* out_left, String* out_right)
-{
-	if (out_left)
-		*out_left = StrMake(textbuf->gap_start, textbuf->utf8_text);
-	if (out_right)
-		*out_right = StrMake(textbuf->size - textbuf->gap_end, textbuf->utf8_text + textbuf->gap_end);
-}
-
-static uint8
-TextBufferSample_(TextBuffer* textbuf, intz offset)
-{
-	intz gap_size = textbuf->gap_end - textbuf->gap_start;
-	SafeAssert(gap_size >= 0 && gap_size <= textbuf->size);
-	SafeAssert(offset >= 0 && offset < textbuf->size - gap_size);
-
-	if (offset < textbuf->gap_start)
-		return textbuf->utf8_text[offset];
-	return textbuf->utf8_text[offset + gap_size];
-}
-
-static intz
-TextBufferSize_(TextBuffer* textbuf)
-{
-	return textbuf->size - (textbuf->gap_end - textbuf->gap_start);
-}
-
-static int32
-TextBufferLineCount_(TextBuffer* textbuf)
-{
-	int32 result = 1;
-	String left_str = {};
-	String right_str = {};
-	TextBufferGetString_(textbuf, &left_str, &right_str);
-
-	for (intz i = 0; i < left_str.size; ++i)
-		result += (left_str.data[i] == '\n');
-	for (intz i = 0; i < right_str.size; ++i)
-		result += (right_str.data[i] == '\n');
-
-	return result;
-}
-
-static LineCol
-TextBufferLineColFromOffset_(TextBuffer* textbuf, intz offset, int32 tab_size)
-{
-	LineCol result = { 1, 1 };
-	String left_str = {};
-	String right_str = {};
-	TextBufferGetString_(textbuf, &left_str, &right_str);
-	intz it;
-	uint32 codepoint;
-
-	it = 0;
-	while (codepoint = StringDecode(left_str, &it), codepoint && it <= offset)
-	{
-		if (codepoint == '\n')
-		{
-			result.col = 1;
-			++result.line;
-		}
-		else if (codepoint == '\t')
-			result.col += tab_size;
-		else
-			++result.col;
-	}
-
-	it = 0;
-	while (codepoint = StringDecode(right_str, &it), codepoint && it + textbuf->gap_start <= offset)
-	{
-		if (codepoint == '\n')
-		{
-			result.col = 1;
-			++result.line;
-		}
-		else if (codepoint == '\t')
-			result.col += tab_size;
-		else
-			++result.col;
-	}
-
-	return result;
-}
-
-static int32
-ColFromTextCursor_(TextCursor* cursor, TextBuffer* textbuf, int32 tab_size)
-{
-	int32 result = 1;
-	intz it = cursor->offset;
-
-	while (it > 0)
-	{
-		--it;
-		uint8 sample = TextBufferSample_(textbuf, it);
-		if (sample == '\n')
-			return result;
-		else if (sample == '\t')
-			result += tab_size;
-		else if (IsStartOfCodepoint_(sample))
-			++result;
-	}
-
-	return result;
-}
-
-static bool
-SimpleBoundarySnakeWordProc_(uint8 ch)
-{
-	if (ch >= 0x80)
-		return false;
-	static uint8 pred_table[16] = {
-		0,   0,   0,   0,   0,   0, 255,   3,
-        254, 255, 255, 7, 254, 255, 255,   7,
-	};
-	return !(pred_table[ch >> 3] & 1 << (ch & 7));
-}
-
-typedef bool SimpleBoundaryProc_(uint8 ch);
-
-static intz
-FindSimpleBoundaryForward_(TextBuffer* textbuf, intz start_offset, SimpleBoundaryProc_* proc)
-{
-	Trace();
-	intz it = start_offset;
-	intz last_valid_it = it;
-	intz textbuf_size = TextBufferSize_(textbuf);
-
-	for (; it < textbuf_size; ++it)
-	{
-		uint8 sample = TextBufferSample_(textbuf, it);
-		if (!IsStartOfCodepoint_(sample))
-			continue;
-		last_valid_it = it;
-		if (sample & 0x80)
-			continue;
-
-		if (!proc(sample))
-			break;
-	}
-
-	for (; it < textbuf_size; ++it)
-	{
-		uint8 sample = TextBufferSample_(textbuf, it);
-		if (!IsStartOfCodepoint_(sample))
-			continue;
-		last_valid_it = it;
-		if (sample & 0x80)
-			continue;
-
-		if (proc(sample))
-			break;
-	}
-
-	if (it == textbuf_size)
-		last_valid_it = it;
-	return last_valid_it;
-}
-
-static intz
-FindSimpleBoundaryBackward_(TextBuffer* textbuf, intz start_offset, SimpleBoundaryProc_* proc)
-{
-	Trace();
-	intz it = start_offset;
-
-	for (; it > 0; --it)
-	{
-		uint8 sample = TextBufferSample_(textbuf, it-1);
-		if (!IsStartOfCodepoint_(sample))
-			continue;
-		if (sample & 0x80)
-			continue;
-
-		if (!proc(sample))
-			break;
-	}
-	
-	for (; it > 0; --it)
-	{
-		uint8 sample = TextBufferSample_(textbuf, it-1);
-		if (!IsStartOfCodepoint_(sample))
-			continue;
-		if (sample & 0x80)
-			continue;
-
-		if (proc(sample))
-			break;
-	}
-
-	// for (; it > 0; --it)
-	// {
-	// 	uint8 sample = TextBufferSample_(textbuf, it);
-	// 	if (!IsStartOfCodepoint_(sample))
-	// 		continue;
-	// 	if (sample & 0x80)
-	// 		continue;
-
-	// 	if (proc(sample))
-	// 		break;
-	// }
-
-	return it;
-}
-
-static void
-TextBufferMoveGapToOffset_(TextBuffer* textbuf, intz offset)
-{
-	Trace();
-	if (offset < textbuf->gap_start)
-	{
-		intz amount_to_copy = textbuf->gap_start - offset;
-		SafeAssert(amount_to_copy > 0);
-		intz new_gap_end = textbuf->gap_end - amount_to_copy;
-		MemoryMove(textbuf->utf8_text + new_gap_end, textbuf->utf8_text + offset, amount_to_copy);
-		textbuf->gap_start -= amount_to_copy;
-		textbuf->gap_end -= amount_to_copy;
-	}
-	else if (offset > textbuf->gap_start)
-	{
-		intz amount_to_copy = offset - textbuf->gap_start;
-		SafeAssert(amount_to_copy > 0);
-		MemoryMove(textbuf->utf8_text + textbuf->gap_start, textbuf->utf8_text + textbuf->gap_end, amount_to_copy);
-		textbuf->gap_start += amount_to_copy;
-		textbuf->gap_end += amount_to_copy;
-	}
-}
-
-static uint8*
-TextBufferInsert_(TextBuffer* textbuf, intz offset, intz size)
-{
-	Trace();
-	if (size > textbuf->gap_end - textbuf->gap_start)
-	{
-		intz new_size = textbuf->size + (textbuf->size >> 1) + 1;
-		intz gap_size = textbuf->gap_end - textbuf->gap_start;
-		intz new_gap_size = new_size - (textbuf->size - gap_size);
-		uint8* new_buffer = OS_HeapAlloc(new_size);
-		if (offset < textbuf->gap_start)
-		{
-			intz size_to_gap = textbuf->gap_start - offset;
-			MemoryCopy(new_buffer, textbuf->utf8_text, offset);
-			MemoryCopy(new_buffer+offset+new_gap_size, textbuf->utf8_text+offset, size_to_gap);
-			MemoryCopy(new_buffer+offset+new_gap_size+size_to_gap, textbuf->utf8_text+textbuf->gap_end, textbuf->size - textbuf->gap_end);
-		}
-		else if (offset > textbuf->gap_start)
-		{
-			intz size_to_gap = textbuf->gap_end - (offset + gap_size);
-			MemoryCopy(new_buffer, textbuf->utf8_text, offset);
-			MemoryCopy(new_buffer+offset+new_gap_size, textbuf->utf8_text+offset, size_to_gap);
-			MemoryCopy(new_buffer+offset+new_gap_size+size_to_gap, textbuf->utf8_text+textbuf->gap_end, textbuf->size - textbuf->gap_end);
-		}
-		else
-		{
-			MemoryCopy(new_buffer, textbuf->utf8_text, offset);
-			MemoryCopy(new_buffer+offset+new_gap_size, textbuf->utf8_text+textbuf->gap_end, textbuf->size - textbuf->gap_end);
-		}
-		OS_HeapFree(textbuf->utf8_text);
-		textbuf->utf8_text = new_buffer;
-		textbuf->gap_start = offset;
-		textbuf->gap_end = offset + new_gap_size;
-		textbuf->size = new_size;
-	}
-	else if (offset != textbuf->gap_start)
-		TextBufferMoveGapToOffset_(textbuf, offset);
-
-	uint8* result = &textbuf->utf8_text[textbuf->gap_start];
-	textbuf->gap_start += size;
-	return result;
-}
-
-static void
-TextBufferRemove_(TextBuffer* textbuf, intz offset, intz size)
-{
-	if (offset == textbuf->gap_start)
-		textbuf->gap_end += size;
-	else if (offset + size == textbuf->gap_start)
-		textbuf->gap_start -= size;
-	else
-	{
-		TextBufferMoveGapToOffset_(textbuf, offset);
-		textbuf->gap_end += size;
-	}
-}
-
-static String
-TextBufferStringFromRange_(TextBuffer* textbuf, intz offset, intz size)
-{
-	if (offset < textbuf->gap_start && offset + size > textbuf->gap_start)
-		TextBufferMoveGapToOffset_(textbuf, offset);
-
-	if (offset < textbuf->gap_start)
-		return StrMake(size, textbuf->utf8_text+offset);
-	else
-		return StrMake(size, textbuf->utf8_text+offset+(textbuf->gap_end-textbuf->gap_start));
-}
-
-static void
-TextCursorCmdInsert_(TextCursor* cursor, TextBuffer* textbuf, intz amount, uint32 codepoint)
-{
-	Trace();
-	intz encoded_size = StringEncodedCodepointSize(codepoint);
-	intz size = amount * encoded_size;
-
-	uint8* insert_buffer = TextBufferInsert_(textbuf, cursor->offset, size);
-	if (cursor->offset < cursor->marker_offset)
-		cursor->marker_offset += size;
-	cursor->offset += size;
-
-	for (intz i = 0; i < amount; ++i)
-		StringEncode(insert_buffer + i * encoded_size, size, codepoint);
-}
-
-static void
-TextCursorCmdDeleteBackward_(TextCursor* cursor, TextBuffer* textbuf, intz amount)
-{
-	Trace();
-
-	intz it = cursor->offset;
-	while (amount > 0 && it > 0)
-	{
-		--it;
-		uint8 sample = TextBufferSample_(textbuf, it);
-		if (IsStartOfCodepoint_(sample))
-			--amount;
-	}
-	intz size = cursor->offset - it;
-
-	TextBufferRemove_(textbuf, it, size);
-	if (cursor->offset < cursor->marker_offset)
-		cursor->marker_offset -= size;
-	cursor->offset = it;
-}
-
-static void
-TextCursorCmdLeft_(TextCursor* cursor, TextBuffer* textbuf, intz amount)
-{
-	intz it = cursor->offset;
-	
-	while (amount > 0 && it > 0)
-	{
-		--it;
-		uint8 sample = TextBufferSample_(textbuf, it);
-		if (IsStartOfCodepoint_(sample))
-			--amount;
-	}
-
-	cursor->offset = it;
-}
-
-static void
-TextCursorCmdRight_(TextCursor* cursor, TextBuffer* textbuf, intz amount)
-{
-	intz it = cursor->offset;
-	intz last_valid_it = it;
-	
-	while (amount > 0 && it+1 < TextBufferSize_(textbuf))
-	{
-		++it;
-		uint8 sample = TextBufferSample_(textbuf, it);
-		if (IsStartOfCodepoint_(sample))
-		{
-			last_valid_it = it;
-			--amount;
-		}
-	}
-
-	cursor->offset = last_valid_it;
-}
-
-static void
-TextCursorCmdUp_(TextCursor* cursor, TextBuffer* textbuf, intz amount)
-{
-	intz it = cursor->offset;
-	intz desired_column = ColFromTextCursor_(cursor, textbuf, 1);
-
-	// NOTE(ljre): find the start of the line N times, then advance to desired column
-	++amount;
-	while (amount > 0 && it > 0)
-	{
-		--it;
-		uint8 sample = TextBufferSample_(textbuf, it);
-		if (sample == '\n')
-			--amount;
-	}
-
-	if (amount > 0)
-	{
-		// NOTE(ljre): reached start of buffer before finding another '\n', so it's one less column to advance
-		if (amount == 1)
-			--desired_column;
-		else
-			desired_column = 0;
-	}
-
-	// NOTE(ljre): advance to desired column
-	intz last_valid_it = it;
-	while (desired_column > 0 && it+1 < TextBufferSize_(textbuf))
-	{
-		++it;
-		uint8 sample = TextBufferSample_(textbuf, it);
-		if (sample == '\n')
-		{
-			last_valid_it = it;
-			break;
-		}
-		if (IsStartOfCodepoint_(sample))
-		{
-			last_valid_it = it;
-			--desired_column;
-		}
-	}
-
-	cursor->offset = last_valid_it;
-}
-
-static void
-TextCursorCmdDown_(TextCursor* cursor, TextBuffer* textbuf, intz amount)
-{
-	intz it = cursor->offset;
-	intz last_valid_it = it;
-	intz desired_column = ColFromTextCursor_(cursor, textbuf, 1);
-
-	if (it >= TextBufferSize_(textbuf))
-		return;
-
-	// NOTE(ljre): find the start of the line N times, then advance to desired column
-	while (amount > 0 && it < TextBufferSize_(textbuf))
-	{
-		uint8 sample = TextBufferSample_(textbuf, it);
-		if (sample == '\n')
-		{
-			last_valid_it = it;
-			--amount;
-		}
-		else if (IsStartOfCodepoint_(sample))
-			last_valid_it = it;
-		++it;
-	}
-
-	// NOTE(ljre): advance to desired column
-	while (desired_column > 0 && it < TextBufferSize_(textbuf))
-	{
-		uint8 sample = TextBufferSample_(textbuf, it);
-		if (sample == '\n')
-		{
-			last_valid_it = it;
-			break;
-		}
-		else if (IsStartOfCodepoint_(sample))
-		{
-			last_valid_it = it;
-			--desired_column;
-		}
-		++it;
-	}
-
-	if (it == TextBufferSize_(textbuf))
-		last_valid_it = it;
-
-	cursor->offset = last_valid_it;
-}
-
-static void
-TextCursorCmdEndOfLine_(TextCursor* cursor, TextBuffer* textbuf)
-{
-	intz it = cursor->offset;
-	intz last_valid_it = it;
-	bool found_eol = false;
-
-	if (it >= TextBufferSize_(textbuf))
-		return;
-	if (TextBufferSample_(textbuf, it) == '\n')
-		return;
-
-	while (!found_eol && it < TextBufferSize_(textbuf))
-	{
-		uint8 sample = TextBufferSample_(textbuf, it);
-		if (sample == '\n')
-		{
-			last_valid_it = it;
-			found_eol = true;
-		}
-		else if (IsStartOfCodepoint_(sample))
-			last_valid_it = it;
-		++it;
-	}
-
-	if (it == TextBufferSize_(textbuf))
-		last_valid_it = it;
-
-	cursor->offset = last_valid_it;
-}
-
-static void
-TextCursorCmdStartOfLine_(TextCursor* cursor, TextBuffer* textbuf)
-{
-	intz it = cursor->offset;
-	bool found_sol = false;
-
-	while (!found_sol && it > 0)
-	{
-		uint8 sample = TextBufferSample_(textbuf, it-1);
-		if (sample == '\n')
-		{
-			found_sol = true;
-			break;
-		}
-		--it;
-	}
-
-	cursor->offset = it;
-}
-
-static void
-TextCursorCmdPlaceMarker_(TextCursor* cursor)
-{
-	cursor->marker_offset = cursor->offset;
-}
-
-static void
-TextCursorCmdDeleteToMarker_(TextCursor* cursor, TextBuffer* textbuf)
-{
-	intz offset, size;
-	if (cursor->offset < cursor->marker_offset)
-	{
-		offset = cursor->offset;
-		size = cursor->marker_offset - cursor->offset;
-	}
-	else if (cursor->offset > cursor->marker_offset)
-	{
-		offset = cursor->marker_offset;
-		size = cursor->offset - cursor->marker_offset;
-	}
-	else
-		return;
-
-	TextBufferRemove_(textbuf, offset, size);
-	cursor->offset = offset;
-	cursor->marker_offset = offset;
-}
-
-static void
-TextCursorCmdRightSnakeWord_(TextCursor* cursor, TextBuffer* textbuf, intz amount)
-{
-	for (intz i = 0; i < amount; ++i)
-	{
-		cursor->offset = FindSimpleBoundaryForward_(textbuf, cursor->offset, SimpleBoundarySnakeWordProc_);
-		if (cursor->offset == TextBufferSize_(textbuf))
-			break;
-	}
-}
-
-static void
-TextCursorCmdLeftSnakeWord_(TextCursor* cursor, TextBuffer* textbuf, intz amount)
-{
-	for (intz i = 0; i < amount; ++i)
-	{
-		cursor->offset = FindSimpleBoundaryBackward_(textbuf, cursor->offset, SimpleBoundarySnakeWordProc_);
-		if (cursor->offset == 0)
-			break;
-	}
-}
-
-static void
-TextCursorCmdDeleteBackwardSnakeWord_(TextCursor* cursor, TextBuffer* textbuf, intz amount)
-{
-	for (intz i = 0; i < amount; ++i)
-	{
-		if (cursor->offset == 0)
-			break;
-		intz start = FindSimpleBoundaryBackward_(textbuf, cursor->offset, SimpleBoundarySnakeWordProc_);
-		TextBufferRemove_(textbuf, start, cursor->offset - start);
-		if (cursor->marker_offset > cursor->offset)
-			cursor->marker_offset -= (cursor->offset - start);
-		cursor->offset = start;
-	}
-}
-
-static void
-TextCursorCmdPaste_(App* app, TextCursor* cursor, TextBuffer* textbuf)
-{
-	Trace();
-	ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
-	OS_ClipboardContents clip = OS_GetClipboard(AllocatorFromArena(scratch.arena), OS_ClipboardContentType_Text, app->window, NULL);
-
-	uint8* mem = TextBufferInsert_(textbuf, cursor->offset, clip.contents.size);
-	if (cursor->marker_offset > cursor->offset)
-		cursor->marker_offset += clip.contents.size;
-	cursor->offset += clip.contents.size;
-
-	MemoryCopy(mem, clip.contents.data, clip.contents.size);
-	ArenaRestore(scratch);
-}
-
-static void
-TextCursorCmdCopy_(App* app, TextCursor* cursor, TextBuffer* textbuf)
-{
-	Trace();
-	intz offset;
-	intz size;
-	if (cursor->offset < cursor->marker_offset)
-	{
-		offset = cursor->offset;
-		size = cursor->marker_offset - cursor->offset;
-	}
-	else
-	{
-		offset = cursor->marker_offset;
-		size = cursor->offset - cursor->marker_offset;
-	}
-
-	String str = TextBufferStringFromRange_(textbuf, offset, size);
-	OS_SetClipboard((OS_ClipboardContents) {
-		.type = OS_ClipboardContentType_Text,
-		.contents = str,
-	}, app->window, NULL);
-}
-
-static void
-TextCursorCmdUpParagraph_(TextCursor* cursor, TextBuffer* textbuf, intz amount)
-{
-	Trace();
-	for (intz i = 0; i < amount; ++i)
-	{
-		bool encontered_non_whitespace_before = false;
-		while (cursor->offset > 0)
-		{
-			TextCursorCmdLeft_(cursor, textbuf, 1);
-			TextCursorCmdStartOfLine_(cursor, textbuf);
-			intz it = cursor->offset;
-			bool has_non_whitespace = false;
-			for (; it < TextBufferSize_(textbuf); ++it)
-			{
-				uint8 sample = TextBufferSample_(textbuf, it);
-				if (sample == '\n')
-					break;
-				if (sample != ' ' && sample != '\t')
-				{
-					has_non_whitespace = true;
-					break;
-				}
-			}
-			if (has_non_whitespace)
-				encontered_non_whitespace_before = true;
-			else if (encontered_non_whitespace_before)
-			{
-				TextCursorCmdEndOfLine_(cursor, textbuf);
-				break;
-			}
-		}
-	}
-}
-
-static void
-TextCursorCmdDownParagraph_(TextCursor* cursor, TextBuffer* textbuf, intz amount)
-{
-	Trace();
-	for (intz i = 0; i < amount; ++i)
-	{
-		bool encontered_non_whitespace_before = false;
-		TextCursorCmdDown_(cursor, textbuf, 1);
-		while (cursor->offset < TextBufferSize_(textbuf))
-		{
-			TextCursorCmdStartOfLine_(cursor, textbuf);
-			intz it = cursor->offset;
-			bool has_non_whitespace = false;
-			for (; it < TextBufferSize_(textbuf); ++it)
-			{
-				uint8 sample = TextBufferSample_(textbuf, it);
-				if (sample == '\n')
-					break;
-				if (sample != ' ' && sample != '\t')
-				{
-					has_non_whitespace = true;
-					break;
-				}
-			}
-
-			if (has_non_whitespace)
-				encontered_non_whitespace_before = true;
-			else if (encontered_non_whitespace_before)
-			{
-				TextCursorCmdEndOfLine_(cursor, textbuf);
-				break;
-			}
-			TextCursorCmdDown_(cursor, textbuf, 1);
-		}
-	}
-}
 
 struct QuadVertex_
 {
@@ -838,13 +146,12 @@ PushText2_(App* app, Arena* arena, int32 x, int32 y, String str, uint32 color, i
 	return PushText_(app, arena, (TextPositioning_) { x, y, x }, str, color, texindex, texkind);
 }
 
-
 static TextPositioning_
-PushTextBuffer_(App* app, Arena* arena, TextPositioning_ pos, TextBuffer const* buf, uint32 color, int16 texindex, int16 texkind)
+PushTextBuffer_(App* app, Arena* arena, TextPositioning_ pos, TextBuffer* buf, uint32 color, int16 texindex, int16 texkind)
 {
 	String left_str = {};
 	String right_str = {};
-	TextBufferGetString_(buf, &left_str, &right_str);
+	TextBufferGetStrings(buf, &left_str, &right_str);
 
 	pos = PushText_(app, arena, pos, left_str, color, texindex, texkind);
 	pos = PushText_(app, arena, pos, right_str, color, texindex, texkind);
@@ -852,7 +159,7 @@ PushTextBuffer_(App* app, Arena* arena, TextPositioning_ pos, TextBuffer const* 
 }
 
 static TextPositioning_
-PushTextBuffer2_(App* app, Arena* arena, int32 x, int32 y, TextBuffer const* buf, uint32 color, int16 texindex, int16 texkind)
+PushTextBuffer2_(App* app, Arena* arena, int32 x, int32 y, TextBuffer* buf, uint32 color, int16 texindex, int16 texkind)
 {
 	return PushTextBuffer_(app, arena, (TextPositioning_) { x, y, x }, buf, color, texindex, texkind);
 }
@@ -1193,56 +500,56 @@ EntryPoint(int32 argc, const char* const argv[])
 					case OS_KeyboardKey_Left:
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdLeftSnakeWord_(&app->cursor, &app->buffer, 1);
+							TextCursorCmdLeftSnakeWord(&app->cursor, &app->buffer, 1);
 						else
-							TextCursorCmdLeft_(&app->cursor, &app->buffer, 1);
+							TextCursorCmdLeft(&app->cursor, &app->buffer, 1);
 					} break;
 					case OS_KeyboardKey_Right:
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdRightSnakeWord_(&app->cursor, &app->buffer, 1);
+							TextCursorCmdRightSnakeWord(&app->cursor, &app->buffer, 1);
 						else
-							TextCursorCmdRight_(&app->cursor, &app->buffer, 1);
+							TextCursorCmdRight(&app->cursor, &app->buffer, 1);
 					} break;
 					case OS_KeyboardKey_Up:
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdUpParagraph_(&app->cursor, &app->buffer, 1);
+							TextCursorCmdUpParagraph(&app->cursor, &app->buffer, 1);
 						else
-							TextCursorCmdUp_(&app->cursor, &app->buffer, 1);
+							TextCursorCmdUp(&app->cursor, &app->buffer, 1);
 					} break;
 					case OS_KeyboardKey_Down:
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdDownParagraph_(&app->cursor, &app->buffer, 1);
+							TextCursorCmdDownParagraph(&app->cursor, &app->buffer, 1);
 						else
-							TextCursorCmdDown_(&app->cursor, &app->buffer, 1);
+							TextCursorCmdDown(&app->cursor, &app->buffer, 1);
 					} break;
 					case OS_KeyboardKey_Backspace:
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdDeleteBackwardSnakeWord_(&app->cursor, &app->buffer, 1);
+							TextCursorCmdDeleteBackwardSnakeWord(&app->cursor, &app->buffer, 1);
 						else
-							TextCursorCmdDeleteBackward_(&app->cursor, &app->buffer, 1);
+							TextCursorCmdDeleteBackward(&app->cursor, &app->buffer, 1);
 					} break;
-					case OS_KeyboardKey_End: TextCursorCmdEndOfLine_(&app->cursor, &app->buffer); break;
-					case OS_KeyboardKey_Home: TextCursorCmdStartOfLine_(&app->cursor, &app->buffer); break;
-					case OS_KeyboardKey_Enter: TextCursorCmdInsert_(&app->cursor, &app->buffer, 1, '\n'); break;
-					case OS_KeyboardKey_Tab: TextCursorCmdInsert_(&app->cursor, &app->buffer, 1, '\t'); break;
+					case OS_KeyboardKey_End: TextCursorCmdEndOfLine(&app->cursor, &app->buffer); break;
+					case OS_KeyboardKey_Home: TextCursorCmdStartOfLine(&app->cursor, &app->buffer); break;
+					case OS_KeyboardKey_Enter: TextCursorCmdInsert(&app->cursor, &app->buffer, 1, '\n'); break;
+					case OS_KeyboardKey_Tab: TextCursorCmdInsert(&app->cursor, &app->buffer, 1, '\t'); break;
 					case 'D':
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdDeleteToMarker_(&app->cursor, &app->buffer);
+							TextCursorCmdDeleteToMarker(&app->cursor, &app->buffer);
 					} break;
 					case 'C':
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdCopy_(app, &app->cursor, &app->buffer);
+							TextCursorCmdCopy(app, &app->cursor, &app->buffer);
 					} break;
 					case 'V':
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdPaste_(app, &app->cursor, &app->buffer);
+							TextCursorCmdPaste(app, &app->cursor, &app->buffer);
 					} break;
 				}
 			}
@@ -1252,10 +559,10 @@ EntryPoint(int32 argc, const char* const argv[])
 				if (event->window_typing.ctrl)
 				{
 					if (codepoint == ' ')
-						TextCursorCmdPlaceMarker_(&app->cursor);
+						TextCursorCmdPlaceMarker(&app->cursor);
 				}
 				else
-					TextCursorCmdInsert_(&app->cursor, &app->buffer, 1, codepoint);
+					TextCursorCmdInsert(&app->cursor, &app->buffer, 1, codepoint);
 			}
 		}
 
@@ -1284,7 +591,7 @@ EntryPoint(int32 argc, const char* const argv[])
 		intz quad_count = 0;
 		{
 			QuadVertex_* first_vertex = ArenaEndAligned(scratch.arena, alignof(QuadVertex_));
-			int32 line_count = TextBufferLineCount_(&app->buffer);
+			int32 line_count = TextBufferLineCount(&app->buffer);
 			int32 line_log10count = 0;
 			{
 				int32 it = line_count;
@@ -1303,8 +610,8 @@ EntryPoint(int32 argc, const char* const argv[])
 			Rect text_screen = RectCutMargin(screen, 4);
 
 			PushTextBuffer2_(app, scratch.arena, text_screen.x1, text_screen.y1, &app->buffer, 0xFFFFFFFF, 0, 1);
-			LineCol cursor_pos = TextBufferLineColFromOffset_(&app->buffer, app->cursor.offset, app->tab_size);
-			LineCol marker_pos = TextBufferLineColFromOffset_(&app->buffer, app->cursor.marker_offset, app->tab_size);
+			LineCol cursor_pos = TextBufferLineColFromOffset(&app->buffer, app->cursor.offset, app->tab_size);
+			LineCol marker_pos = TextBufferLineColFromOffset(&app->buffer, app->cursor.marker_offset, app->tab_size);
 			PushQuad_(scratch.arena, (float32[4]) {
 				text_screen.x1 + (cursor_pos.col - 1) * app->glyph_advance,
 				text_screen.y1 + (cursor_pos.line- 1) * app->glyph_height,
