@@ -6,7 +6,6 @@
 #define NOMINMAX
 #define COBJMACROS
 #define INITGUID
-#include "api_os_win32.h"
 #include "third_party/cd2d.h"
 #include "third_party/cdwrite.h"
 #include <d3d11_1.h>
@@ -465,18 +464,23 @@ EntryPoint(int32 argc, const char* const argv[])
 		IDWriteFactory_Release(app->dw_factory);
 	}
 
-	String str = StrInit("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\n!@#$%&*()[]{}_-+\nHello, World!\nint main() { puts(\"Hello, World!\"); }");
-	app->buffer = (TextBuffer) {
-		.kind = TextBufferKind_OwnedGapBuffer,
-		.utf8_text = OS_HeapAlloc(str.size * 2),
-		.size = str.size * 2,
-		.gap_start = str.size,
-		.gap_end = str.size * 2,
-	};
-	MemoryCopy(app->buffer.utf8_text, str.data, str.size);
-	app->cursor = (TextCursor) {
-		.offset = app->buffer.gap_start,
-	};
+	for ArenaTempScope(app->arena)
+	{
+		String str = {};
+		SafeAssert(OS_ReadEntireFile(Str("./os/os_win32.c"), app->arena, (void**)&str.data, &str.size, NULL));
+
+		app->buffer = (TextBuffer) {
+			.kind = TextBufferKind_OwnedGapBuffer,
+			.utf8_text = OS_HeapAlloc(str.size * 2),
+			.size = str.size * 2,
+			.gap_start = str.size,
+			.gap_end = str.size * 2,
+		};
+		MemoryCopy(app->buffer.utf8_text, str.data, str.size);
+		app->cursor = (TextCursor) {
+			.offset = app->buffer.gap_start,
+		};
+	}
 
 	while (!app->is_closing)
 	{
@@ -551,17 +555,17 @@ EntryPoint(int32 argc, const char* const argv[])
 						if (event->window_key.ctrl)
 							TextCursorCmdPaste(app, &app->cursor, &app->buffer);
 					} break;
+					case ' ':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdPlaceMarker(&app->cursor);
+					} break;
 				}
 			}
 			else if (event->kind == OS_EventKind_WindowTyping)
 			{
 				uint32 codepoint = event->window_typing.codepoint;
-				if (event->window_typing.ctrl)
-				{
-					if (codepoint == ' ')
-						TextCursorCmdPlaceMarker(&app->cursor);
-				}
-				else
+				if (!event->window_typing.ctrl || codepoint != ' ')
 					TextCursorCmdInsert(&app->cursor, &app->buffer, 1, codepoint);
 			}
 		}
@@ -609,24 +613,83 @@ EntryPoint(int32 argc, const char* const argv[])
 			RectCutTop(&line_counter_text, 2);
 			Rect text_screen = RectCutMargin(screen, 4);
 
-			PushTextBuffer2_(app, scratch.arena, text_screen.x1, text_screen.y1, &app->buffer, 0xFFFFFFFF, 0, 1);
+			int32 scope_nesting_at_cursor = 0;
+			int32 scope_nesting_at_marker = 0;
+			// PushTextBuffer2_(app, scratch.arena, text_screen.x1, text_screen.y1, &app->buffer, 0xFFFFFFFF, 0, 1);
+			{
+				int32 scope_nesting = 0;
+
+				String left_str = {};
+				String right_str = {};
+				int32 line = 1;
+				intz it = 0;
+				intz prev_it = 0;
+				for (; TextBufferLineIterator(&app->buffer, &it, &left_str, &right_str); ++line)
+				{
+					if (line > 100)
+						break;
+					intz this_scope_nesting = scope_nesting;
+
+					for (intz char_index = 0; char_index < left_str.size; ++char_index)
+					{
+						uint8 ch = left_str.data[char_index];
+						if (ch == '{')
+							++scope_nesting;
+					}
+					for (intz char_index = 0; char_index < right_str.size; ++char_index)
+					{
+						uint8 ch = right_str.data[char_index];
+						if (ch == '{')
+							++scope_nesting;
+					}
+					for (intz char_index = 0; char_index < left_str.size; ++char_index)
+					{
+						uint8 ch = left_str.data[char_index];
+						if (ch == '}' && scope_nesting > 0)
+						{
+							--scope_nesting;
+							if (char_index == 0)
+								this_scope_nesting = scope_nesting;
+						}
+					}
+					for (intz char_index = 0; char_index < right_str.size; ++char_index)
+					{
+						uint8 ch = right_str.data[char_index];
+						if (ch == '}' && scope_nesting > 0)
+							--scope_nesting;
+					}
+
+					if (app->cursor.offset >= prev_it && app->cursor.offset < it)
+						scope_nesting_at_cursor = this_scope_nesting;
+					else if (app->cursor.marker_offset >= prev_it && app->cursor.marker_offset < it)
+						scope_nesting_at_marker = this_scope_nesting;
+
+					prev_it = it;
+
+					int32 x = text_screen.x1 + this_scope_nesting * app->glyph_advance * app->tab_size;
+					int32 y = text_screen.y1 + (line-1) * app->glyph_height;
+					TextPositioning_ positioning = PushText2_(app, scratch.arena, x, y, left_str, 0xFFFFFFFF, 0, 1);
+					PushText_(app, scratch.arena, positioning, right_str, 0xFFFFFFFF, 0, 1);
+				}
+			}
+
 			LineCol cursor_pos = TextBufferLineColFromOffset(&app->buffer, app->cursor.offset, app->tab_size);
 			LineCol marker_pos = TextBufferLineColFromOffset(&app->buffer, app->cursor.marker_offset, app->tab_size);
 			PushQuad_(scratch.arena, (float32[4]) {
-				text_screen.x1 + (cursor_pos.col - 1) * app->glyph_advance,
+				text_screen.x1 + (cursor_pos.col - 1 + scope_nesting_at_cursor * app->tab_size) * app->glyph_advance,
 				text_screen.y1 + (cursor_pos.line- 1) * app->glyph_height,
 				app->glyph_advance,
 				app->glyph_height,
 			}, NULL, 1, 0, 0xCF7F7F7F);
 			PushQuad_(scratch.arena, (float32[4]) {
-				text_screen.x1 + (marker_pos.col - 1) * app->glyph_advance,
+				text_screen.x1 + (marker_pos.col - 1 + scope_nesting_at_marker * app->tab_size) * app->glyph_advance,
 				text_screen.y1 + (marker_pos.line- 1) * app->glyph_height,
 				app->glyph_advance,
 				app->glyph_height,
 			}, NULL, 1, 0, 0x7F3F3F3F);
 
 			PushRect_(scratch.arena, line_counter, NULL, 1, 0, 0xFF2F2F2F);
-			for (int32 i = 0; i < line_count; ++i)
+			for (int32 i = 0; i < Min(line_count, 100); ++i)
 			{
 				String str = StringPrintfLocal(32, "%i", i+1);
 				PushText2_(app, scratch.arena, line_counter_text.x1, line_counter_text.y1 + i * app->glyph_height, str, 0xFFFFFFFF, 0, 1);

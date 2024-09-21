@@ -2234,23 +2234,12 @@ __declspec(selectany) EXTERN_C thread_local
 #elif defined(__GNUC__)
 __attribute__((weak)) EXTERN_C thread_local
 #endif
-struct
-{
-	ThreadContext ctx;
-	alignas(64) uint8 scratch_memory[2][2<<20];
-}
-g_thread_context_impl_;
+ThreadContext g_thread_context_;
 
 static inline ThreadContext*
 ThisThreadContext(void)
 {
-	ThreadContext* ctx = &g_thread_context_impl_.ctx;
-	static_assert(ArrayLength(ctx->scratch) == ArrayLength(g_thread_context_impl_.scratch_memory), "must");
-	if (!ctx->scratch[0].memory)
-	{
-		for (intz i = 0; i < ArrayLength(ctx->scratch); ++i)
-			ctx->scratch[i] = ArenaFromMemory(g_thread_context_impl_.scratch_memory[i], sizeof(g_thread_context_impl_.scratch_memory[i]));
-	}
+	ThreadContext* ctx = &g_thread_context_;
 	return ctx;
 }
 

@@ -158,8 +158,16 @@ TextCursorCmdRight(TextCursor* cursor, TextBuffer* textbuf, intz amount)
 	intz it = cursor->offset;
 	intz last_valid_it = it;
 	
-	while (amount > 0 && it+1 < TextBufferSize(textbuf))
+	while (amount > 0)
 	{
+		if (it >= TextBufferSize(textbuf))
+			break;
+		if (it+1 >= TextBufferSize(textbuf))
+		{
+			last_valid_it = ++it;
+			break;
+		}
+
 		++it;
 		uint8 sample = TextBufferSample(textbuf, it);
 		if (IsStartOfCodepoint(sample))

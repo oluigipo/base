@@ -168,6 +168,7 @@ BED_API void    TextBufferMoveGapToOffset  (TextBuffer* textbuf, intz offset);
 BED_API uint8*  TextBufferInsert           (TextBuffer* textbuf, intz offset, intz size);
 BED_API void    TextBufferDelete           (TextBuffer* textbuf, intz offset, intz size);
 BED_API String  TextBufferStringFromRange  (TextBuffer* textbuf, intz offset, intz size);
+BED_API bool    TextBufferLineIterator     (TextBuffer* textbuf, intz* it, String* left_str, String* right_str);
 
 // ===========================================================================
 // ===========================================================================

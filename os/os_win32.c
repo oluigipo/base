@@ -507,6 +507,35 @@ ChildProcessDescToStartupinfow_(OS_ChildProcessDesc const* child_desc)
 	return result;
 }
 
+static void
+SetupThreadScratchMemory_(void)
+{
+	Trace();
+	ThreadContext* thread_context = ThisThreadContext();
+	if (!thread_context->scratch[0].memory)
+	{
+		intz scratch_size = 2<<20;
+		uint8* mem = VirtualAlloc(NULL, (SIZE_T)(scratch_size * ArrayLength(thread_context->scratch)), MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+		SafeAssert(mem);
+		for (intz i = 0; i < ArrayLength(thread_context->scratch); ++i)
+			thread_context->scratch[i] = ArenaFromMemory(mem + scratch_size*i, scratch_size);
+	}
+}
+
+static void
+FreeThreadScratchMemory_(void)
+{
+	Trace();
+	ThreadContext* thread_context = ThisThreadContext();
+	if (thread_context->scratch[0].memory)
+	{
+		uint8* mem = thread_context->scratch[0].memory;
+		BOOL ok = VirtualFree(mem, 0, MEM_RELEASE);
+		SafeAssert(ok);
+		MemoryZero(thread_context->scratch, sizeof(thread_context->scratch));
+	}
+}
+
 //- Graphics
 static void
 D3d11PresentProc_(OS_D3D11Api* d3d11_api)
@@ -1680,6 +1709,7 @@ ThreadProc_(LPVOID arg)
 	Trace();
 	OS_ThreadDesc thread_desc = *(OS_ThreadDesc*)arg;
 	OS_HeapFree(arg);
+	SetupThreadScratchMemory_();
 
 	ThreadContext* thread_context = ThisThreadContext();
 	thread_context->logger = OS_DefaultLogger();
@@ -1687,6 +1717,7 @@ ThreadProc_(LPVOID arg)
 	
 	int32 result = thread_desc.proc(thread_desc.user_data);
 	
+	FreeThreadScratchMemory_();
 	return (DWORD)result;
 }
 
@@ -1696,6 +1727,8 @@ AudioThreadProc_(void* user_data)
 	if (g_win32.set_thread_description)
 		g_win32.set_thread_description(GetCurrentThread(), L"Win32AudioThreadProc");
 	
+	SetupThreadScratchMemory_();
+
 	HANDLE event;
 	while (event = g_win32.audio_shared_stuff.event, event)
 	{
@@ -1734,6 +1767,8 @@ AudioThreadProc_(void* user_data)
 		
 		ReleaseSRWLockExclusive(&g_win32.client_lock);
 	}
+
+	FreeThreadScratchMemory_();
 	
 	return 0;
 }
@@ -1985,11 +2020,12 @@ wmain(int argc_, wchar_t** argv_)
 	RtlGetVersion(&g_win32.version_info);
 
 	{
+		SetupThreadScratchMemory_();
 		ThreadContext* thread_context = ThisThreadContext();
 		thread_context->logger = OS_DefaultLogger();
 		thread_context->assertion_failure_proc = OS_DefaultAssertionFailureProc;
 	}
-	
+
 	// argc & argv
 	int32 argc;
 	char** argv;
@@ -2030,6 +2066,7 @@ wmain(int argc_, wchar_t** argv_)
 		TerminateThread(g_win32.audio_render_thread, 0);
 		CloseHandle(g_win32.audio_render_thread);
 	}
+	FreeThreadScratchMemory_();
 	
 	return result;
 }

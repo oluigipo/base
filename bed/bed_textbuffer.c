@@ -3,6 +3,7 @@
 BED_API void
 TextBufferGetStrings(TextBuffer* textbuf, String* out_left, String* out_right)
 {
+	Trace();
 	if (out_left)
 		*out_left = StrMake(textbuf->gap_start, textbuf->utf8_text);
 	if (out_right)
@@ -12,6 +13,7 @@ TextBufferGetStrings(TextBuffer* textbuf, String* out_left, String* out_right)
 BED_API uint8
 TextBufferSample(TextBuffer* textbuf, intz offset)
 {
+	Trace();
 	intz gap_size = textbuf->gap_end - textbuf->gap_start;
 	SafeAssert(gap_size >= 0 && gap_size <= textbuf->size);
 	SafeAssert(offset >= 0 && offset < textbuf->size - gap_size);
@@ -24,12 +26,14 @@ TextBufferSample(TextBuffer* textbuf, intz offset)
 BED_API intz
 TextBufferSize(TextBuffer* textbuf)
 {
+	Trace();
 	return textbuf->size - (textbuf->gap_end - textbuf->gap_start);
 }
 
 BED_API int32
 TextBufferLineCount(TextBuffer* textbuf)
 {
+	Trace();
 	int32 result = 1;
 	String left_str = {};
 	String right_str = {};
@@ -46,6 +50,7 @@ TextBufferLineCount(TextBuffer* textbuf)
 BED_API LineCol
 TextBufferLineColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size)
 {
+	Trace();
 	LineCol result = { 1, 1 };
 	String left_str = {};
 	String right_str = {};
@@ -87,6 +92,7 @@ TextBufferLineColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size)
 BED_API int32
 TextBufferColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size)
 {
+	Trace();
 	int32 result = 1;
 	intz it = offset;
 
@@ -174,6 +180,7 @@ TextBufferInsert(TextBuffer* textbuf, intz offset, intz size)
 BED_API void
 TextBufferDelete(TextBuffer* textbuf, intz offset, intz size)
 {
+	Trace();
 	if (offset == textbuf->gap_start)
 		textbuf->gap_end += size;
 	else if (offset + size == textbuf->gap_start)
@@ -188,6 +195,7 @@ TextBufferDelete(TextBuffer* textbuf, intz offset, intz size)
 BED_API String
 TextBufferStringFromRange(TextBuffer* textbuf, intz offset, intz size)
 {
+	Trace();
 	if (offset < textbuf->gap_start && offset + size > textbuf->gap_start)
 		TextBufferMoveGapToOffset(textbuf, offset);
 
@@ -195,4 +203,46 @@ TextBufferStringFromRange(TextBuffer* textbuf, intz offset, intz size)
 		return StrMake(size, textbuf->utf8_text+offset);
 	else
 		return StrMake(size, textbuf->utf8_text+offset+(textbuf->gap_end-textbuf->gap_start));
+}
+
+BED_API bool
+TextBufferLineIterator(TextBuffer* textbuf, intz* it_, String* left_str, String* right_str)
+{
+	Trace();
+	intz it = *it_;
+	if (it >= TextBufferSize(textbuf))
+		return false;
+
+	intz start = it;
+	intz end = it;
+	for (;; ++it)
+	{
+		if (it >= TextBufferSize(textbuf))
+			break;
+
+		uint8 sample = TextBufferSample(textbuf, it);
+		if (sample == '\n')
+			break;
+	}
+	end = it;
+	++it;
+	
+	if (start < textbuf->gap_start && end > textbuf->gap_start)
+	{
+		*left_str = StrMake(textbuf->gap_start - start, textbuf->utf8_text + start);
+		*right_str = StrMake(end - textbuf->gap_start, textbuf->utf8_text + textbuf->gap_end);
+	}
+	else if (start >= textbuf->gap_start)
+	{
+		*left_str = StrMake(end - start, textbuf->utf8_text + start + (textbuf->gap_end-textbuf->gap_start));
+		*right_str = StrNull;
+	}
+	else
+	{
+		*left_str = StrMake(end - start, textbuf->utf8_text + start);
+		*right_str = StrNull;
+	}
+
+	*it_ = it;
+	return true;
 }
