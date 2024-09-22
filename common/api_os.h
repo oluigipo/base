@@ -61,6 +61,9 @@ enum OS_KeyboardKey
 	OS_KeyboardKey_R, OS_KeyboardKey_S, OS_KeyboardKey_T, OS_KeyboardKey_U,
 	OS_KeyboardKey_V, OS_KeyboardKey_W, OS_KeyboardKey_X, OS_KeyboardKey_Y,
 	OS_KeyboardKey_Z,
+
+	OS_KeyboardKey_Comma,
+	OS_KeyboardKey_Period,
 	
 	OS_KeyboardKey_Numpad0,
 	OS_KeyboardKey_Numpad1, OS_KeyboardKey_Numpad2, OS_KeyboardKey_Numpad3, OS_KeyboardKey_Numpad4,
@@ -367,6 +370,7 @@ enum OS_EventKind
 	OS_EventKind_WindowGotFocus,
 	OS_EventKind_WindowLostFocus,
 	OS_EventKind_WindowMouseWheel,
+	OS_EventKind_WindowMouseClick,
 }
 typedef OS_EventKind;
 
@@ -381,7 +385,8 @@ struct OS_Event
 		struct { OS_KeyboardKey key; bool is_repeat; bool ctrl; bool shift; bool alt; } window_key;
 		struct { int32 x, y; } window_move;
 		struct { int32 total_width, total_height; int32 user_width, user_height; } window_resize;
-		struct { int32 delta; } window_mouse_wheel;
+		struct { int32 delta; int32 mouse_x, mouse_y; } window_mouse_wheel;
+		struct { OS_MouseButton button; int32 mouse_x, mouse_y; } window_mouse_click;
 	};
 }
 typedef OS_Event;

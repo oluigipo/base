@@ -69,6 +69,7 @@ struct TextPositioning_
 {
 	int32 start_x, start_y;
 	int32 line_start_x;
+	int32 max_x, max_y;
 }
 typedef TextPositioning_;
 
@@ -119,16 +120,20 @@ PushText_(App* app, Arena* arena, TextPositioning_ pos, String str, uint32 color
 
 		if (glyph)
 		{
-			float32 w = app->glyph_width;
-			float32 h = app->glyph_height;
+			int32 xx = x + glyph->draw_offset_x;
+			int32 yy = y + glyph->draw_offset_y;
+			if (xx >= pos.max_x || yy >= pos.max_y)
+				continue;
+
+			int32 w = ClampMax(app->glyph_width, pos.max_x - xx + 3);
+			int32 h = ClampMax(app->glyph_height, pos.max_y - yy + 3);
+
 			int16 texcoords[4] = {
 				glyph->atlas_x * INT16_MAX / app->glyph_texture_size,
 				glyph->atlas_y * INT16_MAX / app->glyph_texture_size,
-				app->glyph_width * INT16_MAX / app->glyph_texture_size,
-				app->glyph_height * INT16_MAX / app->glyph_texture_size,
+				w * INT16_MAX / app->glyph_texture_size,
+				h * INT16_MAX / app->glyph_texture_size,
 			};
-			int32 xx = x + glyph->draw_offset_x;
-			int32 yy = y + glyph->draw_offset_y;
 
 			PushQuad_(arena, (float32[4]) { xx, yy, w, h }, texcoords, texindex, texkind, color);
 
@@ -136,13 +141,13 @@ PushText_(App* app, Arena* arena, TextPositioning_ pos, String str, uint32 color
 		}
 	}
 
-	return (TextPositioning_) { x, y, pos.line_start_x };
+	return (TextPositioning_) { x, y, pos.line_start_x, pos.max_x, pos.max_y };
 }
 
 static TextPositioning_
-PushText2_(App* app, Arena* arena, int32 x, int32 y, String str, uint32 color, int16 texindex, int16 texkind)
+PushText2_(App* app, Arena* arena, Rect rect, String str, uint32 color, int16 texindex, int16 texkind)
 {
-	return PushText_(app, arena, (TextPositioning_) { x, y, x }, str, color, texindex, texkind);
+	return PushText_(app, arena, (TextPositioning_) { rect.x1, rect.y1, rect.x1, rect.x2, rect.y2 }, str, color, texindex, texkind);
 }
 
 static TextPositioning_
@@ -175,6 +180,150 @@ PushRect_(Arena* arena, Rect rect, int16 texcoords[4], int16 texindex, int16 tex
 	PushQuad_(arena, pos, texcoords, texindex, texkind, color);
 }
 
+static void
+PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex, uint32 color, uint32 status_bar_color)
+{
+	TextBuffer* textbuf = TextBufferFromIndex(app, view->textbuf_index);
+	int32 line_count = TextBufferLineCount(textbuf);
+	int32 line_log10count = 0;
+	{
+		int32 it = line_count;
+		while (it > 0)
+		{
+			it /= 10;
+			++line_log10count;
+		}
+	}
+
+	int32 first_line = view->line;
+	int32 last_line = ClampMax(first_line + (rect.y2 - rect.y1 + app->glyph_height-1) / app->glyph_height, line_count);
+
+	Rect status_bar = RectCutTop(&rect, app->glyph_height + 8);
+	Rect status_bar_text = RectCutMargin(status_bar, 4);
+	Rect line_bar = RectCutLeft(&rect, line_log10count * app->glyph_advance + 4);
+	Rect line_bar_text = RectCutMargin(line_bar, 2);
+	RectCutTop(&line_bar_text, 2);
+	Rect text_screen = RectCutMargin(rect, 4);
+
+	int32 scope_nesting_at_cursor = 0;
+	int32 scope_nesting_at_marker = 0;
+	// PushTextBuffer2_(app, scratch.arena, text_screen.x1, text_screen.y1, textbuf, 0xFFFFFFFF, 0, 1);
+	{
+		int32 scope_nesting = 0;
+
+		String left_str = {};
+		String right_str = {};
+		int32 line = 1;
+		intz it = 0;
+		intz prev_it = 0;
+		for (; TextBufferLineIterator(textbuf, &it, &left_str, &right_str); ++line)
+		{
+			intz this_scope_nesting = scope_nesting;
+
+			for (intz char_index = 0; char_index < left_str.size; ++char_index)
+			{
+				uint8 ch = left_str.data[char_index];
+				if (ch == '{')
+					++scope_nesting;
+			}
+			for (intz char_index = 0; char_index < right_str.size; ++char_index)
+			{
+				uint8 ch = right_str.data[char_index];
+				if (ch == '{')
+					++scope_nesting;
+			}
+			for (intz char_index = 0; char_index < left_str.size; ++char_index)
+			{
+				uint8 ch = left_str.data[char_index];
+				if (ch == '}' && scope_nesting > 0)
+				{
+					--scope_nesting;
+					if (char_index == 0)
+						this_scope_nesting = scope_nesting;
+				}
+			}
+			for (intz char_index = 0; char_index < right_str.size; ++char_index)
+			{
+				uint8 ch = right_str.data[char_index];
+				if (ch == '}' && scope_nesting > 0)
+					--scope_nesting;
+			}
+
+			if (view->cursor.offset >= prev_it && view->cursor.offset < it)
+				scope_nesting_at_cursor = this_scope_nesting;
+			else if (view->cursor.marker_offset >= prev_it && view->cursor.marker_offset < it)
+				scope_nesting_at_marker = this_scope_nesting;
+
+			prev_it = it;
+
+			if (line < first_line)
+				continue;
+			if (line > last_line)
+				break;
+
+			{
+				while (left_str.size > 0)
+				{
+					if (left_str.data[0] == '\t')
+					{
+						++left_str.data;
+						--left_str.size;
+					}
+					else
+						break;
+				}
+				if (!left_str.size)
+				{
+					while (right_str.size > 0)
+					{
+						if (right_str.data[0] == '\t')
+						{
+							++right_str.data;
+							--right_str.size;
+						}
+						else
+							break;
+					}
+				}
+			}
+
+			Rect pos = text_screen;
+			pos.x1 += this_scope_nesting * app->glyph_advance * app->tab_size;
+			pos.y1 += (line-first_line) * app->glyph_height;
+			TextPositioning_ positioning = PushText2_(app, arena, pos, left_str, 0xFFFFFFFF, 0, 1);
+			PushText_(app, arena, positioning, right_str, 0xFFFFFFFF, 0, 1);
+		}
+	}
+
+	LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
+	LineCol marker_pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
+	PushQuad_(arena, (float32[4]) {
+		text_screen.x1 + (cursor_pos.col - 1 + scope_nesting_at_cursor * app->tab_size) * app->glyph_advance,
+		text_screen.y1 + (cursor_pos.line - first_line) * app->glyph_height,
+		app->glyph_advance,
+		app->glyph_height,
+	}, NULL, 1, 0, 0xCF7F7F7F);
+	PushQuad_(arena, (float32[4]) {
+		text_screen.x1 + (marker_pos.col - 1 + scope_nesting_at_marker * app->tab_size) * app->glyph_advance,
+		text_screen.y1 + (marker_pos.line - first_line) * app->glyph_height,
+		app->glyph_advance,
+		app->glyph_height,
+	}, NULL, 1, 0, 0x7F3F3F3F);
+
+	PushRect_(arena, line_bar, NULL, 1, 0, 0xFF2F2F2F);
+	for (int32 i = 0; i <= last_line-first_line; ++i)
+	{
+		String str = StringPrintfLocal(32, "%i", i+first_line);
+		Rect pos = line_bar_text;
+		pos.y1 += i * app->glyph_height;
+		PushText2_(app, arena, pos, str, 0xFFFFFFFF, 0, 1);
+	}
+
+	PushRect_(arena, status_bar, NULL, 1, 0, status_bar_color);
+	status_bar_text.y1 += 2;
+	PushText2_(app, arena, status_bar_text, textbuf->file_path, 0xFFFFFFFF, 0, 1);
+}
+
 API int32
 EntryPoint(int32 argc, const char* const argv[])
 {
@@ -184,11 +333,12 @@ EntryPoint(int32 argc, const char* const argv[])
 	App* app = ArenaPushStructInit(global_arena, App, {
 		.arena = global_arena,
 		.tab_size = 4,
+		.heap = OS_HeapAllocator(),
 	});
 
 	app->window = OS_CreateWindow(&(OS_WindowDesc) {
 		.title = StrInit("bed"),
-		.width = 600,
+		.width = 800,
 		.height = 600,
 		.resizeable = true,
 	});
@@ -464,22 +614,19 @@ EntryPoint(int32 argc, const char* const argv[])
 		IDWriteFactory_Release(app->dw_factory);
 	}
 
-	for ArenaTempScope(app->arena)
+	// make default views
 	{
-		String str = {};
-		SafeAssert(OS_ReadEntireFile(Str("./os/os_win32.c"), app->arena, (void**)&str.data, &str.size, NULL));
-
-		app->buffer = (TextBuffer) {
-			.kind = TextBufferKind_OwnedGapBuffer,
-			.utf8_text = OS_HeapAlloc(str.size * 2),
-			.size = str.size * 2,
-			.gap_start = str.size,
-			.gap_end = str.size * 2,
+		app->left_view = (TextView) {
+			.cursor = {},
+			.line = 1,
 		};
-		MemoryCopy(app->buffer.utf8_text, str.data, str.size);
-		app->cursor = (TextCursor) {
-			.offset = app->buffer.gap_start,
+		TextBufferFromFile(app, Str("./os/os_win32.c"), &app->left_view.textbuf_index);
+		app->right_view = (TextView) {
+			.cursor = {},
+			.line = 1,
 		};
+		TextBuffer* textbuf = TextBufferFromString(app, Str("Hello, World!"), &app->right_view.textbuf_index);
+		textbuf->file_path = Str("*scratch*");
 	}
 
 	while (!app->is_closing)
@@ -487,6 +634,9 @@ EntryPoint(int32 argc, const char* const argv[])
 		ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
 		intz event_count;
 		OS_Event* events = OS_PollEvents(true, scratch.arena, &event_count);
+
+		TextView* selected_view = (app->is_right_view_selected) ? &app->right_view : &app->left_view;
+		TextBuffer* textbuf = TextBufferFromIndex(app, selected_view->textbuf_index);
 
 		bool should_resize_buffers = false;
 		for (intz i = 0; i < event_count; ++i)
@@ -504,61 +654,70 @@ EntryPoint(int32 argc, const char* const argv[])
 					case OS_KeyboardKey_Left:
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdLeftSnakeWord(&app->cursor, &app->buffer, 1);
+							TextCursorCmdLeftSnakeWord(&selected_view->cursor, textbuf, 1);
 						else
-							TextCursorCmdLeft(&app->cursor, &app->buffer, 1);
+							TextCursorCmdLeft(&selected_view->cursor, textbuf, 1);
 					} break;
 					case OS_KeyboardKey_Right:
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdRightSnakeWord(&app->cursor, &app->buffer, 1);
+							TextCursorCmdRightSnakeWord(&selected_view->cursor, textbuf, 1);
 						else
-							TextCursorCmdRight(&app->cursor, &app->buffer, 1);
+							TextCursorCmdRight(&selected_view->cursor, textbuf, 1);
 					} break;
 					case OS_KeyboardKey_Up:
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdUpParagraph(&app->cursor, &app->buffer, 1);
+							TextCursorCmdUpParagraph(&selected_view->cursor, textbuf, 1);
 						else
-							TextCursorCmdUp(&app->cursor, &app->buffer, 1);
+							TextCursorCmdUp(&selected_view->cursor, textbuf, 1);
 					} break;
 					case OS_KeyboardKey_Down:
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdDownParagraph(&app->cursor, &app->buffer, 1);
+							TextCursorCmdDownParagraph(&selected_view->cursor, textbuf, 1);
 						else
-							TextCursorCmdDown(&app->cursor, &app->buffer, 1);
+							TextCursorCmdDown(&selected_view->cursor, textbuf, 1);
 					} break;
 					case OS_KeyboardKey_Backspace:
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdDeleteBackwardSnakeWord(&app->cursor, &app->buffer, 1);
+							TextCursorCmdDeleteBackwardSnakeWord(&selected_view->cursor, textbuf, 1);
 						else
-							TextCursorCmdDeleteBackward(&app->cursor, &app->buffer, 1);
+							TextCursorCmdDeleteBackward(&selected_view->cursor, textbuf, 1);
 					} break;
-					case OS_KeyboardKey_End: TextCursorCmdEndOfLine(&app->cursor, &app->buffer); break;
-					case OS_KeyboardKey_Home: TextCursorCmdStartOfLine(&app->cursor, &app->buffer); break;
-					case OS_KeyboardKey_Enter: TextCursorCmdInsert(&app->cursor, &app->buffer, 1, '\n'); break;
-					case OS_KeyboardKey_Tab: TextCursorCmdInsert(&app->cursor, &app->buffer, 1, '\t'); break;
+					case OS_KeyboardKey_End: TextCursorCmdEndOfLine(&selected_view->cursor, textbuf); break;
+					case OS_KeyboardKey_Home: TextCursorCmdStartOfLine(&selected_view->cursor, textbuf); break;
+					case OS_KeyboardKey_Enter: TextCursorCmdInsert(&selected_view->cursor, textbuf, 1, '\n'); break;
+					case OS_KeyboardKey_Tab: TextCursorCmdInsert(&selected_view->cursor, textbuf, 1, '\t'); break;
 					case 'D':
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdDeleteToMarker(&app->cursor, &app->buffer);
+							TextCursorCmdDeleteToMarker(&selected_view->cursor, textbuf);
 					} break;
 					case 'C':
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdCopy(app, &app->cursor, &app->buffer);
+							TextCursorCmdCopy(app, &selected_view->cursor, textbuf);
 					} break;
 					case 'V':
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdPaste(app, &app->cursor, &app->buffer);
+							TextCursorCmdPaste(app, &selected_view->cursor, textbuf);
 					} break;
 					case ' ':
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdPlaceMarker(&app->cursor);
+							TextCursorCmdPlaceMarker(&selected_view->cursor);
+					} break;
+					case OS_KeyboardKey_Comma:
+					{
+						if (event->window_key.ctrl)
+						{
+							app->is_right_view_selected ^= 1;
+							selected_view = (app->is_right_view_selected) ? &app->right_view : &app->left_view;
+							textbuf = TextBufferFromIndex(app, selected_view->textbuf_index);
+						}
 					} break;
 				}
 			}
@@ -566,7 +725,29 @@ EntryPoint(int32 argc, const char* const argv[])
 			{
 				uint32 codepoint = event->window_typing.codepoint;
 				if (!event->window_typing.ctrl || codepoint != ' ')
-					TextCursorCmdInsert(&app->cursor, &app->buffer, 1, codepoint);
+					TextCursorCmdInsert(&selected_view->cursor, textbuf, 1, codepoint);
+			}
+			else if (event->kind == OS_EventKind_WindowMouseWheel)
+			{
+				TextView* view_to_scroll;
+				if (event->window_mouse_wheel.mouse_x < app->window_width / 2)
+					view_to_scroll = &app->left_view;
+				else
+					view_to_scroll = &app->right_view;
+				view_to_scroll->line = ClampMin(view_to_scroll->line - event->window_mouse_wheel.delta*5, 1);
+			}
+			else if (event->kind == OS_EventKind_WindowMouseClick)
+			{
+				if (event->window_mouse_click.button == OS_MouseButton_Left)
+				{
+					if (event->window_mouse_click.mouse_x < app->window_width / 2)
+						app->is_right_view_selected = false;
+					else
+						app->is_right_view_selected = true;
+
+					selected_view = (app->is_right_view_selected) ? &app->right_view : &app->left_view;
+					textbuf = TextBufferFromIndex(app, selected_view->textbuf_index);
+				}
 			}
 		}
 
@@ -595,108 +776,11 @@ EntryPoint(int32 argc, const char* const argv[])
 		intz quad_count = 0;
 		{
 			QuadVertex_* first_vertex = ArenaEndAligned(scratch.arena, alignof(QuadVertex_));
-			int32 line_count = TextBufferLineCount(&app->buffer);
-			int32 line_log10count = 0;
-			{
-				int32 it = line_count;
-				while (it > 0)
-				{
-					it /= 10;
-					++line_log10count;
-				}
-			}
 
-			Rect status_bar = RectCutTop(&screen, app->glyph_height + 8);
-			Rect status_bar_text = RectCutMargin(status_bar, 4);
-			Rect line_counter = RectCutLeft(&screen, line_log10count * app->glyph_advance + 4);
-			Rect line_counter_text = RectCutMargin(line_counter, 2);
-			RectCutTop(&line_counter_text, 2);
-			Rect text_screen = RectCutMargin(screen, 4);
-
-			int32 scope_nesting_at_cursor = 0;
-			int32 scope_nesting_at_marker = 0;
-			// PushTextBuffer2_(app, scratch.arena, text_screen.x1, text_screen.y1, &app->buffer, 0xFFFFFFFF, 0, 1);
-			{
-				int32 scope_nesting = 0;
-
-				String left_str = {};
-				String right_str = {};
-				int32 line = 1;
-				intz it = 0;
-				intz prev_it = 0;
-				for (; TextBufferLineIterator(&app->buffer, &it, &left_str, &right_str); ++line)
-				{
-					if (line > 100)
-						break;
-					intz this_scope_nesting = scope_nesting;
-
-					for (intz char_index = 0; char_index < left_str.size; ++char_index)
-					{
-						uint8 ch = left_str.data[char_index];
-						if (ch == '{')
-							++scope_nesting;
-					}
-					for (intz char_index = 0; char_index < right_str.size; ++char_index)
-					{
-						uint8 ch = right_str.data[char_index];
-						if (ch == '{')
-							++scope_nesting;
-					}
-					for (intz char_index = 0; char_index < left_str.size; ++char_index)
-					{
-						uint8 ch = left_str.data[char_index];
-						if (ch == '}' && scope_nesting > 0)
-						{
-							--scope_nesting;
-							if (char_index == 0)
-								this_scope_nesting = scope_nesting;
-						}
-					}
-					for (intz char_index = 0; char_index < right_str.size; ++char_index)
-					{
-						uint8 ch = right_str.data[char_index];
-						if (ch == '}' && scope_nesting > 0)
-							--scope_nesting;
-					}
-
-					if (app->cursor.offset >= prev_it && app->cursor.offset < it)
-						scope_nesting_at_cursor = this_scope_nesting;
-					else if (app->cursor.marker_offset >= prev_it && app->cursor.marker_offset < it)
-						scope_nesting_at_marker = this_scope_nesting;
-
-					prev_it = it;
-
-					int32 x = text_screen.x1 + this_scope_nesting * app->glyph_advance * app->tab_size;
-					int32 y = text_screen.y1 + (line-1) * app->glyph_height;
-					TextPositioning_ positioning = PushText2_(app, scratch.arena, x, y, left_str, 0xFFFFFFFF, 0, 1);
-					PushText_(app, scratch.arena, positioning, right_str, 0xFFFFFFFF, 0, 1);
-				}
-			}
-
-			LineCol cursor_pos = TextBufferLineColFromOffset(&app->buffer, app->cursor.offset, app->tab_size);
-			LineCol marker_pos = TextBufferLineColFromOffset(&app->buffer, app->cursor.marker_offset, app->tab_size);
-			PushQuad_(scratch.arena, (float32[4]) {
-				text_screen.x1 + (cursor_pos.col - 1 + scope_nesting_at_cursor * app->tab_size) * app->glyph_advance,
-				text_screen.y1 + (cursor_pos.line- 1) * app->glyph_height,
-				app->glyph_advance,
-				app->glyph_height,
-			}, NULL, 1, 0, 0xCF7F7F7F);
-			PushQuad_(scratch.arena, (float32[4]) {
-				text_screen.x1 + (marker_pos.col - 1 + scope_nesting_at_marker * app->tab_size) * app->glyph_advance,
-				text_screen.y1 + (marker_pos.line- 1) * app->glyph_height,
-				app->glyph_advance,
-				app->glyph_height,
-			}, NULL, 1, 0, 0x7F3F3F3F);
-
-			PushRect_(scratch.arena, line_counter, NULL, 1, 0, 0xFF2F2F2F);
-			for (int32 i = 0; i < Min(line_count, 100); ++i)
-			{
-				String str = StringPrintfLocal(32, "%i", i+1);
-				PushText2_(app, scratch.arena, line_counter_text.x1, line_counter_text.y1 + i * app->glyph_height, str, 0xFFFFFFFF, 0, 1);
-			}
-
-			PushRect_(scratch.arena, status_bar, NULL, 1, 0, 0xFF3F3F3F);
-			PushText2_(app, scratch.arena, status_bar_text.x1, status_bar_text.y1, Str("Testing"), 0xFFFF00FF, 0, 1);
+			Rect left_view_rect, right_view_rect;
+			RectCutSplitH(&screen, &left_view_rect, &right_view_rect);
+			PushTextView_(app, &app->left_view, scratch.arena, left_view_rect, 0, 0xFFFFFFFF, !app->is_right_view_selected ? 0xFF3F3F3F : 0xFF1F1F1F);
+			PushTextView_(app, &app->right_view, scratch.arena, right_view_rect, 0, 0xFFFFFFFF, app->is_right_view_selected ? 0xFF3F3F3F : 0xFF1F1F1F);
 
 			QuadVertex_* last_vertex = ArenaEnd(scratch.arena);
 			intz vertex_count = last_vertex - first_vertex;

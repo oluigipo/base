@@ -292,6 +292,9 @@ static OS_KeyboardKey const g_keyboard_key_table[256] = {
 	OS_KeyboardKey_R, OS_KeyboardKey_S, OS_KeyboardKey_T, OS_KeyboardKey_U,
 	OS_KeyboardKey_V, OS_KeyboardKey_W, OS_KeyboardKey_X, OS_KeyboardKey_Y,
 	OS_KeyboardKey_Z,
+
+	[VK_OEM_COMMA] = OS_KeyboardKey_Comma,
+	[VK_OEM_PERIOD] = OS_KeyboardKey_Period,
 	
 	[VK_F1] = OS_KeyboardKey_F1,
 	OS_KeyboardKey_F2, OS_KeyboardKey_F3,  OS_KeyboardKey_F4,  OS_KeyboardKey_F4,
@@ -1838,7 +1841,7 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 				result = TRUE;
 				break;
 			}
-			if ((wparam < 32 && wparam != '\r' && wparam != '\t' && wparam != '\b') || (wparam > 0x7f && wparam <= 0xa0))
+			if ((wparam < 32 && wparam != '\r' && wparam != '\t' && wparam != '\b') || (wparam >= 0x7f && wparam <= 0xa0))
 				break;
 			
 			uint32 codepoint = (uint32)wparam;
@@ -1877,7 +1880,7 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 			window_data->high_surrogate = 0;
 			window_data->low_surrogate = 0;
 
-			if (codepoint < 32 || (codepoint > 0x7f && codepoint <= 0xa0))
+			if (codepoint < 32 || (codepoint >= 0x7f && codepoint <= 0xa0))
 				break;
 			os_event.kind = OS_EventKind_WindowTyping;
 			os_event.window_typing.codepoint = codepoint;
@@ -1918,8 +1921,16 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 		case WM_MOUSEWHEEL:
 		{
 			int32 delta = GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA;
+			POINT px = {
+				GET_X_LPARAM(lparam),
+				GET_Y_LPARAM(lparam),
+			};
+			ScreenToClient(hwnd, &px);
+
 			os_event.kind = OS_EventKind_WindowMouseWheel;
 			os_event.window_mouse_wheel.delta = delta;
+			os_event.window_mouse_wheel.mouse_x = px.x;
+			os_event.window_mouse_wheel.mouse_y = px.y;
 		} break;
 		
 		case WM_DEVICECHANGE:
@@ -1935,22 +1946,35 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 		case WM_RBUTTONUP:
 		case WM_RBUTTONDOWN:
 		{
-			OS_LockExclusive(&window_data->mouse_state_lock);
-			OS_ButtonState* btn = NULL;
+			OS_MouseButton index = -1;
 			bool down = false;
 			switch (message)
 			{
-				case WM_LBUTTONUP:   btn = &window_data->mouse_state.buttons[OS_MouseButton_Left]; break;
-				case WM_LBUTTONDOWN: btn = &window_data->mouse_state.buttons[OS_MouseButton_Left]; down = true; break;
-				case WM_MBUTTONUP:   btn = &window_data->mouse_state.buttons[OS_MouseButton_Middle]; break;
-				case WM_MBUTTONDOWN: btn = &window_data->mouse_state.buttons[OS_MouseButton_Middle]; down = true; break;
-				case WM_RBUTTONUP:   btn = &window_data->mouse_state.buttons[OS_MouseButton_Right]; break;
-				case WM_RBUTTONDOWN: btn = &window_data->mouse_state.buttons[OS_MouseButton_Right]; down = true; break;
+				case WM_LBUTTONUP:   index = OS_MouseButton_Left; break;
+				case WM_LBUTTONDOWN: index = OS_MouseButton_Left; down = true; break;
+				case WM_MBUTTONUP:   index = OS_MouseButton_Middle; break;
+				case WM_MBUTTONDOWN: index = OS_MouseButton_Middle; down = true; break;
+				case WM_RBUTTONUP:   index = OS_MouseButton_Right; break;
+				case WM_RBUTTONDOWN: index = OS_MouseButton_Right; down = true; break;
 			}
-			if (btn->is_down != down)
-				btn->changes += 1;
-			btn->is_down = down;
-			OS_UnlockExclusive(&window_data->mouse_state_lock);
+
+			if (index != -1)
+			{
+				OS_LockExclusive(&window_data->mouse_state_lock);
+				OS_ButtonState* btn = &window_data->mouse_state.buttons[index];
+				if (btn->is_down != down)
+					btn->changes += 1;
+				btn->is_down = down;
+				OS_UnlockExclusive(&window_data->mouse_state_lock);
+
+				if (down)
+				{
+					os_event.kind = OS_EventKind_WindowMouseClick;
+					os_event.window_mouse_click.button = index;
+					os_event.window_mouse_click.mouse_x = GET_X_LPARAM(lparam);
+					os_event.window_mouse_click.mouse_y = GET_Y_LPARAM(lparam);
+				}
+			}
 		} break;
 
 		//case WM_MOUSEMOVE:
@@ -1977,6 +2001,8 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 				SetCursor(cursor);
 				result = TRUE;
 			}
+			else
+				result = DefWindowProcW(hwnd, message, wparam, lparam);
 		} break;
 		
 		default: result = DefWindowProcW(hwnd, message, wparam, lparam); break;

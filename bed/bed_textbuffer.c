@@ -1,5 +1,131 @@
 #include "bed.h"
 
+static TextBuffer*
+MakeTextBuffer_(App* app, intz* out_index)
+{
+	if (app->textbuf_pool_count+1 >= app->textbuf_pool_cap)
+	{
+		intz new_cap = app->textbuf_pool_cap + (app->textbuf_pool_cap >> 1) + 1;
+		AllocatorError err;
+		if (!AllocatorResizeArrayOk(&app->heap, new_cap, sizeof(TextBuffer), alignof(TextBuffer), &app->textbuf_pool, app->textbuf_pool_cap, &err))
+		{
+			Log(LOG_ERROR, "could not resize textbuf pool: %u", (uint32)err);
+			*out_index = 0;
+			return NULL;
+		}
+		app->textbuf_pool_cap = new_cap;
+	}
+
+	intz index = app->textbuf_pool_count++;
+	*out_index = index+1;
+	return &app->textbuf_pool[index];
+}
+
+BED_API TextBuffer*
+TextBufferFromIndex(App* app, intz index)
+{
+	Trace();
+	if (index <= 0 || index > app->textbuf_pool_count)
+	{
+		Log(LOG_WARN, "index into text buffer pool is invalid: %Z", index);
+		return NULL;
+	}
+	TextBuffer* textbuf = &app->textbuf_pool[index - 1];
+	if (textbuf->next_free || !textbuf->kind)
+	{
+		Log(LOG_WARN, "text buffer reffered by index %Z is not active", index);
+		return NULL;
+	}
+	return textbuf;
+}
+
+BED_API TextBuffer*
+TextBufferFromFile(App* app, String path, intz* out_index)
+{
+	Trace();
+	ArenaSavepoint scratch = ArenaSave(app->arena);
+	void* buffer;
+	intz size;
+	OS_Error err = {};
+
+	if (!OS_ReadEntireFile(path, scratch.arena, &buffer, &size, &err))
+	{
+		Log(LOG_ERROR, "could not open file from path!\n\tPath: %S\nError code: %u\nError string: %S", path, err.code, err.what);
+		return NULL;
+	}
+
+	TextBuffer* textbuf = MakeTextBuffer_(app, out_index);
+	if (!textbuf)
+	{
+		Log(LOG_ERROR, "could not make text buffer when opening path: %S", path);
+		ArenaRestore(scratch);
+		return NULL;
+	}
+
+	AllocatorError alloc_err = 0;
+	intz total_size = AlignUp(size, 31) + 4096;
+	uint8* utf8_text = AllocatorAlloc(&app->heap, total_size, 1, &alloc_err);
+	if (alloc_err)
+	{
+		Log(LOG_ERROR, "could not allocate buffer for text buffer when opening path: %S", path);
+		ArenaRestore(scratch);
+		return NULL;
+	}
+	MemoryCopy(utf8_text, buffer, size);
+
+	uint8* new_path_ptr = AllocatorAlloc(&app->heap, path.size, 1, &alloc_err);
+	if (alloc_err)
+	{
+		Log(LOG_ERROR, "could not copy path name for text buffer when opening path: %S", path);
+		AllocatorFree(&app->heap, utf8_text, total_size, NULL);
+		ArenaRestore(scratch);
+		return NULL;
+	}
+	MemoryCopy(new_path_ptr, path.data, path.size);
+	String new_path = StrMake(path.size, new_path_ptr);
+
+	*textbuf = (TextBuffer) {
+		.kind = TextBufferKind_OwnedGapBuffer,
+		.utf8_text =utf8_text,
+		.size = total_size,
+		.gap_start = size,
+		.gap_end = total_size,
+		.file_path = new_path,
+	};
+	return textbuf;
+}
+
+BED_API TextBuffer*
+TextBufferFromString(App* app, String str, intz* out_index)
+{
+	Trace();
+	TextBuffer* textbuf = MakeTextBuffer_(app, out_index);
+	if (!textbuf)
+	{
+		Log(LOG_ERROR, "could not make text buffer from string: %S", str);
+		return NULL;
+	}
+
+	AllocatorError alloc_err = 0;
+	intz total_size = AlignUp(str.size, 31) + 4096;
+	uint8* utf8_text = AllocatorAlloc(&app->heap, total_size, 1, &alloc_err);
+	if (alloc_err)
+	{
+		Log(LOG_ERROR, "could not allocate buffer for text buffer from string: %S", str);
+		return NULL;
+	}
+	MemoryCopy(utf8_text, str.data, str.size);
+
+	*textbuf = (TextBuffer) {
+		.kind = TextBufferKind_OwnedGapBuffer,
+		.utf8_text =utf8_text,
+		.size = total_size,
+		.gap_start = str.size,
+		.gap_end = total_size,
+	};
+	return textbuf;
+}
+
 BED_API void
 TextBufferGetStrings(TextBuffer* textbuf, String* out_left, String* out_right)
 {

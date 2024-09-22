@@ -393,7 +393,7 @@ TextCursorCmdDeleteBackwardSnakeWord(TextCursor* cursor, TextBuffer* textbuf, in
 		TextBufferDelete(textbuf, start, cursor->offset - start);
 		if (cursor->marker_offset > cursor->offset)
 			cursor->marker_offset -= (cursor->offset - start);
-		cursor->offset = start;
+		cursor->offset -= (cursor->offset - start);
 	}
 }
 

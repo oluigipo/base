@@ -19,10 +19,14 @@ typedef TextBufferKind;
 struct TextBuffer
 {
 	TextBufferKind kind;
+	uint32 next_free;
+
 	uint8* utf8_text;
 	intz size;
 	intz gap_start;
 	intz gap_end;
+
+	String file_path;
 }
 typedef TextBuffer;
 
@@ -48,11 +52,20 @@ struct GlyphEntry_
 }
 typedef GlyphEntry_;
 
+struct TextView
+{
+	TextCursor cursor;
+	intz textbuf_index;
+	int32 line;
+}
+typedef TextView;
+
 struct App
 {
 	Arena* arena;
 	OS_Window window;
 	R3_Context* r3;
+	Allocator heap;
 
 	bool is_closing;
 	int32 window_width, window_height;
@@ -87,8 +100,15 @@ struct App
 	intz glyph_entries_count;
 
 	// starter view
-	TextCursor cursor;
-	TextBuffer buffer;
+	bool is_right_view_selected;
+	TextView left_view;
+	TextView right_view;
+
+	// textbuf pool
+	TextBuffer* textbuf_pool;
+	intz textbuf_pool_cap;
+	intz textbuf_pool_count;
+	intz textbuf_pool_first_free;
 }
 typedef App;
 
@@ -148,6 +168,15 @@ RectCutMargin(Rect from, int32 amount)
 	return from;
 }
 
+static inline void
+RectCutSplitH(Rect* from, Rect* out_left, Rect* out_right)
+{
+	Rect f = *from;
+	int32 width = f.x2 - f.x1;
+	*out_left = (Rect) { f.x1, f.y1, f.x1 + width/2, f.y2 };
+	*out_right = (Rect) { f.x1 + width/2, f.y1, f.x2, f.y2 };
+}
+
 // ===========================================================================
 // ===========================================================================
 // UTF-8 Utils
@@ -158,6 +187,10 @@ IsStartOfCodepoint(uint8 ch)
 // ===========================================================================
 // ===========================================================================
 // TextBuffer API
+BED_API TextBuffer* TextBufferFromIndex    (App* app, intz index);
+BED_API TextBuffer* TextBufferFromFile     (App* app, String path, intz* out_index);
+BED_API TextBuffer* TextBufferFromString   (App* app, String str, intz* out_index);
+
 BED_API void    TextBufferGetStrings       (TextBuffer* textbuf, String* out_left, String* out_right);
 BED_API uint8   TextBufferSample           (TextBuffer* textbuf, intz offset);
 BED_API intz    TextBufferSize             (TextBuffer* textbuf);
