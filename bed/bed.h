@@ -98,6 +98,7 @@ struct App
 	GlyphEntry_* glyph_entries;
 	intz glyph_entries_log2cap;
 	intz glyph_entries_count;
+	intz invalid_glyph_index;
 
 	// starter view
 	bool is_right_view_selected;
@@ -168,6 +169,14 @@ RectCutMargin(Rect from, int32 amount)
 	return from;
 }
 
+static inline Rect
+RectCutMarginTopLeft(Rect from, int32 amount)
+{
+	from.x1 = ClampMax(from.x1 + amount, from.x2);
+	from.y1 = ClampMax(from.y1 + amount, from.y2);
+	return from;
+}
+
 static inline void
 RectCutSplitH(Rect* from, Rect* out_left, Rect* out_right)
 {
@@ -182,7 +191,7 @@ RectCutSplitH(Rect* from, Rect* out_left, Rect* out_right)
 // UTF-8 Utils
 static inline bool
 IsStartOfCodepoint(uint8 ch)
-{ return (ch & 0x80) == 0 || (ch & 0x40) == 0; }
+{ return (ch & 0x80) == 0 || (ch & 0x40) != 0; }
 
 // ===========================================================================
 // ===========================================================================

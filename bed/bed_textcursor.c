@@ -5,6 +5,8 @@ SimpleBoundarySnakeWordProc_(uint8 ch)
 {
 	if (ch >= 0x80)
 		return false;
+	// NOTE(ljre): Proudly taken from 4coder because i like it
+	//             https://github.com/4coder-archive/4coder/blob/c38c7384b91ccb89a88a2d209649b62950d33f09/custom/4coder_helper.h#L112-L117
 	static uint8 pred_table[16] = {
 		0,   0,   0,   0,   0,   0, 255,   3,
         254, 255, 255, 7, 254, 255, 255,   7,

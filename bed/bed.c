@@ -112,33 +112,33 @@ PushText_(App* app, Arena* arena, TextPositioning_ pos, String str, uint32 color
 				glyph = this_glyph;
 				break;
 			}
-			if (this_glyph->codepoint)
-				continue;
-			// not found
-			break;
+			if (!this_glyph->codepoint)
+			{
+				// not found
+				glyph = &app->glyph_entries[app->invalid_glyph_index];
+				break;
+			}
 		}
 
-		if (glyph)
-		{
-			int32 xx = x + glyph->draw_offset_x;
-			int32 yy = y + glyph->draw_offset_y;
-			if (xx >= pos.max_x || yy >= pos.max_y)
-				continue;
+		SafeAssert(glyph);
+		int32 xx = x + glyph->draw_offset_x;
+		int32 yy = y + glyph->draw_offset_y;
+		if (xx >= pos.max_x || yy >= pos.max_y)
+			continue;
 
-			int32 w = ClampMax(app->glyph_width, pos.max_x - xx + 3);
-			int32 h = ClampMax(app->glyph_height, pos.max_y - yy + 3);
+		int32 w = ClampMax(app->glyph_width, pos.max_x - xx);
+		int32 h = ClampMax(app->glyph_height, pos.max_y - yy);
 
-			int16 texcoords[4] = {
-				glyph->atlas_x * INT16_MAX / app->glyph_texture_size,
-				glyph->atlas_y * INT16_MAX / app->glyph_texture_size,
-				w * INT16_MAX / app->glyph_texture_size,
-				h * INT16_MAX / app->glyph_texture_size,
-			};
+		int16 texcoords[4] = {
+			glyph->atlas_x * INT16_MAX / app->glyph_texture_size,
+			glyph->atlas_y * INT16_MAX / app->glyph_texture_size,
+			w * INT16_MAX / app->glyph_texture_size,
+			h * INT16_MAX / app->glyph_texture_size,
+		};
 
-			PushQuad_(arena, (float32[4]) { xx, yy, w, h }, texcoords, texindex, texkind, color);
+		PushQuad_(arena, (float32[4]) { xx, yy, w, h }, texcoords, texindex, texkind, color);
 
-			x += app->glyph_advance;
-		}
+		x += app->glyph_advance;
 	}
 
 	return (TextPositioning_) { x, y, pos.line_start_x, pos.max_x, pos.max_y };
@@ -203,7 +203,7 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 	Rect line_bar = RectCutLeft(&rect, line_log10count * app->glyph_advance + 4);
 	Rect line_bar_text = RectCutMargin(line_bar, 2);
 	RectCutTop(&line_bar_text, 2);
-	Rect text_screen = RectCutMargin(rect, 4);
+	Rect text_screen = RectCutMarginTopLeft(rect, 4);
 
 	int32 scope_nesting_at_cursor = 0;
 	int32 scope_nesting_at_marker = 0;
@@ -261,29 +261,27 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 			if (line > last_line)
 				break;
 
+			while (left_str.size > 0)
 			{
-				while (left_str.size > 0)
+				if (left_str.data[0] == '\t')
 				{
-					if (left_str.data[0] == '\t')
+					++left_str.data;
+					--left_str.size;
+				}
+				else
+					break;
+			}
+			if (!left_str.size)
+			{
+				while (right_str.size > 0)
+				{
+					if (right_str.data[0] == '\t')
 					{
-						++left_str.data;
-						--left_str.size;
+						++right_str.data;
+						--right_str.size;
 					}
 					else
 						break;
-				}
-				if (!left_str.size)
-				{
-					while (right_str.size > 0)
-					{
-						if (right_str.data[0] == '\t')
-						{
-							++right_str.data;
-							--right_str.size;
-						}
-						else
-							break;
-					}
 				}
 			}
 
@@ -472,8 +470,10 @@ EntryPoint(int32 argc, const char* const argv[])
 		for ArenaTempScope(scratch)
 		{
 			uint32 desired_codepoints[] = {
-				0x21, 0x7E,
-				0xA1, 0xFF,
+				0x21, 0x7E, // ASCII
+				0xA1, 0xFF, // Latin-1
+				0xFFFD, 0xFFFD,
+				0x3C0, 0x3C0, // π
 			};
 			static_assert(ArrayLength(desired_codepoints) % 2 == 0);
 			intz codepoint_count = 0;
@@ -554,6 +554,8 @@ EntryPoint(int32 argc, const char* const argv[])
 					}
 				}
 				SafeAssert(glyph);
+				if (codepoint == 0xFFFD)
+					app->invalid_glyph_index = index;
 
 				int32 x, y;
 				if (curr_x_offset + glyph_width <= texture_size)
@@ -625,7 +627,7 @@ EntryPoint(int32 argc, const char* const argv[])
 			.cursor = {},
 			.line = 1,
 		};
-		TextBuffer* textbuf = TextBufferFromString(app, Str("Hello, World!"), &app->right_view.textbuf_index);
+		TextBuffer* textbuf = TextBufferFromString(app, Str("Hello, World!\nπ"), &app->right_view.textbuf_index);
 		textbuf->file_path = Str("*scratch*");
 	}
 
