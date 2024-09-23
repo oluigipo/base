@@ -14,6 +14,18 @@ SimpleBoundarySnakeWordProc_(uint8 ch)
 	return !(pred_table[ch >> 3] & 1 << (ch & 7));
 }
 
+static bool
+SimpleBoundaryPascalWordProc_(uint8 ch)
+{
+	if (ch >= 0x80)
+		return false;
+	static uint8 pred_table[16] = {
+		0,   0,   0,   0,   0,   0, 255,   3,
+        0, 0, 0, 0, 254, 255, 255,   7,
+	};
+	return !(pred_table[ch >> 3] & 1 << (ch & 7));
+}
+
 typedef bool SimpleBoundaryProc_(uint8 ch);
 
 static intz
@@ -384,7 +396,47 @@ TextCursorCmdLeftSnakeWord(TextCursor* cursor, TextBuffer* textbuf, intz amount)
 }
 
 BED_API void
+TextCursorCmdRightPascalWord(TextCursor* cursor, TextBuffer* textbuf, intz amount)
+{
+	Trace();
+	for (intz i = 0; i < amount; ++i)
+	{
+		cursor->offset = FindSimpleBoundaryForward_(textbuf, cursor->offset, SimpleBoundaryPascalWordProc_);
+		if (cursor->offset == TextBufferSize(textbuf))
+			break;
+	}
+}
+
+BED_API void
+TextCursorCmdLeftPascalWord(TextCursor* cursor, TextBuffer* textbuf, intz amount)
+{
+	Trace();
+	for (intz i = 0; i < amount; ++i)
+	{
+		cursor->offset = FindSimpleBoundaryBackward_(textbuf, cursor->offset, SimpleBoundaryPascalWordProc_);
+		if (cursor->offset == 0)
+			break;
+	}
+}
+
+BED_API void
 TextCursorCmdDeleteBackwardSnakeWord(TextCursor* cursor, TextBuffer* textbuf, intz amount)
+{
+	Trace();
+	for (intz i = 0; i < amount; ++i)
+	{
+		if (cursor->offset == 0)
+			break;
+		intz start = FindSimpleBoundaryBackward_(textbuf, cursor->offset, SimpleBoundarySnakeWordProc_);
+		TextBufferDelete(textbuf, start, cursor->offset - start);
+		if (cursor->marker_offset > cursor->offset)
+			cursor->marker_offset -= (cursor->offset - start);
+		cursor->offset -= (cursor->offset - start);
+	}
+}
+
+BED_API void
+TextCursorCmdDeleteBackwardPascalWord(TextCursor* cursor, TextBuffer* textbuf, intz amount)
 {
 	Trace();
 	for (intz i = 0; i < amount; ++i)

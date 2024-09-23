@@ -1784,7 +1784,9 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	
 	LRESULT result = 0;
 	WindowData_* window_data = (WindowData_*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-	OS_Event os_event = { 0 };
+	OS_Event os_event = {
+		.window_handle = { window_data },
+	};
 	
 	if (!window_data)
 		return DefWindowProcW(hwnd, message, wparam, lparam);

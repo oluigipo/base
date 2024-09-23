@@ -20,6 +20,113 @@
 IncludeBinary(g_quads_vs, "shader_quad_vs.dxil");
 IncludeBinary(g_quads_ps, "shader_quad_ps.dxil");
 
+static uint64
+UnsetMsb(uint64 value)
+{
+	uint64 mask = value >> 1;
+	mask |= mask >> 2;
+	mask |= mask >> 4;
+	mask |= mask >> 8;
+	mask |= mask >> 16;
+	mask |= mask >> 32;
+	return value & mask;
+}
+
+static int32
+MsbIndex(uint64 value)
+{
+	return 64 - BitClz64(value);
+}
+
+BED_API int32
+CIndentPushLine(CIndentCtx* cindent, String line)
+{
+	int32 braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
+	int32 parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
+	int32 scope_nesting = Max(braces_nesting, parens_nesting);
+	int32 this_scope_nesting = scope_nesting;
+	int32 parens_nesting_at_start = parens_nesting;
+
+	while (line.size > 0 && line.data[0] == '\t')
+		line = StringSlice(line, 1, -1);
+
+	for (intz i = 0; i < line.size; ++i)
+	{
+		uint8 ch = line.data[i];
+		bool just_closed = false;
+
+		if (ch == '{')
+		{
+			// NOTE(ljre): If we're opening a brace in the same line a paren was open, the "ownership" of
+			//             this indentation level will go to the brace.
+			//             This makes it indent the following code:
+			//                 Test(a, {
+			//                         .f = "abc"
+			//                     }, c)
+			//             as:
+			//                 Test(a, {
+			//                    .f = "abc"
+			//                 }, c);
+			if (braces_nesting + 1 == parens_nesting && parens_nesting > parens_nesting_at_start)
+			{
+				cindent->parens_nesting_bitset = UnsetMsb(cindent->parens_nesting_bitset);
+				--scope_nesting; // it will be incremented this iteration again
+			}
+
+			SafeAssert(scope_nesting <= 63);
+			cindent->braces_nesting_bitset |= 1ULL << scope_nesting;
+			braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
+		}
+		else if (ch == '(')
+		{
+			SafeAssert(scope_nesting <= 63);
+			cindent->parens_nesting_bitset |= 1ULL << scope_nesting;
+			parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
+		}
+		else if (ch == '}')
+		{
+			cindent->braces_nesting_bitset = UnsetMsb(cindent->braces_nesting_bitset);
+			braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
+			just_closed = true;
+		}
+		else if (ch == ')')
+		{
+			cindent->parens_nesting_bitset = UnsetMsb(cindent->parens_nesting_bitset);
+			parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
+			just_closed = true;
+		}
+		else
+			continue;
+
+		scope_nesting = Max(braces_nesting, parens_nesting);
+		if (i == 0 && just_closed)
+			this_scope_nesting = scope_nesting;
+	}
+
+	// for (intz i = 0; i < line.size; ++i)
+	// {
+	// 	uint8 ch = line.data[i];
+	// 	if (ch == '}')
+	// 	{
+	// 		cindent->braces_nesting_bitset = UnsetMsb(cindent->braces_nesting_bitset);
+	// 		braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
+	// 	}
+	// 	else if (ch == ')')
+	// 	{
+	// 		cindent->parens_nesting_bitset = UnsetMsb(cindent->parens_nesting_bitset);
+	// 		parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
+	// 	}
+	// 	else
+	// 		continue;
+
+	// 	scope_nesting = Max(braces_nesting, parens_nesting);
+	// 	if (i == 0)
+	// 		this_scope_nesting = scope_nesting;
+	// }
+
+	return this_scope_nesting;
+}
+
 static void
 ScrollTextViewToCursor_(App* app, TextView* view)
 {
@@ -284,8 +391,10 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 
 	int32 scope_nesting_at_cursor = 0;
 	int32 scope_nesting_at_marker = 0;
+	int32 consumed_nesting_at_cursor = 0;
+	int32 consumed_nesting_at_marker = 0;
 	{
-		int32 scope_nesting = 0;
+		CIndentCtx cindent = {};
 		intz last_cf_index = 0;
 
 		String left_str = {};
@@ -297,33 +406,27 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 		{
 			ArenaSavepoint scratch = ArenaSave(ScratchArena(1, &arena));
 			String str = ArenaPrintf(scratch.arena, "%S%S", left_str, right_str);
-			intz this_scope_nesting = scope_nesting;
-			
-			for (intz char_index = 0; char_index < str.size; ++char_index)
+			intz this_scope_nesting = CIndentPushLine(&cindent, str);
+
+			intz consumed_tabs = 0;
+			while (consumed_tabs < str.size && consumed_tabs < this_scope_nesting)
 			{
-				uint8 ch = str.data[char_index];
-				if (ch == '{')
-					++scope_nesting;
-			}
-			//
-			bool first_non_tab = true;
-			for (intz char_index = 0; char_index < str.size; ++char_index)
-			{
-				uint8 ch = str.data[char_index];
-				if (ch == '}' && scope_nesting > 0)
-				{
-					--scope_nesting;
-					if (first_non_tab)
-						this_scope_nesting = scope_nesting;
-				}
-				if (ch != '\t')
-					first_non_tab = false;
+				if (str.data[consumed_tabs] == '\t')
+					++consumed_tabs;
+				else
+					break;
 			}
 
 			if (view->cursor.offset >= prev_it && view->cursor.offset < it)
+			{
 				scope_nesting_at_cursor = this_scope_nesting;
+				consumed_nesting_at_cursor = consumed_tabs;
+			}
 			if (view->cursor.marker_offset >= prev_it && view->cursor.marker_offset < it)
+			{
 				scope_nesting_at_marker = this_scope_nesting;
+				consumed_nesting_at_marker = consumed_tabs;
+			}
 
 			if (line < first_line)
 			{
@@ -336,18 +439,7 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 				break;
 			}
 
-			intz consumed_tabs = 0;
-			while (str.size > 0)
-			{
-				if (str.data[0] == '\t')
-				{
-					++str.data;
-					--str.size;
-					++consumed_tabs;
-				}
-				else
-					break;
-			}
+			str = StringSlice(str, consumed_tabs, -1);
 
 			Rect pos = layout->text_screen;
 			pos.x1 += this_scope_nesting * app->glyph_advance * app->tab_size;
@@ -408,16 +500,16 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 		}
 	}
 
-	LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, 0);
-	LineCol marker_pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, 0);
+	LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
+	LineCol marker_pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
 	PushQuad_(arena, (float32[4]) {
-		layout->text_screen.x1 + (cursor_pos.col - 1 + scope_nesting_at_cursor * app->tab_size) * app->glyph_advance,
+		layout->text_screen.x1 + (cursor_pos.col - 1 + (scope_nesting_at_cursor - consumed_nesting_at_cursor) * app->tab_size) * app->glyph_advance,
 		layout->text_screen.y1 + (cursor_pos.line - first_line) * app->glyph_line_height,
 		app->glyph_advance,
 		app->glyph_height,
 	}, NULL, 1, 0, 0xCF7F7F7F);
 	PushQuad_(arena, (float32[4]) {
-		layout->text_screen.x1 + (marker_pos.col - 1 + scope_nesting_at_marker * app->tab_size) * app->glyph_advance,
+		layout->text_screen.x1 + (marker_pos.col - 1 + (scope_nesting_at_marker - consumed_nesting_at_marker) * app->tab_size) * app->glyph_advance,
 		layout->text_screen.y1 + (marker_pos.line - first_line) * app->glyph_line_height,
 		app->glyph_advance,
 		app->glyph_height,
@@ -777,6 +869,9 @@ EntryPoint(int32 argc, const char* const argv[])
 		for (intz i = 0; i < event_count; ++i)
 		{
 			OS_Event* event = &events[i];
+			if (event->window_handle.ptr != app->window.ptr)
+				continue;
+
 			if (event->kind == OS_EventKind_WindowClose)
 				app->is_closing = true;
 			else if (event->kind == OS_EventKind_WindowResize)
@@ -790,6 +885,8 @@ EntryPoint(int32 argc, const char* const argv[])
 					{
 						if (event->window_key.ctrl)
 							TextCursorCmdLeftSnakeWord(&selected_view->cursor, textbuf, 1);
+						else if (event->window_key.alt)
+							TextCursorCmdLeftPascalWord(&selected_view->cursor, textbuf, 1);
 						else
 							TextCursorCmdLeft(&selected_view->cursor, textbuf, 1);
 					} break;
@@ -797,6 +894,8 @@ EntryPoint(int32 argc, const char* const argv[])
 					{
 						if (event->window_key.ctrl)
 							TextCursorCmdRightSnakeWord(&selected_view->cursor, textbuf, 1);
+						else if (event->window_key.alt)
+							TextCursorCmdRightPascalWord(&selected_view->cursor, textbuf, 1);
 						else
 							TextCursorCmdRight(&selected_view->cursor, textbuf, 1);
 					} break;
@@ -818,6 +917,8 @@ EntryPoint(int32 argc, const char* const argv[])
 					{
 						if (event->window_key.ctrl)
 							TextCursorCmdDeleteBackwardSnakeWord(&selected_view->cursor, textbuf, 1);
+						else if (event->window_key.alt)
+							TextCursorCmdDeleteBackwardPascalWord(&selected_view->cursor, textbuf, 1);
 						else
 							TextCursorCmdDeleteBackward(&selected_view->cursor, textbuf, 1);
 					} break;
@@ -829,7 +930,8 @@ EntryPoint(int32 argc, const char* const argv[])
 					} break;
 					case OS_KeyboardKey_Tab:
 					{
-						TextCursorCmdInsert(app, &selected_view->cursor, textbuf, 1, '\t');
+						if (event->window_key.shift)
+							TextCursorCmdInsert(app, &selected_view->cursor, textbuf, 1, '\t');
 					} break;
 					case 'D':
 					{
@@ -866,8 +968,7 @@ EntryPoint(int32 argc, const char* const argv[])
 			else if (event->kind == OS_EventKind_WindowTyping)
 			{
 				uint32 codepoint = event->window_typing.codepoint;
-				if (!(event->window_typing.ctrl && codepoint == ' ') &&
-					!(textbuf->kind == TextBufferKind_C && codepoint == '\t'))
+				if (!(event->window_typing.ctrl && codepoint == ' '))
 				{
 					TextCursorCmdInsert(app, &selected_view->cursor, textbuf, 1, codepoint);
 					ScrollTextViewToCursor_(app, selected_view);

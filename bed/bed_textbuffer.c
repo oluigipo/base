@@ -311,7 +311,9 @@ TextBufferInsert(App* app, TextBuffer* textbuf, intz offset, intz size)
 		intz new_size = textbuf->size + (textbuf->size >> 1) + 1;
 		intz gap_size = textbuf->gap_end - textbuf->gap_start;
 		intz new_gap_size = new_size - (textbuf->size - gap_size);
-		uint8* new_buffer = OS_HeapAlloc(new_size);
+		AllocatorError err;
+		uint8* new_buffer = AllocatorAlloc(&app->heap, new_size, 1, &err);
+		SafeAssert(!err);
 		if (offset < textbuf->gap_start)
 		{
 			intz size_to_gap = textbuf->gap_start - offset;
@@ -331,7 +333,6 @@ TextBufferInsert(App* app, TextBuffer* textbuf, intz offset, intz size)
 			MemoryCopy(new_buffer, textbuf->utf8_text, offset);
 			MemoryCopy(new_buffer+offset+new_gap_size, textbuf->utf8_text+textbuf->gap_end, textbuf->size - textbuf->gap_end);
 		}
-		AllocatorError err;
 		AllocatorFree(&app->heap, textbuf->utf8_text, textbuf->size, &err);
 		SafeAssert(!err);
 		textbuf->utf8_text = new_buffer;

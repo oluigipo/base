@@ -280,5 +280,20 @@ BED_API void TextCursorCmdUpParagraph            (TextCursor* cursor, TextBuffer
 BED_API void TextCursorCmdDownParagraph          (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdSet                    (TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int32 tab_size);
 BED_API void TextCursorCmdSetMarker              (TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int32 tab_size);
+BED_API void TextCursorCmdRightPascalWord        (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdLeftPascalWord         (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdDeleteBackwardPascalWord(TextCursor* cursor, TextBuffer* textbuf, intz amount);
+
+// ===========================================================================
+// ===========================================================================
+// Automatic C/C++ Indentation API
+struct CIndentCtx
+{
+	uint64 braces_nesting_bitset;
+	uint64 parens_nesting_bitset;
+}
+typedef CIndentCtx;
+
+BED_API int32      CIndentPushLine          (CIndentCtx* cindent, String line);
 
 #endif
