@@ -510,3 +510,17 @@ TextCursorCmdDownParagraph(TextCursor* cursor, TextBuffer* textbuf, intz amount)
 		}
 	}
 }
+
+BED_API void
+TextCursorCmdSet(App* app, TextCursor* cursor, TextBuffer* textbuf, LineCol pos)
+{
+	Trace();
+	cursor->offset = TextBufferOffsetFromLineCol(textbuf, pos, app->tab_size);
+}
+
+BED_API void
+TextCursorCmdSetMarker(App* app, TextCursor* cursor, TextBuffer* textbuf, LineCol pos)
+{
+	Trace();
+	cursor->marker_offset = TextBufferOffsetFromLineCol(textbuf, pos, app->tab_size);
+}

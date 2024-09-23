@@ -87,6 +87,7 @@ struct App
 	Allocator heap;
 
 	bool is_closing;
+	bool is_mouse_dragging;
 	int32 window_width, window_height;
 
 	// r3 resources
@@ -231,6 +232,7 @@ BED_API uint8*  TextBufferInsert           (TextBuffer* textbuf, intz offset, in
 BED_API void    TextBufferDelete           (TextBuffer* textbuf, intz offset, intz size);
 BED_API String  TextBufferStringFromRange  (TextBuffer* textbuf, intz offset, intz size);
 BED_API bool    TextBufferLineIterator     (TextBuffer* textbuf, intz* it, String* left_str, String* right_str);
+BED_API intz    TextBufferOffsetFromLineCol(TextBuffer* textbuf, LineCol pos, int32 tab_size);
 
 // ===========================================================================
 // ===========================================================================
@@ -252,5 +254,7 @@ BED_API void TextCursorCmdCopy                   (App* app, TextCursor* cursor, 
 BED_API void TextCursorCmdPaste                  (App* app, TextCursor* cursor, TextBuffer* textbuf);
 BED_API void TextCursorCmdUpParagraph            (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdDownParagraph          (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdSet                    (App* app, TextCursor* cursor, TextBuffer* textbuf, LineCol pos);
+BED_API void TextCursorCmdSetMarker              (App* app, TextCursor* cursor, TextBuffer* textbuf, LineCol pos);
 
 #endif

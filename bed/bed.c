@@ -34,6 +34,29 @@ ScrollTextViewToCursor_(App* app, TextView* view)
 		view->line = cursor_pos.line - line_count;
 }
 
+static void
+SetCursorPosFromMouse_(App* app, TextView* view, TextBuffer* textbuf, int32 mouse_x, int32 mouse_y)
+{
+	Trace();
+	int32 line_count = TextBufferLineCount(textbuf);
+	int32 line_log10count = 0;
+	{
+		int32 it = line_count;
+		while (it > 0)
+		{
+			it /= 10;
+			++line_log10count;
+		}
+	}
+	int32 left_padding = 8 + line_log10count * app->glyph_advance;
+	if (app->is_right_view_selected)
+		left_padding += app->window_width / 2;
+	int32 top_padding = app->glyph_height + 12;
+	int32 col = (mouse_x - left_padding) / app->glyph_advance + 1;
+	int32 line = (mouse_y - top_padding) / app->glyph_height + 1;
+	TextCursorCmdSet(app, &view->cursor, textbuf, (LineCol) { line, col });
+}
+
 struct QuadVertex_
 {
 	float32 pos[2];
@@ -731,6 +754,7 @@ EntryPoint(int32 argc, const char* const argv[])
 		TextView* selected_view = (app->is_right_view_selected) ? &app->right_view : &app->left_view;
 		TextBuffer* textbuf = TextBufferFromIndex(app, selected_view->textbuf_index);
 		
+		bool set_cursor_pos_from_mouse_already = false;
 		bool should_resize_buffers = false;
 		for (intz i = 0; i < event_count; ++i)
 		{
@@ -860,8 +884,24 @@ EntryPoint(int32 argc, const char* const argv[])
 
 					selected_view = (app->is_right_view_selected) ? &app->right_view : &app->left_view;
 					textbuf = TextBufferFromIndex(app, selected_view->textbuf_index);
+						
+					SetCursorPosFromMouse_(app, selected_view, textbuf, event->window_mouse_click.mouse_x, event->window_mouse_click.mouse_y);
+					TextCursorCmdPlaceMarker(&selected_view->cursor);
+					app->is_mouse_dragging = true;
+					set_cursor_pos_from_mouse_already = true;
 				}
 			}
+			else if (event->kind == OS_EventKind_WindowMouseRelease)
+			{
+				if (event->window_mouse_click.button == OS_MouseButton_Left)
+					app->is_mouse_dragging = false;
+			}
+		}
+
+		if (app->is_mouse_dragging && !set_cursor_pos_from_mouse_already)
+		{
+			OS_MouseState mouse = OS_GetWindowMouseState(app->window);
+			SetCursorPosFromMouse_(app, selected_view, textbuf, mouse.pos[0], mouse.pos[1]);
 		}
 
 		if (should_resize_buffers)

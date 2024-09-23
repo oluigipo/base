@@ -1967,13 +1967,10 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 				btn->is_down = down;
 				OS_UnlockExclusive(&window_data->mouse_state_lock);
 
-				if (down)
-				{
-					os_event.kind = OS_EventKind_WindowMouseClick;
-					os_event.window_mouse_click.button = index;
-					os_event.window_mouse_click.mouse_x = GET_X_LPARAM(lparam);
-					os_event.window_mouse_click.mouse_y = GET_Y_LPARAM(lparam);
-				}
+				os_event.kind = (down) ? OS_EventKind_WindowMouseClick : OS_EventKind_WindowMouseRelease;
+				os_event.window_mouse_click.button = index;
+				os_event.window_mouse_click.mouse_x = GET_X_LPARAM(lparam);
+				os_event.window_mouse_click.mouse_y = GET_Y_LPARAM(lparam);
 			}
 		} break;
 

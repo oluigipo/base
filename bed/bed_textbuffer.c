@@ -95,7 +95,7 @@ TextBufferFromString(App* app, String str, TextBufferKind kind, intz* out_index)
 	}
 
 	AllocatorError alloc_err = 0;
-	intz total_size = AlignUp(str.size, 31) + 4096;
+	intz total_size = AlignUp(str.size, 31);
 	uint8* utf8_text = AllocatorAlloc(&app->heap, total_size, 1, &alloc_err);
 	if (alloc_err)
 	{
@@ -405,4 +405,32 @@ TextBufferLineIterator(TextBuffer* textbuf, intz* it_, String* left_str, String*
 
 	*it_ = it;
 	return true;
+}
+
+BED_API intz
+TextBufferOffsetFromLineCol(TextBuffer* textbuf, LineCol pos, int32 tab_size)
+{
+	Trace();
+	intz it = 0;
+
+	int32 line = 1;
+	for (; line < pos.line && it < TextBufferSize(textbuf); ++it)
+	{
+		uint8 sample = TextBufferSample(textbuf, it);
+		if (sample == '\n')
+			++line;
+	}
+	if (line == pos.line)
+	{
+		int32 col = 1;
+		for (; col < pos.col && it < TextBufferSize(textbuf); ++it)
+		{
+			uint8 sample = TextBufferSample(textbuf, it);
+			if (sample == '\n')
+				break;
+			++col;
+		}
+	}
+
+	return it;
 }

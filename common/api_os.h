@@ -371,6 +371,7 @@ enum OS_EventKind
 	OS_EventKind_WindowLostFocus,
 	OS_EventKind_WindowMouseWheel,
 	OS_EventKind_WindowMouseClick,
+	OS_EventKind_WindowMouseRelease,
 }
 typedef OS_EventKind;
 
