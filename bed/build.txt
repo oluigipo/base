@@ -7,5 +7,6 @@ subsystem windows
 c bed/bed.c
 c os/os_win32.c
 c render3/render3_d3d11.c
+c cfront/cfront_lexing.c
 
 output bed

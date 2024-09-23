@@ -4,6 +4,7 @@
 #include "common_basic.h"
 #include "api_os.h"
 #include "api_render3.h"
+#include "cfront/api.h"
 
 #ifndef BED_API
 #	define BED_API
@@ -12,7 +13,8 @@
 enum TextBufferKind
 {
 	TextBufferKind_Null = 0,
-	TextBufferKind_OwnedGapBuffer,
+	TextBufferKind_NormalText,
+	TextBufferKind_C,
 }
 typedef TextBufferKind;
 
@@ -26,7 +28,10 @@ struct TextBuffer
 	intz gap_start;
 	intz gap_end;
 
-	String file_path;
+	intz cf_count;
+	intz cf_cap;
+	CF_TokenKind* cf_kinds;
+	CF_SourceRange* cf_ranges;
 }
 typedef TextBuffer;
 
@@ -52,11 +57,25 @@ struct GlyphEntry_
 }
 typedef GlyphEntry_;
 
+enum TextViewKind
+{
+	TextViewKind_Null = 0,
+	TextViewKind_File,
+	TextViewKind_Scratch,
+}
+typedef TextViewKind;
+
 struct TextView
 {
+	TextViewKind kind;
 	TextCursor cursor;
 	intz textbuf_index;
+	String file_path;
+
 	int32 line;
+	int32 visible_line_count;
+	float32 visible_line_count_rem;
+	bool textbuf_is_dirty;
 }
 typedef TextView;
 
@@ -197,8 +216,9 @@ IsStartOfCodepoint(uint8 ch)
 // ===========================================================================
 // TextBuffer API
 BED_API TextBuffer* TextBufferFromIndex    (App* app, intz index);
-BED_API TextBuffer* TextBufferFromFile     (App* app, String path, intz* out_index);
-BED_API TextBuffer* TextBufferFromString   (App* app, String str, intz* out_index);
+BED_API TextBuffer* TextBufferFromFile     (App* app, String path, TextBufferKind kind, intz* out_index);
+BED_API TextBuffer* TextBufferFromString   (App* app, String str, TextBufferKind kind, intz* out_index);
+BED_API void        TextBufferRefreshTokens(App* app, TextBuffer* textbuf);
 
 BED_API void    TextBufferGetStrings       (TextBuffer* textbuf, String* out_left, String* out_right);
 BED_API uint8   TextBufferSample           (TextBuffer* textbuf, intz offset);

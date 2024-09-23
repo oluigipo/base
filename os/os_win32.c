@@ -4788,7 +4788,7 @@ HeapAllocatorProc_(void* instance, AllocatorMode mode, intsize size, intsize ali
 		{
 			if (!old_ptr)
 				break; // free(NULL) has to be noop?
-			free(old_ptr);
+			_aligned_free(old_ptr);
 		} break;
 		case AllocatorMode_Resize:
 		{

@@ -40,7 +40,7 @@ TextBufferFromIndex(App* app, intz index)
 }
 
 BED_API TextBuffer*
-TextBufferFromFile(App* app, String path, intz* out_index)
+TextBufferFromFile(App* app, String path, TextBufferKind kind, intz* out_index)
 {
 	Trace();
 	ArenaSavepoint scratch = ArenaSave(app->arena);
@@ -73,30 +73,18 @@ TextBufferFromFile(App* app, String path, intz* out_index)
 	}
 	MemoryCopy(utf8_text, buffer, size);
 
-	uint8* new_path_ptr = AllocatorAlloc(&app->heap, path.size, 1, &alloc_err);
-	if (alloc_err)
-	{
-		Log(LOG_ERROR, "could not copy path name for text buffer when opening path: %S", path);
-		AllocatorFree(&app->heap, utf8_text, total_size, NULL);
-		ArenaRestore(scratch);
-		return NULL;
-	}
-	MemoryCopy(new_path_ptr, path.data, path.size);
-	String new_path = StrMake(path.size, new_path_ptr);
-
 	*textbuf = (TextBuffer) {
-		.kind = TextBufferKind_OwnedGapBuffer,
+		.kind = kind,
 		.utf8_text =utf8_text,
 		.size = total_size,
 		.gap_start = size,
 		.gap_end = total_size,
-		.file_path = new_path,
 	};
 	return textbuf;
 }
 
 BED_API TextBuffer*
-TextBufferFromString(App* app, String str, intz* out_index)
+TextBufferFromString(App* app, String str, TextBufferKind kind, intz* out_index)
 {
 	Trace();
 	TextBuffer* textbuf = MakeTextBuffer_(app, out_index);
@@ -117,13 +105,59 @@ TextBufferFromString(App* app, String str, intz* out_index)
 	MemoryCopy(utf8_text, str.data, str.size);
 
 	*textbuf = (TextBuffer) {
-		.kind = TextBufferKind_OwnedGapBuffer,
+		.kind = kind,
 		.utf8_text =utf8_text,
 		.size = total_size,
 		.gap_start = str.size,
 		.gap_end = total_size,
 	};
 	return textbuf;
+}
+
+BED_API void
+TextBufferRefreshTokens(App* app, TextBuffer* textbuf)
+{
+	Trace();
+	AllocatorError err;
+	if (textbuf->cf_cap)
+	{
+		AllocatorFreeArray(&app->heap, sizeof(CF_TokenKind), textbuf->cf_kinds, textbuf->cf_cap, &err);
+		SafeAssert(!err);
+		AllocatorFreeArray(&app->heap, sizeof(CF_SourceRange), textbuf->cf_ranges, textbuf->cf_cap, &err);
+		SafeAssert(!err);
+	}
+
+	ArenaSavepoint scratch = ArenaSave(app->arena);
+	String source = {};
+	{
+		String left, right;
+		TextBufferGetStrings(textbuf, &left, &right);
+		uint8* mem = ArenaPushDirtyAligned(app->arena, left.size+right.size, 1);
+		MemoryCopy(mem, left.data, left.size);
+		MemoryCopy(mem+left.size, right.data, right.size);
+		source = StrMake(left.size+right.size, mem);
+	}
+
+	CF_TokensFromStringResult lex = {};
+	err = CF_TokensFromString(&lex, &(CF_TokensFromStringArgs) {
+		.str = source,
+		.standard = CF_Standard_C23,
+		.lexing_flags = 
+			CF_LexingFlag_AllowMsvc |
+			CF_LexingFlag_AllowGnu |
+			CF_LexingFlag_AllowContextSensetiveKeywords |
+			CF_LexingFlag_AllowCxx |
+			CF_LexingFlag_IncludeComments,
+		.kind_allocator = app->heap,
+		.source_range_allocator = app->heap,
+	});
+	SafeAssert(!err);
+	ArenaRestore(scratch);
+
+	textbuf->cf_cap = lex.allocated_token_count;
+	textbuf->cf_count = lex.token_count;
+	textbuf->cf_kinds = lex.token_kinds;
+	textbuf->cf_ranges = lex.source_ranges;
 }
 
 BED_API void
