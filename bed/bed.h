@@ -150,6 +150,16 @@ struct App
 	intz textbuf_pool_cap;
 	intz textbuf_pool_count;
 	intz textbuf_pool_first_free;
+
+	// colors
+	uint32 c_background;
+	uint32 c_foreground;
+	uint32 c_operators;
+	uint32 c_preproc;
+	uint32 c_comment;
+	uint32 c_number;
+	uint32 c_string;
+	uint32 c_keyword;
 }
 typedef App;
 

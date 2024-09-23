@@ -371,27 +371,27 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 					is_first_iter = false;
 
 					if (is_preproc_line)
-						color = 0xFFAD519B;
+						color = app->c_preproc;
 					else if (tok_kind > CF_TokenKind__OneBeforeFirstKw && tok_kind < CF_TokenKind__OnePastLastKw)
-						color = 0xFFF34CFF;
+						color = app->c_keyword;
 					else if (tok_kind == CF_TokenKind_Comment || tok_kind == CF_TokenKind_MultilineComment)
-						color = 0xFF7D7D7D;
+						color = app->c_comment;
 					else if (tok_kind == CF_TokenKind_LitNumber)
-						color = 0xFF65B1FF;
+						color = app->c_number;
 					else if (
 						tok_kind == CF_TokenKind_LitString || tok_kind == CF_TokenKind_LitUtf8String ||
 						tok_kind == CF_TokenKind_LitWideString || tok_kind == CF_TokenKind_LitChar ||
 						tok_kind == CF_TokenKind_LitUtf8Char || tok_kind == CF_TokenKind_LitWideChar)
-						color = 0xFF76E2E2;
+						color = app->c_string;
 					else if (
 						tok_kind == CF_TokenKind_SymLeftParen || tok_kind == CF_TokenKind_SymRightParen ||
 						tok_kind == CF_TokenKind_SymLeftBrkt || tok_kind == CF_TokenKind_SymRightBrkt ||
 						tok_kind == CF_TokenKind_SymLeftCurl || tok_kind == CF_TokenKind_SymRightCurl ||
 						tok_kind == CF_TokenKind_SymComma || tok_kind == CF_TokenKind_SymSemicolon ||
 						tok_kind == CF_TokenKind_SymColon)
-						color = 0;
+						color = 0xFFFFFFFF;
 					else if (tok_kind > CF_TokenKind__OneBeforeFirstSym && tok_kind < CF_TokenKind__OnePastLastSym)
-						color = 0xFF7575DC;
+						color = app->c_operators;
 
 					if (color != 0)
 						ArenaPushStructInit(scratch.arena, ColorRange_, {
@@ -402,7 +402,7 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 				}
 			}
 			intz color_ranges_count = (ColorRange_*)ArenaEnd(scratch.arena) - color_ranges;
-			PushText2_(app, arena, pos, str, 0xFFFFFFFF, 0, 1, color_ranges_count, color_ranges);
+			PushText2_(app, arena, pos, str, app->c_foreground, 0, 1, color_ranges_count, color_ranges);
 
 			ArenaRestore(scratch);
 		}
@@ -453,6 +453,14 @@ EntryPoint(int32 argc, const char* const argv[])
 		.arena = global_arena,
 		.tab_size = 4,
 		.heap = OS_HeapAllocator(),
+		.c_background = 0xFF0F0F0F,
+		.c_foreground = 0xFFCCCCCC,
+		.c_operators = 0xFF7575DC,
+		.c_preproc = 0xFFAD519B,
+		.c_comment = 0xFF7D7D7D,
+		.c_number = 0xFF65B1FF,
+		.c_string = 0xFF76E2E2,
+		.c_keyword = 0xFFF34CFF,
 	});
 
 	app->window = OS_CreateWindow(&(OS_WindowDesc) {
@@ -858,7 +866,8 @@ EntryPoint(int32 argc, const char* const argv[])
 			else if (event->kind == OS_EventKind_WindowTyping)
 			{
 				uint32 codepoint = event->window_typing.codepoint;
-				if (!event->window_typing.ctrl || codepoint != ' ')
+				if (!(event->window_typing.ctrl && codepoint == ' ') &&
+					!(textbuf->kind == TextBufferKind_C && codepoint == '\t'))
 				{
 					TextCursorCmdInsert(app, &selected_view->cursor, textbuf, 1, codepoint);
 					ScrollTextViewToCursor_(app, selected_view);
@@ -945,8 +954,12 @@ EntryPoint(int32 argc, const char* const argv[])
 		R3_SetViewports(app->r3, 1, &(R3_Viewport) { 0, 0, width, height, 0, 1 });
 		R3_Clear(app->r3, &(R3_ClearDesc) {
 			.flag_color = true,
-			.color = { 15.0f/255, 15.0f/255, 15.0f/255, 1.0f },
-			// .color = { 0, 0, 0, 1 },
+			.color = {
+				(app->c_background       & 0xFF) / 255.0f,
+				(app->c_background >> 8  & 0xFF) / 255.0f,
+				(app->c_background >> 16 & 0xFF) / 255.0f,
+				(app->c_background >> 24       ) / 255.0f,
+			},
 		});
 
 		R3_SetPrimitiveType(app->r3, R3_PrimitiveType_TriangleList);
