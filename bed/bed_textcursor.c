@@ -101,13 +101,13 @@ FindSimpleBoundaryBackward_(TextBuffer* textbuf, intz start_offset, SimpleBounda
 }
 
 BED_API void
-TextCursorCmdInsert(TextCursor* cursor, TextBuffer* textbuf, intz amount, uint32 codepoint)
+TextCursorCmdInsert(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount, uint32 codepoint)
 {
 	Trace();
 	intz encoded_size = StringEncodedCodepointSize(codepoint);
 	intz size = amount * encoded_size;
 
-	uint8* insert_buffer = TextBufferInsert(textbuf, cursor->offset, size);
+	uint8* insert_buffer = TextBufferInsert(app, textbuf, cursor->offset, size);
 	if (cursor->offset < cursor->marker_offset)
 		cursor->marker_offset += size;
 	cursor->offset += size;
@@ -430,7 +430,7 @@ TextCursorCmdPaste(App* app, TextCursor* cursor, TextBuffer* textbuf)
 	ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
 	OS_ClipboardContents clip = OS_GetClipboard(AllocatorFromArena(scratch.arena), OS_ClipboardContentType_Text, app->window, NULL);
 
-	uint8* mem = TextBufferInsert(textbuf, cursor->offset, clip.contents.size);
+	uint8* mem = TextBufferInsert(app, textbuf, cursor->offset, clip.contents.size);
 	if (cursor->marker_offset > cursor->offset)
 		cursor->marker_offset += clip.contents.size;
 	cursor->offset += clip.contents.size;
@@ -512,15 +512,15 @@ TextCursorCmdDownParagraph(TextCursor* cursor, TextBuffer* textbuf, intz amount)
 }
 
 BED_API void
-TextCursorCmdSet(App* app, TextCursor* cursor, TextBuffer* textbuf, LineCol pos)
+TextCursorCmdSet(TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int32 tab_size)
 {
 	Trace();
-	cursor->offset = TextBufferOffsetFromLineCol(textbuf, pos, app->tab_size);
+	cursor->offset = TextBufferOffsetFromLineCol(textbuf, pos, tab_size);
 }
 
 BED_API void
-TextCursorCmdSetMarker(App* app, TextCursor* cursor, TextBuffer* textbuf, LineCol pos)
+TextCursorCmdSetMarker(TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int32 tab_size)
 {
 	Trace();
-	cursor->marker_offset = TextBufferOffsetFromLineCol(textbuf, pos, app->tab_size);
+	cursor->marker_offset = TextBufferOffsetFromLineCol(textbuf, pos, tab_size);
 }

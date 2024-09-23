@@ -10,6 +10,13 @@
 #	define BED_API
 #endif
 
+struct Rect
+{
+	int32 x1, y1;
+	int32 x2, y2;
+}
+typedef Rect;
+
 enum TextBufferKind
 {
 	TextBufferKind_Null = 0,
@@ -27,6 +34,9 @@ struct TextBuffer
 	intz size;
 	intz gap_start;
 	intz gap_end;
+
+	intz change_start;
+	intz change_end;
 
 	intz cf_count;
 	intz cf_cap;
@@ -65,17 +75,26 @@ enum TextViewKind
 }
 typedef TextViewKind;
 
+struct TextViewLayout
+{
+	Rect all;
+	Rect status_bar;
+	Rect status_bar_text;
+	Rect line_bar;
+	Rect line_bar_text;
+	Rect text_screen;
+}
+typedef TextViewLayout;
+
 struct TextView
 {
 	TextViewKind kind;
 	TextCursor cursor;
 	intz textbuf_index;
 	String file_path;
+	TextViewLayout layout;
 
 	int32 line;
-	int32 visible_line_count;
-	float32 visible_line_count_rem;
-	bool textbuf_is_dirty;
 }
 typedef TextView;
 
@@ -112,6 +131,7 @@ struct App
 	int32 glyph_height;
 	int32 glyph_texture_size;
 	int32 glyph_advance;
+	int32 glyph_line_height;
 	int32 tab_size;
 
 	// glyph entries
@@ -136,12 +156,6 @@ typedef App;
 // ===========================================================================
 // ===========================================================================
 // Rect cut API
-struct Rect
-{
-	int32 x1, y1;
-	int32 x2, y2;
-}
-typedef Rect;
 
 static inline Rect
 RectCutLeft(Rect* restrict from, int32 amount)
@@ -228,7 +242,7 @@ BED_API int32   TextBufferLineCount        (TextBuffer* textbuf);
 BED_API LineCol TextBufferLineColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size);
 BED_API int32   TextBufferColFromOffset    (TextBuffer* textbuf, intz offset, int32 tab_size);
 BED_API void    TextBufferMoveGapToOffset  (TextBuffer* textbuf, intz offset);
-BED_API uint8*  TextBufferInsert           (TextBuffer* textbuf, intz offset, intz size);
+BED_API uint8*  TextBufferInsert           (App* app, TextBuffer* textbuf, intz offset, intz size);
 BED_API void    TextBufferDelete           (TextBuffer* textbuf, intz offset, intz size);
 BED_API String  TextBufferStringFromRange  (TextBuffer* textbuf, intz offset, intz size);
 BED_API bool    TextBufferLineIterator     (TextBuffer* textbuf, intz* it, String* left_str, String* right_str);
@@ -237,7 +251,7 @@ BED_API intz    TextBufferOffsetFromLineCol(TextBuffer* textbuf, LineCol pos, in
 // ===========================================================================
 // ===========================================================================
 // TextCursor API
-BED_API void TextCursorCmdInsert                 (TextCursor* cursor, TextBuffer* textbuf, intz amount, uint32 codepoint);
+BED_API void TextCursorCmdInsert                 (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount, uint32 codepoint);
 BED_API void TextCursorCmdDeleteBackward         (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdLeft                   (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdRight                  (TextCursor* cursor, TextBuffer* textbuf, intz amount);
@@ -254,7 +268,7 @@ BED_API void TextCursorCmdCopy                   (App* app, TextCursor* cursor, 
 BED_API void TextCursorCmdPaste                  (App* app, TextCursor* cursor, TextBuffer* textbuf);
 BED_API void TextCursorCmdUpParagraph            (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdDownParagraph          (TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdSet                    (App* app, TextCursor* cursor, TextBuffer* textbuf, LineCol pos);
-BED_API void TextCursorCmdSetMarker              (App* app, TextCursor* cursor, TextBuffer* textbuf, LineCol pos);
+BED_API void TextCursorCmdSet                    (TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int32 tab_size);
+BED_API void TextCursorCmdSetMarker              (TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int32 tab_size);
 
 #endif

@@ -26,7 +26,10 @@ ScrollTextViewToCursor_(App* app, TextView* view)
 	Trace();
 	TextBuffer* textbuf = TextBufferFromIndex(app, view->textbuf_index);
 	LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
-	int32 line_count = view->visible_line_count - 1 - (view->visible_line_count_rem < 0.75f);
+	int32 visible_height = view->layout.text_screen.y2 - view->layout.text_screen.y1;
+	int32 visible_line_count = (visible_height + app->glyph_line_height-1) / app->glyph_line_height;
+	float32 visible_line_count_rem = (visible_height % app->glyph_line_height) / (float32)app->glyph_line_height;
+	int32 line_count = visible_line_count - (visible_line_count_rem < 0.75f);
 
 	if (view->line > cursor_pos.line)
 		view->line = cursor_pos.line;
@@ -38,23 +41,11 @@ static void
 SetCursorPosFromMouse_(App* app, TextView* view, TextBuffer* textbuf, int32 mouse_x, int32 mouse_y)
 {
 	Trace();
-	int32 line_count = TextBufferLineCount(textbuf);
-	int32 line_log10count = 0;
-	{
-		int32 it = line_count;
-		while (it > 0)
-		{
-			it /= 10;
-			++line_log10count;
-		}
-	}
-	int32 left_padding = 8 + line_log10count * app->glyph_advance;
-	if (app->is_right_view_selected)
-		left_padding += app->window_width / 2;
-	int32 top_padding = app->glyph_height + 12;
+	int32 left_padding = view->layout.text_screen.x1;
+	int32 top_padding = view->layout.text_screen.y1;
 	int32 col = (mouse_x - left_padding) / app->glyph_advance + 1;
-	int32 line = (mouse_y - top_padding) / app->glyph_height + 1;
-	TextCursorCmdSet(app, &view->cursor, textbuf, (LineCol) { line, col });
+	int32 line = (mouse_y - top_padding) / app->glyph_line_height + view->line;
+	TextCursorCmdSet(&view->cursor, textbuf, (LineCol) { line, col }, 4);
 }
 
 struct QuadVertex_
@@ -151,7 +142,7 @@ PushText_(App* app, Arena* arena, TextPositioning_ pos, String str, uint32 color
 		else if (codepoint == '\n')
 		{
 			x = pos.line_start_x;
-			y += app->glyph_height;
+			y += app->glyph_line_height;
 		}
 
 		uint64 hash = HashInt64(codepoint);
@@ -182,7 +173,7 @@ PushText_(App* app, Arena* arena, TextPositioning_ pos, String str, uint32 color
 			continue;
 
 		int32 w = ClampMax(app->glyph_width, pos.max_x - xx);
-		int32 h = ClampMax(app->glyph_height, pos.max_y - yy);
+		int32 h = ClampMax(app->glyph_line_height, pos.max_y - yy);
 
 		int16 texcoords[4] = {
 			glyph->atlas_x * INT16_MAX / app->glyph_texture_size,
@@ -242,15 +233,14 @@ PushRect_(Arena* arena, Rect rect, int16 texcoords[4], int16 texindex, int16 tex
 }
 
 static void
-PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex, uint32 color, uint32 status_bar_color)
+UpdateTextViewLayout_(App* app, TextView* view, Rect rect, int32 line_count)
 {
-	TextBuffer* textbuf = TextBufferFromIndex(app, view->textbuf_index);
-	if (view->textbuf_is_dirty)
+	if (line_count == 0)
 	{
-		TextBufferRefreshTokens(app, textbuf);
-		view->textbuf_is_dirty = false;
+		TextBuffer* textbuf = TextBufferFromIndex(app, view->textbuf_index);
+		line_count = TextBufferLineCount(textbuf);
 	}
-	int32 line_count = TextBufferLineCount(textbuf);
+
 	int32 line_log10count = 0;
 	{
 		int32 it = line_count;
@@ -261,17 +251,36 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 		}
 	}
 
-	Rect status_bar = RectCutTop(&rect, app->glyph_height + 8);
+	Rect status_bar = RectCutTop(&rect, app->glyph_line_height + 8);
 	Rect status_bar_text = RectCutMargin(status_bar, 4);
 	Rect line_bar = RectCutLeft(&rect, line_log10count * app->glyph_advance + 4);
 	Rect line_bar_text = RectCutMargin(line_bar, 2);
 	RectCutTop(&line_bar_text, 2);
 	Rect text_screen = RectCutMarginTopLeft(rect, 4);
 
+	view->layout = (TextViewLayout) {
+		.all = rect,
+		.status_bar = status_bar,
+		.status_bar_text = status_bar_text,
+		.line_bar = line_bar,
+		.line_bar_text = line_bar_text,
+		.text_screen = text_screen,
+	};
+}
+
+static void
+PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex, uint32 color, uint32 status_bar_color)
+{
+	TextBuffer* textbuf = TextBufferFromIndex(app, view->textbuf_index);
+	TextBufferRefreshTokens(app, textbuf);
+	int32 line_count = TextBufferLineCount(textbuf);
+	
+	UpdateTextViewLayout_(app, view, rect, line_count);
+	TextViewLayout const* layout = &view->layout;
+
 	int32 first_line = view->line;
-	view->visible_line_count = (text_screen.y2 - text_screen.y1 + app->glyph_height-1) / app->glyph_height;
-	view->visible_line_count_rem = ((text_screen.y2 - text_screen.y1 + app->glyph_height-1) % app->glyph_height) / (float32)app->glyph_height;
-	int32 last_line = ClampMax(first_line + view->visible_line_count, line_count);
+	int32 visible_line_count = (layout->text_screen.y2 - layout->text_screen.y1 + app->glyph_line_height-1) / app->glyph_line_height;
+	int32 last_line = ClampMax(first_line + visible_line_count, line_count);
 
 	int32 scope_nesting_at_cursor = 0;
 	int32 scope_nesting_at_marker = 0;
@@ -313,7 +322,7 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 
 			if (view->cursor.offset >= prev_it && view->cursor.offset < it)
 				scope_nesting_at_cursor = this_scope_nesting;
-			else if (view->cursor.marker_offset >= prev_it && view->cursor.marker_offset < it)
+			if (view->cursor.marker_offset >= prev_it && view->cursor.marker_offset < it)
 				scope_nesting_at_marker = this_scope_nesting;
 
 			if (line < first_line)
@@ -340,9 +349,9 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 					break;
 			}
 
-			Rect pos = text_screen;
+			Rect pos = layout->text_screen;
 			pos.x1 += this_scope_nesting * app->glyph_advance * app->tab_size;
-			pos.y1 += (line-first_line) * app->glyph_height;
+			pos.y1 += (line-first_line) * app->glyph_line_height;
 			ColorRange_* color_ranges = ArenaEndAligned(scratch.arena, alignof(ColorRange_));
 			{
 				bool is_preproc_line = false;
@@ -371,7 +380,8 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 						color = 0xFF65B1FF;
 					else if (
 						tok_kind == CF_TokenKind_LitString || tok_kind == CF_TokenKind_LitUtf8String ||
-						tok_kind == CF_TokenKind_LitWideString)
+						tok_kind == CF_TokenKind_LitWideString || tok_kind == CF_TokenKind_LitChar ||
+						tok_kind == CF_TokenKind_LitUtf8Char || tok_kind == CF_TokenKind_LitWideChar)
 						color = 0xFF76E2E2;
 					else if (
 						tok_kind == CF_TokenKind_SymLeftParen || tok_kind == CF_TokenKind_SymRightParen ||
@@ -401,28 +411,29 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 	LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, 0);
 	LineCol marker_pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, 0);
 	PushQuad_(arena, (float32[4]) {
-		text_screen.x1 + (cursor_pos.col - 1 + scope_nesting_at_cursor * app->tab_size) * app->glyph_advance,
-		text_screen.y1 + (cursor_pos.line - first_line) * app->glyph_height,
+		layout->text_screen.x1 + (cursor_pos.col - 1 + scope_nesting_at_cursor * app->tab_size) * app->glyph_advance,
+		layout->text_screen.y1 + (cursor_pos.line - first_line) * app->glyph_line_height,
 		app->glyph_advance,
 		app->glyph_height,
 	}, NULL, 1, 0, 0xCF7F7F7F);
 	PushQuad_(arena, (float32[4]) {
-		text_screen.x1 + (marker_pos.col - 1 + scope_nesting_at_marker * app->tab_size) * app->glyph_advance,
-		text_screen.y1 + (marker_pos.line - first_line) * app->glyph_height,
+		layout->text_screen.x1 + (marker_pos.col - 1 + scope_nesting_at_marker * app->tab_size) * app->glyph_advance,
+		layout->text_screen.y1 + (marker_pos.line - first_line) * app->glyph_line_height,
 		app->glyph_advance,
 		app->glyph_height,
 	}, NULL, 1, 0, 0x7F3F3F3F);
 
-	PushRect_(arena, line_bar, NULL, 1, 0, 0xFF2F2F2F);
+	PushRect_(arena, layout->line_bar, NULL, 1, 0, 0xFF2F2F2F);
 	for (int32 i = 0; i <= last_line-first_line; ++i)
 	{
 		String str = StringPrintfLocal(32, "%i", i+first_line);
-		Rect pos = line_bar_text;
-		pos.y1 += i * app->glyph_height;
+		Rect pos = layout->line_bar_text;
+		pos.y1 += i * app->glyph_line_height;
 		PushText2_(app, arena, pos, str, 0xFFFFFFFF, 0, 1, 0, NULL);
 	}
 
-	PushRect_(arena, status_bar, NULL, 1, 0, status_bar_color);
+	PushRect_(arena, layout->status_bar, NULL, 1, 0, status_bar_color);
+	Rect status_bar_text = layout->status_bar_text;
 	status_bar_text.y1 += 2;
 	String view_name = {};
 	if (view->kind == TextViewKind_File)
@@ -522,7 +533,7 @@ EntryPoint(int32 argc, const char* const argv[])
 	// Init D2D1 & DWrite
 	{
 		int32 const texture_size = 512;
-		float32 const emsize = 12.0f;
+		float32 const emsize = 13.0f;
 		app->d2d_rt_texture = R3_MakeTexture(app->r3, &(R3_TextureDesc) {
 			.width = texture_size,
 			.height = texture_size,
@@ -627,6 +638,7 @@ EntryPoint(int32 argc, const char* const argv[])
 			int32 glyph_height = ceilf(units * (font_metrics.glyphBoxTop - font_metrics.glyphBoxBottom));
 			app->glyph_width = glyph_width;
 			app->glyph_height = glyph_height;
+			app->glyph_line_height = ceilf(units * (font_metrics.Base.ascent + font_metrics.Base.descent + font_metrics.Base.lineGap));
 			{
 				INT32 biggest_advance = 0;
 				for (intz i = 0; i < codepoint_count; ++i)
@@ -733,14 +745,12 @@ EntryPoint(int32 argc, const char* const argv[])
 			.cursor = {},
 			.line = 1,
 			.file_path = StrInit("os/os_win32.c"),
-			.textbuf_is_dirty = true,
 		};
 		TextBufferFromFile(app, app->left_view.file_path, TextBufferKind_C, &app->left_view.textbuf_index);
 		app->right_view = (TextView) {
 			.kind = TextViewKind_Scratch,
 			.cursor = {},
 			.line = 1,
-			.textbuf_is_dirty = true,
 		};
 		TextBufferFromString(app, Str("Hello, World!\nπ"), TextBufferKind_C, &app->right_view.textbuf_index);
 	}
@@ -802,27 +812,21 @@ EntryPoint(int32 argc, const char* const argv[])
 							TextCursorCmdDeleteBackwardSnakeWord(&selected_view->cursor, textbuf, 1);
 						else
 							TextCursorCmdDeleteBackward(&selected_view->cursor, textbuf, 1);
-						selected_view->textbuf_is_dirty = true;
 					} break;
 					case OS_KeyboardKey_End: TextCursorCmdEndOfLine(&selected_view->cursor, textbuf); break;
 					case OS_KeyboardKey_Home: TextCursorCmdStartOfLine(&selected_view->cursor, textbuf); break;
 					case OS_KeyboardKey_Enter:
 					{
-						TextCursorCmdInsert(&selected_view->cursor, textbuf, 1, '\n');
-						selected_view->textbuf_is_dirty = true;
+						TextCursorCmdInsert(app, &selected_view->cursor, textbuf, 1, '\n');
 					} break;
 					case OS_KeyboardKey_Tab:
 					{
-						TextCursorCmdInsert(&selected_view->cursor, textbuf, 1, '\t');
-						selected_view->textbuf_is_dirty = true;
+						TextCursorCmdInsert(app, &selected_view->cursor, textbuf, 1, '\t');
 					} break;
 					case 'D':
 					{
 						if (event->window_key.ctrl)
-						{
 							TextCursorCmdDeleteToMarker(&selected_view->cursor, textbuf);
-							selected_view->textbuf_is_dirty = true;
-						}
 					} break;
 					case 'C':
 					{
@@ -832,10 +836,7 @@ EntryPoint(int32 argc, const char* const argv[])
 					case 'V':
 					{
 						if (event->window_key.ctrl)
-						{
 							TextCursorCmdPaste(app, &selected_view->cursor, textbuf);
-							selected_view->textbuf_is_dirty = true;
-						}
 					} break;
 					case ' ':
 					{
@@ -859,9 +860,8 @@ EntryPoint(int32 argc, const char* const argv[])
 				uint32 codepoint = event->window_typing.codepoint;
 				if (!event->window_typing.ctrl || codepoint != ' ')
 				{
-					TextCursorCmdInsert(&selected_view->cursor, textbuf, 1, codepoint);
+					TextCursorCmdInsert(app, &selected_view->cursor, textbuf, 1, codepoint);
 					ScrollTextViewToCursor_(app, selected_view);
-					selected_view->textbuf_is_dirty = true;
 				}
 			}
 			else if (event->kind == OS_EventKind_WindowMouseWheel)
@@ -945,8 +945,8 @@ EntryPoint(int32 argc, const char* const argv[])
 		R3_SetViewports(app->r3, 1, &(R3_Viewport) { 0, 0, width, height, 0, 1 });
 		R3_Clear(app->r3, &(R3_ClearDesc) {
 			.flag_color = true,
-			// .color = { 15.0f/255, 15.0f/255, 15.0f/255, 1.0f },
-			.color = { 0, 0, 0, 1 },
+			.color = { 15.0f/255, 15.0f/255, 15.0f/255, 1.0f },
+			// .color = { 0, 0, 0, 1 },
 		});
 
 		R3_SetPrimitiveType(app->r3, R3_PrimitiveType_TriangleList);

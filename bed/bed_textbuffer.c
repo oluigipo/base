@@ -118,6 +118,12 @@ BED_API void
 TextBufferRefreshTokens(App* app, TextBuffer* textbuf)
 {
 	Trace();
+	if (textbuf->change_start == -1 && textbuf->cf_cap)
+	{
+		// NOTE: no change has been made, nothing to do
+		return;
+	}
+
 	AllocatorError err;
 	if (textbuf->cf_cap)
 	{
@@ -158,6 +164,8 @@ TextBufferRefreshTokens(App* app, TextBuffer* textbuf)
 	textbuf->cf_count = lex.token_count;
 	textbuf->cf_kinds = lex.token_kinds;
 	textbuf->cf_ranges = lex.source_ranges;
+	textbuf->change_start = -1;
+	textbuf->change_end = -1;
 }
 
 BED_API void
@@ -295,7 +303,7 @@ TextBufferMoveGapToOffset(TextBuffer* textbuf, intz offset)
 }
 
 BED_API uint8*
-TextBufferInsert(TextBuffer* textbuf, intz offset, intz size)
+TextBufferInsert(App* app, TextBuffer* textbuf, intz offset, intz size)
 {
 	Trace();
 	if (size > textbuf->gap_end - textbuf->gap_start)
@@ -323,7 +331,9 @@ TextBufferInsert(TextBuffer* textbuf, intz offset, intz size)
 			MemoryCopy(new_buffer, textbuf->utf8_text, offset);
 			MemoryCopy(new_buffer+offset+new_gap_size, textbuf->utf8_text+textbuf->gap_end, textbuf->size - textbuf->gap_end);
 		}
-		OS_HeapFree(textbuf->utf8_text);
+		AllocatorError err;
+		AllocatorFree(&app->heap, textbuf->utf8_text, textbuf->size, &err);
+		SafeAssert(!err);
 		textbuf->utf8_text = new_buffer;
 		textbuf->gap_start = offset;
 		textbuf->gap_end = offset + new_gap_size;
@@ -334,6 +344,16 @@ TextBufferInsert(TextBuffer* textbuf, intz offset, intz size)
 
 	uint8* result = &textbuf->utf8_text[textbuf->gap_start];
 	textbuf->gap_start += size;
+	if (textbuf->change_start == -1)
+	{
+		textbuf->change_start = offset;
+		textbuf->change_end = offset + size;
+	}
+	else
+	{
+		textbuf->change_start = Min(textbuf->change_start, offset);
+		textbuf->change_end = Max(textbuf->change_end, offset + size);
+	}
 	return result;
 }
 
@@ -349,6 +369,21 @@ TextBufferDelete(TextBuffer* textbuf, intz offset, intz size)
 	{
 		TextBufferMoveGapToOffset(textbuf, offset);
 		textbuf->gap_end += size;
+	}
+
+	if (textbuf->change_start == -1)
+	{
+		textbuf->change_start = offset;
+		textbuf->change_end = offset;
+	}
+	else
+	{
+		if (textbuf->change_start > offset)
+			textbuf->change_start -= size;
+		if (textbuf->change_end > offset+size)
+			textbuf->change_end -= size;
+		else if (textbuf->change_end > offset)
+			textbuf->change_end = offset;
 	}
 }
 
@@ -428,7 +463,7 @@ TextBufferOffsetFromLineCol(TextBuffer* textbuf, LineCol pos, int32 tab_size)
 			uint8 sample = TextBufferSample(textbuf, it);
 			if (sample == '\n')
 				break;
-			++col;
+			col += (sample == '\t') ? tab_size : 1;
 		}
 	}
 
