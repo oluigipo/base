@@ -217,28 +217,49 @@ DeleteWithoutMakingEdit_(TextBuffer* textbuf, intz offset, intz size)
 	if (textbuf->dirty_changes_start == -1)
 	{
 		textbuf->dirty_changes_start = offset;
-		textbuf->dirty_changes_end = offset;
+		textbuf->dirty_changes_end = offset + size;
 	}
 	else
 	{
-		if (textbuf->dirty_changes_start > offset)
-			textbuf->dirty_changes_start -= size;
-		if (textbuf->dirty_changes_end > offset+size)
-			textbuf->dirty_changes_end -= size;
-		else if (textbuf->dirty_changes_end > offset)
-			textbuf->dirty_changes_end = offset;
+		Range range = RangeMakeSized(offset, size);
+		textbuf->dirty_changes_start = RangeRemoveFromOffset(textbuf->dirty_changes_start, range);
+		textbuf->dirty_changes_end = RangeRemoveFromOffset(textbuf->dirty_changes_end, range);
 	}
 
 	return result;
 }
 
 static void
-TransposeWithoutMakingEdit_(TextBuffer* textbuf, Range first, Range second)
+TransposeWithoutMakingEdit_(App* app, TextBuffer* textbuf, Range first, Range second)
 {
 	Trace();
 	SafeAssert(!RangesIntersects(first, second));
+	SafeAssert(RangeInside(first, RangeMakeSized(0, TextBufferSize(textbuf))));
+	SafeAssert(RangeInside(second, RangeMakeSized(0, TextBufferSize(textbuf))));
 
+	if (first.start > second.start)
+	{
+		Range tmp = second;
+		second = first;
+		first = tmp;
+	}
 
+	ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
+	intz first_size = RangeSize(first);
+	uint8* first_mem = ArenaPushAligned(scratch.arena, first_size, 1);
+	Buffer first_buffer = TextBufferWriteRangeToBuffer(textbuf, first, first_size, first_mem);
+	intz second_size = RangeSize(second);
+	uint8* second_mem = ArenaPushAligned(scratch.arena, second_size, 1);
+	Buffer second_buffer = TextBufferWriteRangeToBuffer(textbuf, second, second_size, second_mem);
+
+	if (second_size)
+		DeleteWithoutMakingEdit_(textbuf, second.start, second_size);
+	if (first_size)
+		InsertWithoutMakingEdit_(app, textbuf, second.start, first_buffer);
+	if (first_size)
+		DeleteWithoutMakingEdit_(textbuf, first.start, first_size);
+	if (second_size)
+		InsertWithoutMakingEdit_(app, textbuf, first.start, second_buffer);
 }
 
 BED_API TextBuffer*
@@ -635,7 +656,7 @@ BED_API void
 TextBufferTranspose(App* app, TextBuffer* textbuf, Range first, Range second)
 {
 	Trace();
-	TransposeWithoutMakingEdit_(textbuf, first, second);
+	TransposeWithoutMakingEdit_(app, textbuf, first, second);
 
 	// Edits
 	uint64 now = OS_Tick();
@@ -765,7 +786,7 @@ TextBufferUndo(App* app, TextBuffer* textbuf, TextBufferEdit* out_edit)
 			offset = containing.start;
 			size = RangeSize(containing);
 			RangesTranpose(&first, &second);
-			TransposeWithoutMakingEdit_(textbuf, first, second);
+			TransposeWithoutMakingEdit_(app, textbuf, first, second);
 		} break;
 	}
 	SafeAssert(offset != -1 && size != -1);
@@ -811,7 +832,7 @@ TextBufferRedo(App* app, TextBuffer* textbuf, TextBufferEdit* out_edit)
 			Range containing = RangeContaining(first, second);
 			offset = containing.start;
 			size = containing.end - containing.start;
-			TransposeWithoutMakingEdit_(textbuf, first, second);
+			TransposeWithoutMakingEdit_(app, textbuf, first, second);
 		} break;
 	}
 	SafeAssert(offset != -1 && size != -1);
@@ -819,4 +840,28 @@ TextBufferRedo(App* app, TextBuffer* textbuf, TextBufferEdit* out_edit)
 	if (out_edit)
 		*out_edit = *edit;
 	return offset;
+}
+
+BED_API Buffer
+TextBufferWriteRangeToBuffer(TextBuffer* textbuf, Range range, intz size, uint8 buf[])
+{
+	Trace();
+	SafeAssert(RangeIsValid(range));
+	intz textbuf_size = TextBufferSize(textbuf);
+	intz range_size = RangeSize(range);
+	size = Min(size, range_size);
+	size = Min(size, textbuf_size - range.start);
+
+	if (range.end <= textbuf->gap_start)
+		MemoryCopy(buf, textbuf->utf8_text + range.start, size);
+	else if (range.start < textbuf->gap_start && textbuf->gap_start < range.end)
+	{
+		intz before_gap = textbuf->gap_start - range.start;
+		MemoryCopy(buf, textbuf->utf8_text + range.start, before_gap);
+		MemoryCopy(buf + before_gap, textbuf->utf8_text + textbuf->gap_end, size - before_gap);
+	}
+	else
+		MemoryCopy(buf, textbuf->utf8_text + range.start + (textbuf->gap_end - textbuf->gap_start), size);
+
+	return BufMake(size, buf);
 }

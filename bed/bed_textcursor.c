@@ -621,9 +621,11 @@ TextCursorCmdUndo(App* app, TextCursor* cursor, TextBuffer* textbuf)
 			} break;
 			case TextBufferEditKind_Transpose:
 			{
-				Range range = RangeContaining(edit.transpose.from, edit.transpose.to);
-				cursor->offset = range.start;
-				cursor->marker_offset = range.end;
+				Range from = edit.transpose.from;
+				// Range to = edit.transpose.to;
+				// RangesTranpose(&from, &to);
+				cursor->offset = from.start;
+				cursor->marker_offset = from.start;
 			} break;
 		}
 	}
@@ -658,9 +660,11 @@ TextCursorCmdRedo(App* app, TextCursor* cursor, TextBuffer* textbuf)
 			} break;
 			case TextBufferEditKind_Transpose:
 			{
-				Range range = RangeContaining(edit.transpose.from, edit.transpose.to);
-				cursor->offset = range.start;
-				cursor->marker_offset = range.end;
+				Range from = edit.transpose.from;
+				Range to = edit.transpose.to;
+				RangesTranpose(&from, &to);
+				cursor->offset = to.start;
+				cursor->marker_offset = to.start;
 			} break;
 		}
 	}
@@ -686,6 +690,58 @@ TextCursorCmdDeleteLine(App* app, TextCursor* cursor, TextBuffer* textbuf)
 		else if (cursor->marker_offset >= start)
 			cursor->marker_offset = start;
 		cursor->offset = start;
+	}
+}
+
+BED_API void
+TextCursorCmdMoveLineUp(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount)
+{
+	for (intz i = 0; i < amount; ++i)
+	{
+		TextCursorCmdEndOfLine(cursor, textbuf);
+		intz first_end = cursor->offset;
+		TextCursorCmdStartOfLine(cursor, textbuf);
+		intz first_start = cursor->offset;
+		if (first_start == 0)
+			break;
+		TextCursorCmdUp(cursor, textbuf, 1);
+		TextCursorCmdEndOfLine(cursor, textbuf);
+		intz second_end = cursor->offset;
+		TextCursorCmdStartOfLine(cursor, textbuf);
+		intz second_start = cursor->offset;
+
+		Range from = RangeMake(first_start, first_end);
+		Range to = RangeMake(second_start, second_end);
+		TextBufferTranspose(app, textbuf, from, to);
+		RangesTranpose(&from, &to);
+		cursor->offset = to.start;
+		cursor->marker_offset = to.start;
+	}
+}
+
+BED_API void
+TextCursorCmdMoveLineDown(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount)
+{
+	for (intz i = 0; i < amount; ++i)
+	{
+		TextCursorCmdEndOfLine(cursor, textbuf);
+		intz first_end = cursor->offset;
+		if (first_end == TextBufferSize(textbuf))
+			break;
+		TextCursorCmdStartOfLine(cursor, textbuf);
+		intz first_start = cursor->offset;
+		TextCursorCmdDown(cursor, textbuf, 1);
+		TextCursorCmdEndOfLine(cursor, textbuf);
+		intz second_end = cursor->offset;
+		TextCursorCmdStartOfLine(cursor, textbuf);
+		intz second_start = cursor->offset;
+
+		Range from = RangeMake(first_start, first_end);
+		Range to = RangeMake(second_start, second_end);
+		TextBufferTranspose(app, textbuf, from, to);
+		RangesTranpose(&from, &to);
+		cursor->offset = to.start;
+		cursor->marker_offset = to.start;
 	}
 }
 

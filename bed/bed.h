@@ -317,14 +317,66 @@ RangesTranpose(Range* restrict a, Range* restrict b)
 {
 	intz asize = a->end - a->start;
 	intz bsize = b->end - b->start;
-	a->end = a->start + bsize;
-	b->end = b->start + asize;
+	if (a->start < b->start)
+	{
+		b->start += (bsize - asize);
+		a->end = a->start + bsize;
+		b->end = b->start + asize;
+	}
+	else
+	{
+		a->start += (asize - bsize);
+		a->end = a->start + bsize;
+		b->end = b->start + asize;
+	}
+}
+
+static inline bool
+RangeInside(Range subset, Range set)
+{
+	intz start = Min(subset.start, set.start);
+	intz end = Min(subset.end, set.end);
+	return (start == set.start || end == set.end);
 }
 
 static inline intz
 RangeSize(Range range)
 {
 	return range.end - range.start;
+}
+
+static inline Range
+RangeMakeSized(intz start, intz size)
+{
+	return (Range) {
+		.start = start,
+		.end = start + size,
+	};
+}
+
+static inline Range
+RangeMake(intz start, intz end)
+{
+	return (Range) {
+		.start = start,
+		.end = end,
+	};
+}
+
+static inline intz
+RangeRemoveFromOffset(intz offset, Range range)
+{
+	if (offset > range.end)
+		return offset - (range.end - range.start);
+	if (offset > range.start)
+		return range.start;
+	return offset;
+}
+
+static inline bool
+RangeIsValid(Range range)
+{
+	return range.start <= range.end;
 }
 
 // ===========================================================================
@@ -347,6 +399,7 @@ BED_API void    TextBufferMoveGapToOffset  (TextBuffer* textbuf, intz offset);
 BED_API String  TextBufferStringFromRange  (TextBuffer* textbuf, intz offset, intz size);
 BED_API bool    TextBufferLineIterator     (TextBuffer* textbuf, intz* it, String* left_str, String* right_str);
 BED_API intz    TextBufferOffsetFromLineCol(TextBuffer* textbuf, LineCol pos, int32 tab_size);
+BED_API Buffer  TextBufferWriteRangeToBuffer(TextBuffer* textbuf, Range range, intz size, uint8 buf[]);
 
 BED_API void    TextBufferInsert           (App* app, TextBuffer* textbuf, intz offset, String str);
 BED_API void    TextBufferDelete           (App* app, TextBuffer* textbuf, intz offset, intz size);

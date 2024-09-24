@@ -1892,6 +1892,16 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 			os_event.window_typing.alt = GetKeyState(VK_MENU) & 0x8000;
 		} break;
 		
+		case WM_SYSKEYDOWN:
+		{
+			if (lparam & 1<<28)
+			{
+				result = DefWindowProcW(hwnd, message, wparam, lparam);
+				break;
+			}
+			// NOTE(ljre): fallthrough
+		}
+		case WM_SYSKEYUP:
 		case WM_KEYDOWN:
 		case WM_KEYUP:
 		{
@@ -1902,7 +1912,7 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 				{
 					int32 repeat_count = (lparam & 0xffff);
 
-					os_event.kind = (message == WM_KEYDOWN) ? OS_EventKind_WindowKeyPressed : OS_EventKind_WindowKeyReleased;
+					os_event.kind = (message == WM_KEYDOWN || message == WM_SYSKEYDOWN) ? OS_EventKind_WindowKeyPressed : OS_EventKind_WindowKeyReleased;
 					os_event.window_key.key = key;
 					os_event.window_key.is_repeat = (repeat_count > 0);
 					os_event.window_key.ctrl = GetKeyState(VK_CONTROL) & 0x8000;

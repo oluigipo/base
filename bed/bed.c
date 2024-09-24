@@ -958,6 +958,8 @@ EntryPoint(int32 argc, const char* const argv[])
 					{
 						if (event->window_key.ctrl)
 							TextCursorCmdUpParagraph(&selected_view->cursor, textbuf, 1);
+						else if (event->window_key.alt)
+							TextCursorCmdMoveLineUp(app, &selected_view->cursor, textbuf, 1);
 						else
 							TextCursorCmdUp(&selected_view->cursor, textbuf, 1);
 					} break;
@@ -965,6 +967,8 @@ EntryPoint(int32 argc, const char* const argv[])
 					{
 						if (event->window_key.ctrl)
 							TextCursorCmdDownParagraph(&selected_view->cursor, textbuf, 1);
+						else if (event->window_key.alt)
+							TextCursorCmdMoveLineDown(app, &selected_view->cursor, textbuf, 1);
 						else
 							TextCursorCmdDown(&selected_view->cursor, textbuf, 1);
 					} break;
