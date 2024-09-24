@@ -907,11 +907,12 @@ EntryPoint(int32 argc, const char* const argv[])
 		TextBufferFromString(app, Str("Hello, World!\nπ"), TextBufferKind_C, &app->right_view.textbuf_index);
 	}
 
-	while (!app->is_closing)
+	bool is_first_frame = true;
+	for (; !app->is_closing; is_first_frame = false)
 	{
 		ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
 		intz event_count;
-		OS_Event* events = OS_PollEvents(true, scratch.arena, &event_count);
+		OS_Event* events = OS_PollEvents(!is_first_frame, scratch.arena, &event_count);
 
 		TraceFrameBegin();
 
@@ -1030,6 +1031,11 @@ EntryPoint(int32 argc, const char* const argv[])
 					{
 						if (event->window_key.ctrl)
 							TextCursorCmdRedo(app, &selected_view->cursor, textbuf);
+					} break;
+					case 'R':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdDeleteLine(app, &selected_view->cursor, textbuf);
 					} break;
 				}
 				ScrollTextViewToCursor_(app, selected_view);

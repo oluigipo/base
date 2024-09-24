@@ -11,7 +11,7 @@ CFLAGS_WARNINGS = [
     '-Wno-int-to-void-pointer-cast', '-Wno-void-pointer-to-int-cast', '-Wno-unsafe-buffer-usage',
     '-Wno-static-in-inline', '-Wsign-conversion',
 ]
-CFLAGS_DEBUG = ['-DCONFIG_DEBUG']
+CFLAGS_DEBUG = ['-DCONFIG_DEBUG', '-O0']
 CFLAGS_OPT   = ['-fno-math-errno', '-fno-strict-aliasing']
 
 CC = 'clang'

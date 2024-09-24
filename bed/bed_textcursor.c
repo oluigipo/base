@@ -596,16 +596,36 @@ BED_API void
 TextCursorCmdUndo(App* app, TextCursor* cursor, TextBuffer* textbuf)
 {
 	Trace();
-	bool was_insertion;
-	intz size;
-	intz new_offset = TextBufferUndo(app, textbuf, &size, &was_insertion);
-	if (new_offset != -1)
+	TextBufferEdit edit = {};
+	if (TextBufferUndo(app, textbuf, &edit))
 	{
-		if (cursor->marker_offset > new_offset + size)
-			cursor->marker_offset += (was_insertion) ? size : -size;
-		else if (cursor->marker_offset > new_offset)
-			cursor->marker_offset = new_offset;
-		cursor->offset = new_offset;
+		switch (edit.kind)
+		{
+			case TextBufferEditKind_Delete:
+			{
+				Range range = edit.delete.edit_range;
+				intz size = RangeSize(range);
+				if (cursor->marker_offset > range.start)
+					cursor->marker_offset += size;
+				cursor->offset = range.end;
+			} break;
+			case TextBufferEditKind_Insert:
+			{
+				Range range = edit.insert.edit_range;
+				intz size = RangeSize(range);
+				if (cursor->marker_offset > range.end)
+					cursor->marker_offset -= size;
+				else if (cursor->marker_offset >= range.start)
+					cursor->marker_offset = range.start;
+				cursor->offset = range.start;
+			} break;
+			case TextBufferEditKind_Transpose:
+			{
+				Range range = RangeContaining(edit.transpose.from, edit.transpose.to);
+				cursor->offset = range.start;
+				cursor->marker_offset = range.end;
+			} break;
+		}
 	}
 }
 
@@ -613,16 +633,59 @@ BED_API void
 TextCursorCmdRedo(App* app, TextCursor* cursor, TextBuffer* textbuf)
 {
 	Trace();
-	bool was_insertion;
-	intz size;
-	intz new_offset = TextBufferRedo(app, textbuf, &size, &was_insertion);
-	if (new_offset != -1)
+	TextBufferEdit edit = {};
+	if (TextBufferRedo(app, textbuf, &edit))
 	{
-		if (cursor->marker_offset > new_offset + size)
-			cursor->marker_offset += (was_insertion) ? size : -size;
-		else if (cursor->marker_offset > new_offset)
-			cursor->marker_offset = new_offset;
-		cursor->offset = new_offset;
+		switch (edit.kind)
+		{
+			case TextBufferEditKind_Delete:
+			{
+				Range range = edit.delete.edit_range;
+				intz size = RangeSize(range);
+				if (cursor->marker_offset > range.end)
+					cursor->marker_offset -= size;
+				else if (cursor->marker_offset >= range.start)
+					cursor->marker_offset = range.start;
+				cursor->offset = range.start;
+			} break;
+			case TextBufferEditKind_Insert:
+			{
+				Range range = edit.insert.edit_range;
+				intz size = RangeSize(range);
+				if (cursor->marker_offset > range.start)
+					cursor->marker_offset += size;
+				cursor->offset = range.end;
+			} break;
+			case TextBufferEditKind_Transpose:
+			{
+				Range range = RangeContaining(edit.transpose.from, edit.transpose.to);
+				cursor->offset = range.start;
+				cursor->marker_offset = range.end;
+			} break;
+		}
+	}
+}
+
+BED_API void
+TextCursorCmdDeleteLine(App* app, TextCursor* cursor, TextBuffer* textbuf)
+{
+	Trace();
+	TextCursorCmdStartOfLine(cursor, textbuf);
+	intz start = cursor->offset;
+	TextCursorCmdEndOfLine(cursor, textbuf);
+	intz end = cursor->offset;
+	if (end < TextBufferSize(textbuf))
+		++end; // include linebreak
+
+	intz size = end - start;
+	if (size)
+	{
+		TextBufferDelete(app, textbuf, start, size);
+		if (cursor->marker_offset >= start + size)
+			cursor->marker_offset -= size;
+		else if (cursor->marker_offset >= start)
+			cursor->marker_offset = start;
+		cursor->offset = start;
 	}
 }
 
@@ -661,6 +724,9 @@ TextCursorPlayCommands(App* app, TextCursor* cursor, TextBuffer* textbuf, intz c
 			case TextCursorCmdKind_SetMarker: TextCursorCmdSetMarker(cursor, textbuf, cmd->linecol, app->tab_size); break;
 			case TextCursorCmdKind_Undo: TextCursorCmdUndo(app, cursor, textbuf); break;
 			case TextCursorCmdKind_Redo: TextCursorCmdRedo(app, cursor, textbuf); break;
+			case TextCursorCmdKind_DeleteLine: TextCursorCmdDeleteLine(app, cursor, textbuf); break;
+			case TextCursorCmdKind_MoveLineUp: TextCursorCmdMoveLineUp(app, cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_MoveLineDown: TextCursorCmdMoveLineDown(app, cursor, textbuf, cmd->amount); break;
 		}
 	}
 }

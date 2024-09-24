@@ -24,12 +24,31 @@ struct Rect
 }
 typedef Rect;
 
+enum TextBufferEditKind
+{
+	TextBufferEditKind_Delete = 0,
+	TextBufferEditKind_Insert,
+	TextBufferEditKind_Transpose,
+}
+typedef TextBufferEditKind;
+
 struct TextBufferEdit
 {
-	bool is_insertion : 1;
-	uint64 tick : 63;
-	Range file_edit_range;
-	Range range_into_edit_text_buffer;
+	TextBufferEditKind kind : 8;
+	uint64 tick : 56;
+	union
+	{
+		struct
+		{
+			Range edit_range;
+			Range edit_text_buffer;
+		} insert, delete;
+		struct
+		{
+			Range from;
+			Range to;
+		} transpose;
+	};
 }
 typedef TextBufferEdit;
 
@@ -67,6 +86,7 @@ struct TextBuffer
 	intz edits_cap;
 	TextBufferEdit* edits;
 	intz edit_text_buffer_size;
+	intz edit_text_buffer_usable_size;
 	intz edit_text_buffer_cap;
 	uint8* edit_text_buffer;
 }
@@ -273,6 +293,40 @@ RoundToNextTab(int32 col, int32 tab_size)
 	return col;
 }
 
+static inline bool
+RangesIntersects(Range a, Range b)
+{
+	if (a.end >= b.end && a.start < b.end)
+		return true;
+	if (b.end >= a.end && b.start < a.end)
+		return true;
+	return false;
+}
+
+static inline Range
+RangeContaining(Range a, Range b)
+{
+	return (Range) {
+		.start = Min(a.start, b.start),
+		.end = Min(a.end, b.end),
+	};
+}
+
+static inline void
+RangesTranpose(Range* restrict a, Range* restrict b)
+{
+	intz asize = a->end - a->start;
+	intz bsize = b->end - b->start;
+	a->end = a->start + bsize;
+	b->end = b->start + asize;
+}
+
+static inline intz
+RangeSize(Range range)
+{
+	return range.end - range.start;
+}
+
 // ===========================================================================
 // ===========================================================================
 // TextBuffer API
@@ -296,8 +350,9 @@ BED_API intz    TextBufferOffsetFromLineCol(TextBuffer* textbuf, LineCol pos, in
 
 BED_API void    TextBufferInsert           (App* app, TextBuffer* textbuf, intz offset, String str);
 BED_API void    TextBufferDelete           (App* app, TextBuffer* textbuf, intz offset, intz size);
-BED_API intz    TextBufferUndo             (App* app, TextBuffer* textbuf, intz* out_size, bool* out_was_insertion);
-BED_API intz    TextBufferRedo             (App* app, TextBuffer* textbuf, intz* out_size, bool* out_was_insertion);
+BED_API void    TextBufferTranspose        (App* app, TextBuffer* textbuf, Range first, Range second);
+BED_API bool    TextBufferUndo             (App* app, TextBuffer* textbuf, TextBufferEdit* out_edit);
+BED_API bool    TextBufferRedo             (App* app, TextBuffer* textbuf, TextBufferEdit* out_edit);
 
 // ===========================================================================
 // ===========================================================================
@@ -330,6 +385,9 @@ enum TextCursorCmdKind
 	TextCursorCmdKind_SetMarker,                // linecol
 	TextCursorCmdKind_Undo,                     // 
 	TextCursorCmdKind_Redo,                     // 
+	TextCursorCmdKind_DeleteLine,               //
+	TextCursorCmdKind_MoveLineUp,               // amount
+	TextCursorCmdKind_MoveLineDown,             // amount
 }
 typedef TextCursorCmdKind;
 
@@ -369,6 +427,9 @@ BED_API void TextCursorCmdLeftPascalWord         (TextCursor* cursor, TextBuffer
 BED_API void TextCursorCmdDeleteBackwardPascalWord(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdUndo                   (App* app, TextCursor* cursor, TextBuffer* textbuf);
 BED_API void TextCursorCmdRedo                   (App* app, TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdDeleteLine             (App* app, TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdMoveLineUp             (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdMoveLineDown           (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
 
 // ===========================================================================
 // ===========================================================================

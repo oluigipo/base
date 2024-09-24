@@ -51,6 +51,7 @@ PushEditText_(App* app, TextBuffer* textbuf, intz deleted_size)
 
 	intz offset = textbuf->edit_text_buffer_size;
 	textbuf->edit_text_buffer_size += deleted_size;
+	textbuf->edit_text_buffer_usable_size = textbuf->edit_text_buffer_size;
 	return offset;
 }
 
@@ -58,19 +59,20 @@ static void
 PushEdit_(App* app, TextBuffer* textbuf, intz offset, intz size, String changed, bool is_insertion, uint64 tick)
 {
 	Trace();
+	SafeAssert(size == changed.size);
 	AllocatorError err;
 	Range changed_text_range = {};
 	if (changed.size)
 	{
-		intz offset = PushEditText_(app, textbuf, changed.size);
-		if (offset == -1)
+		intz text_offset = PushEditText_(app, textbuf, changed.size);
+		if (text_offset == -1)
 			return;
 		changed_text_range = (Range) {
-			.start = offset,
-			.end = offset + changed.size,
+			.start = text_offset,
+			.end = text_offset + changed.size,
 		};
 		MemoryCopy(
-			textbuf->edit_text_buffer + offset,
+			textbuf->edit_text_buffer + text_offset,
 			changed.data,
 			changed.size);
 	}
@@ -87,16 +89,43 @@ PushEdit_(App* app, TextBuffer* textbuf, intz offset, intz size, String changed,
 	}
 
 	textbuf->edits[textbuf->edits_count++] = (TextBufferEdit) {
-		.is_insertion = is_insertion,
+		.kind = is_insertion ? TextBufferEditKind_Insert : TextBufferEditKind_Delete,
 		.tick = tick,
-		.file_edit_range = {
-			offset,
-			offset + size,
+		.insert = {
+			.edit_range = {
+				offset,
+				offset + size,
+			},
+			.edit_text_buffer = changed_text_range,
 		},
-		.range_into_edit_text_buffer = changed_text_range,
 	};
 	textbuf->edits_usable_count = textbuf->edits_count;
-	textbuf->edit_text_buffer_size = changed_text_range.end;
+}
+
+static void
+PushTranposeEdit_(App* app, TextBuffer* textbuf, Range first, Range second, uint64 tick)
+{
+	AllocatorError err;
+	if (textbuf->edits_count+1 > textbuf->edits_cap)
+	{
+		intz desired_cap = textbuf->edits_cap + (textbuf->edits_cap>>1) + 1;
+		if (!AllocatorResizeArrayOk(&app->heap, desired_cap, sizeof(TextBufferEdit), alignof(TextBufferEdit), &textbuf->edits, textbuf->edits_cap, &err))
+		{
+			Log(LOG_ERROR, "could not resize textbuf edit buffer: %u", (uint32)err);
+			return;
+		}
+		textbuf->edits_cap = desired_cap;
+	}
+
+	textbuf->edits[textbuf->edits_count++] = (TextBufferEdit) {
+		.kind = TextBufferEditKind_Transpose,
+		.tick = tick,
+		.transpose = {
+			.from = first,
+			.to = second,
+		},
+	};
+	textbuf->edits_usable_count = textbuf->edits_count;
 }
 
 static void
@@ -201,6 +230,15 @@ DeleteWithoutMakingEdit_(TextBuffer* textbuf, intz offset, intz size)
 	}
 
 	return result;
+}
+
+static void
+TransposeWithoutMakingEdit_(TextBuffer* textbuf, Range first, Range second)
+{
+	Trace();
+	SafeAssert(!RangesIntersects(first, second));
+
+
 }
 
 BED_API TextBuffer*
@@ -546,18 +584,18 @@ TextBufferInsert(App* app, TextBuffer* textbuf, intz offset, String str)
 	// Edits
 	uint64 now = OS_Tick();
 	if (textbuf->edits_count > 0 &&
-		textbuf->edits[textbuf->edits_count-1].is_insertion &&
-		textbuf->edits[textbuf->edits_count-1].file_edit_range.end == offset &&
+		textbuf->edits[textbuf->edits_count-1].kind == TextBufferEditKind_Insert &&
+		textbuf->edits[textbuf->edits_count-1].insert.edit_range.end == offset &&
 		textbuf->edits[textbuf->edits_count-1].tick >= now - app->tick_rate / 10 * 3)
 	{
 		TextBufferEdit* edit = &textbuf->edits[textbuf->edits_count-1];
 		PushEditText_(app, textbuf, str.size);
 
-		uint8* mem = textbuf->edit_text_buffer + edit->range_into_edit_text_buffer.start;
-		intz prev_size = edit->range_into_edit_text_buffer.end - edit->range_into_edit_text_buffer.start;
+		uint8* mem = textbuf->edit_text_buffer + edit->insert.edit_text_buffer.start;
+		intz prev_size = RangeSize(edit->insert.edit_text_buffer);
 		MemoryCopy(mem + prev_size, str.data, str.size);
-		edit->file_edit_range.end += str.size;
-		edit->range_into_edit_text_buffer.end += str.size;
+		edit->insert.edit_range.end += str.size;
+		edit->insert.edit_text_buffer.end += str.size;
 		edit->tick = now;
 	}
 	else
@@ -569,27 +607,44 @@ TextBufferDelete(App* app, TextBuffer* textbuf, intz offset, intz size)
 {
 	Trace();
 	String deleted_str = DeleteWithoutMakingEdit_(textbuf, offset, size);
+	SafeAssert(deleted_str.size == size);
 
 	// Edits
 	uint64 now = OS_Tick();
 	if (textbuf->edits_count > 0 &&
-		!textbuf->edits[textbuf->edits_count-1].is_insertion &&
-		textbuf->edits[textbuf->edits_count-1].file_edit_range.start == offset + size &&
-		textbuf->edits[textbuf->edits_count-1].tick >= now - app->tick_rate / 10 * 3)
+		textbuf->edits[textbuf->edits_count-1].kind == TextBufferEditKind_Delete &&
+		textbuf->edits[textbuf->edits_count-1].delete.edit_range.start == offset + size &&
+		textbuf->edits[textbuf->edits_count-1].tick >= now - app->tick_rate / 10 * 3 && false)
 	{
 		TextBufferEdit* edit = &textbuf->edits[textbuf->edits_count-1];
 		PushEditText_(app, textbuf, size);
 
-		uint8* mem = textbuf->edit_text_buffer + edit->range_into_edit_text_buffer.start;
-		intz prev_size = edit->range_into_edit_text_buffer.end - edit->range_into_edit_text_buffer.start;
+		uint8* mem = textbuf->edit_text_buffer + edit->delete.edit_text_buffer.start;
+		intz prev_size = RangeSize(edit->delete.edit_text_buffer);
 		MemoryMove(mem + size, mem, prev_size);
 		MemoryCopy(mem, deleted_str.data, size);
-		edit->file_edit_range.start -= size;
-		edit->range_into_edit_text_buffer.end += size;
+		edit->delete.edit_range.start -= size;
+		edit->delete.edit_text_buffer.end += size;
 		edit->tick = now;
 	}
 	else
 		PushEdit_(app, textbuf, offset, size, deleted_str, false, now);
+}
+
+BED_API void
+TextBufferTranspose(App* app, TextBuffer* textbuf, Range first, Range second)
+{
+	Trace();
+	TransposeWithoutMakingEdit_(textbuf, first, second);
+
+	// Edits
+	uint64 now = OS_Tick();
+	if (false)
+	{
+		// TODO(ljre): Accumulate transpose edits
+	}
+	else
+		PushTranposeEdit_(app, textbuf, first, second, now);
 }
 
 BED_API String
@@ -675,52 +730,93 @@ TextBufferOffsetFromLineCol(TextBuffer* textbuf, LineCol pos, int32 tab_size)
 	return it;
 }
 
-BED_API intz
-TextBufferUndo(App* app, TextBuffer* textbuf, intz* out_size, bool* out_was_insertion)
+BED_API bool
+TextBufferUndo(App* app, TextBuffer* textbuf, TextBufferEdit* out_edit)
 {
 	Trace();
 	if (textbuf->edits_count <= 0)
-		return -1;
+		return false;
 
 	TextBufferEdit* edit = &textbuf->edits[--textbuf->edits_count];
-	intz size = edit->file_edit_range.end - edit->file_edit_range.start;
-	if (edit->is_insertion)
-		DeleteWithoutMakingEdit_(textbuf, edit->file_edit_range.start, size);
-	else
+	intz offset = -1;
+	intz size = -1;
+	switch (edit->kind)
 	{
-		intz str_size = edit->range_into_edit_text_buffer.end - edit->range_into_edit_text_buffer.start;
-		String str = StrMake(str_size, textbuf->edit_text_buffer + edit->range_into_edit_text_buffer.start);
-		InsertWithoutMakingEdit_(app, textbuf, edit->file_edit_range.start, str);
+		case TextBufferEditKind_Delete:
+		{
+			offset = edit->delete.edit_range.start;
+			size = RangeSize(edit->delete.edit_text_buffer);
+			String str = StrMake(size, textbuf->edit_text_buffer + edit->delete.edit_text_buffer.start);
+			InsertWithoutMakingEdit_(app, textbuf, offset, str);
+			// textbuf->edit_text_buffer_size = edit->delete.edit_text_buffer.end;
+		} break;
+		case TextBufferEditKind_Insert:
+		{
+			offset = edit->insert.edit_range.start;
+			size = RangeSize(edit->insert.edit_range);
+			DeleteWithoutMakingEdit_(textbuf, offset, size);
+			// textbuf->edit_text_buffer_size = edit->insert.edit_text_buffer.end;
+		} break;
+		case TextBufferEditKind_Transpose:
+		{
+			Range first = edit->transpose.from;
+			Range second = edit->transpose.to;
+			Range containing = RangeContaining(first, second);
+			offset = containing.start;
+			size = RangeSize(containing);
+			RangesTranpose(&first, &second);
+			TransposeWithoutMakingEdit_(textbuf, first, second);
+		} break;
 	}
+	SafeAssert(offset != -1 && size != -1);
 
-	if (out_size)
-		*out_size = size;
-	if (out_was_insertion)
-		*out_was_insertion = edit->is_insertion;
-	return edit->file_edit_range.start;
+	if (out_edit)
+		*out_edit = *edit;
+	return true;
 }
 
-BED_API intz
-TextBufferRedo(App* app, TextBuffer* textbuf, intz* out_size, bool* out_was_insertion)
+BED_API bool
+TextBufferRedo(App* app, TextBuffer* textbuf, TextBufferEdit* out_edit)
 {
 	Trace();
 	if (textbuf->edits_count >= textbuf->edits_usable_count)
-		return -1;
+		return false;
 
 	TextBufferEdit* edit = &textbuf->edits[textbuf->edits_count++];
-	intz size = edit->file_edit_range.end - edit->file_edit_range.start;
-	if (edit->is_insertion)
+	intz offset = -1;
+	intz size = -1;
+	switch (edit->kind)
 	{
-		intz str_size = edit->range_into_edit_text_buffer.end - edit->range_into_edit_text_buffer.start;
-		String str = StrMake(str_size, textbuf->edit_text_buffer + edit->range_into_edit_text_buffer.start);
-		InsertWithoutMakingEdit_(app, textbuf, edit->file_edit_range.start, str);
+		case TextBufferEditKind_Delete:
+		{
+			offset = edit->delete.edit_range.start;
+			size = RangeSize(edit->delete.edit_range);
+			DeleteWithoutMakingEdit_(textbuf, offset, size);
+			// textbuf->edit_text_buffer_size = edit->delete.edit_text_buffer.end;
+			SafeAssert(textbuf->edit_text_buffer_size <= textbuf->edit_text_buffer_usable_size);
+		} break;
+		case TextBufferEditKind_Insert:
+		{
+			offset = edit->insert.edit_range.start;
+			size = RangeSize(edit->insert.edit_text_buffer);
+			String str = StrMake(size, textbuf->edit_text_buffer + edit->insert.edit_text_buffer.start);
+			InsertWithoutMakingEdit_(app, textbuf, offset, str);
+			// textbuf->edit_text_buffer_size = edit->insert.edit_text_buffer.end;
+			SafeAssert(textbuf->edit_text_buffer_size <= textbuf->edit_text_buffer_usable_size);
+		} break;
+		case TextBufferEditKind_Transpose:
+		{
+			Range first = edit->transpose.from;
+			Range second = edit->transpose.to;
+			Range containing = RangeContaining(first, second);
+			offset = containing.start;
+			size = containing.end - containing.start;
+			TransposeWithoutMakingEdit_(textbuf, first, second);
+		} break;
 	}
-	else
-		DeleteWithoutMakingEdit_(textbuf, edit->file_edit_range.start, size);
+	SafeAssert(offset != -1 && size != -1);
 
-	if (out_size)
-		*out_size = size;
-	if (out_was_insertion)
-		*out_was_insertion = edit->is_insertion;
-	return edit->file_edit_range.start;
+	if (out_edit)
+		*out_edit = *edit;
+	return offset;
 }
