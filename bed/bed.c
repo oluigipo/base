@@ -23,13 +23,14 @@ IncludeBinary(g_quads_ps, "shader_quad_ps.dxil");
 static uint64
 UnsetMsb(uint64 value)
 {
-	uint64 mask = value >> 1;
+	uint64 mask = value;
+	mask |= mask >> 1;
 	mask |= mask >> 2;
 	mask |= mask >> 4;
 	mask |= mask >> 8;
 	mask |= mask >> 16;
 	mask |= mask >> 32;
-	return value & mask;
+	return value & mask >> 1;
 }
 
 static int32
@@ -39,8 +40,9 @@ MsbIndex(uint64 value)
 }
 
 BED_API int32
-CIndentPushLine(CIndentCtx* cindent, String line)
+CIndentPushLine(CIndentCtx* cindent, String line, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index, intz base_line_offset)
 {
+	Trace();
 	int32 braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
 	int32 parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
 	int32 scope_nesting = Max(braces_nesting, parens_nesting);
@@ -48,13 +50,46 @@ CIndentPushLine(CIndentCtx* cindent, String line)
 	int32 parens_nesting_at_start = parens_nesting;
 
 	while (line.size > 0 && line.data[0] == '\t')
+	{
 		line = StringSlice(line, 1, -1);
+		++base_line_offset;
+	}
 
 	for (intz i = 0; i < line.size; ++i)
 	{
 		uint8 ch = line.data[i];
-		bool just_closed = false;
 
+		// NOTE(ljre): Check if we're inside a comment, and if we are, jump to the next non-comment char
+		bool is_inside_comment = false;
+		for (intz cf_i = start_cf_index; cf_i < cf_count; ++cf_i)
+		{
+			CF_TokenKind kind = cf_kinds[cf_i];
+			CF_SourceRange const* range = &cf_ranges[cf_i];
+
+			if (range->end - base_line_offset <= i)
+				continue;
+			if (range->begin - base_line_offset > i)
+			{
+				start_cf_index = cf_i;
+				break;
+			}
+
+			if (kind == CF_TokenKind_Comment || kind == CF_TokenKind_MultilineComment ||
+				kind == CF_TokenKind_LitString || kind == CF_TokenKind_LitWideString || kind == CF_TokenKind_LitUtf8String ||
+				kind == CF_TokenKind_LitChar || kind == CF_TokenKind_LitWideChar || kind == CF_TokenKind_LitUtf8Char)
+			{
+				i = range->end - base_line_offset;
+				is_inside_comment = true;
+				break;
+			}
+		}
+		if (is_inside_comment)
+		{
+			--i;
+			continue;
+		}
+
+		bool just_closed = false;
 		if (ch == '{')
 		{
 			// NOTE(ljre): If we're opening a brace in the same line a paren was open, the "ownership" of
@@ -173,6 +208,7 @@ typedef QuadUniform_;
 static void
 PushQuad_(Arena* arena, float32 pos[4], int16 texcoords[4], int16 texindex, int16 texkind, uint32 color)
 {
+	Trace();
 	if (!texcoords)
 		texcoords = (int16[4]) { 0, 0, INT16_MAX, INT16_MAX };
 	ArenaPushStructInit(arena, QuadVertex_, {
@@ -220,6 +256,7 @@ typedef ColorRange_;
 static TextPositioning_
 PushText_(App* app, Arena* arena, TextPositioning_ pos, String str, uint32 color, int16 texindex, int16 texkind, intz color_ranges_count, ColorRange_ const color_ranges[])
 {
+	Trace();
 	int32 x = pos.start_x;
 	int32 y = pos.start_y;
 	ColorRange_ color_range = {
@@ -243,7 +280,9 @@ PushText_(App* app, Arena* arena, TextPositioning_ pos, String str, uint32 color
 		}
 		else if (codepoint == '\t')
 		{
-			x += app->glyph_advance * app->tab_size;
+			int32 col = (x - pos.line_start_x);
+			x = RoundToNextTab(col / app->glyph_advance, app->tab_size) * app->glyph_advance + pos.line_start_x;
+			// x += app->tab_size * app->glyph_advance;
 			continue;
 		}
 		else if (codepoint == '\n')
@@ -342,6 +381,7 @@ PushRect_(Arena* arena, Rect rect, int16 texcoords[4], int16 texindex, int16 tex
 static void
 UpdateTextViewLayout_(App* app, TextView* view, Rect rect, int32 line_count)
 {
+	Trace();
 	if (line_count == 0)
 	{
 		TextBuffer* textbuf = TextBufferFromIndex(app, view->textbuf_index);
@@ -378,6 +418,7 @@ UpdateTextViewLayout_(App* app, TextView* view, Rect rect, int32 line_count)
 static void
 PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex, uint32 color, uint32 status_bar_color)
 {
+	Trace();
 	TextBuffer* textbuf = TextBufferFromIndex(app, view->textbuf_index);
 	TextBufferRefreshTokens(app, textbuf);
 	int32 line_count = TextBufferLineCount(textbuf);
@@ -405,8 +446,17 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 		for (; prev_it = it, TextBufferLineIterator(textbuf, &it, &left_str, &right_str); ++line)
 		{
 			ArenaSavepoint scratch = ArenaSave(ScratchArena(1, &arena));
-			String str = ArenaPrintf(scratch.arena, "%S%S", left_str, right_str);
-			intz this_scope_nesting = CIndentPushLine(&cindent, str);
+			String str = {};
+			if (right_str.size)
+			{
+				uint8* mem = ArenaPushDirtyAligned(scratch.arena, left_str.size+right_str.size, 1);
+				MemoryCopy(mem, left_str.data, left_str.size);
+				MemoryCopy(mem+left_str.size, right_str.data, right_str.size);
+				str = StrMake(left_str.size + right_str.size, mem);
+			}
+			else
+				str = left_str;
+			intz this_scope_nesting = CIndentPushLine(&cindent, str, textbuf->cf_count, textbuf->cf_kinds, textbuf->cf_ranges, last_cf_index, prev_it);
 
 			intz consumed_tabs = 0;
 			while (consumed_tabs < str.size && consumed_tabs < this_scope_nesting)
@@ -441,9 +491,6 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 
 			str = StringSlice(str, consumed_tabs, -1);
 
-			Rect pos = layout->text_screen;
-			pos.x1 += this_scope_nesting * app->glyph_advance * app->tab_size;
-			pos.y1 += (line-first_line) * app->glyph_line_height;
 			ColorRange_* color_ranges = ArenaEndAligned(scratch.arena, alignof(ColorRange_));
 			{
 				bool is_preproc_line = false;
@@ -494,6 +541,10 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 				}
 			}
 			intz color_ranges_count = (ColorRange_*)ArenaEnd(scratch.arena) - color_ranges;
+
+			Rect pos = layout->text_screen;
+			pos.x1 += this_scope_nesting * app->glyph_advance * app->tab_size;
+			pos.y1 += (line-first_line) * app->glyph_line_height;
 			PushText2_(app, arena, pos, str, app->c_foreground, 0, 1, color_ranges_count, color_ranges);
 
 			ArenaRestore(scratch);
@@ -844,7 +895,7 @@ EntryPoint(int32 argc, const char* const argv[])
 			.kind = TextViewKind_File,
 			.cursor = {},
 			.line = 1,
-			.file_path = StrInit("os/os_win32.c"),
+			.file_path = StrInit("bed/bed.c"),
 		};
 		TextBufferFromFile(app, app->left_view.file_path, TextBufferKind_C, &app->left_view.textbuf_index);
 		app->right_view = (TextView) {
@@ -860,6 +911,8 @@ EntryPoint(int32 argc, const char* const argv[])
 		ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
 		intz event_count;
 		OS_Event* events = OS_PollEvents(true, scratch.arena, &event_count);
+
+		TraceFrameBegin();
 
 		TextView* selected_view = (app->is_right_view_selected) ? &app->right_view : &app->left_view;
 		TextBuffer* textbuf = TextBufferFromIndex(app, selected_view->textbuf_index);
@@ -916,11 +969,11 @@ EntryPoint(int32 argc, const char* const argv[])
 					case OS_KeyboardKey_Backspace:
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdDeleteBackwardSnakeWord(&selected_view->cursor, textbuf, 1);
+							TextCursorCmdDeleteBackwardSnakeWord(app, &selected_view->cursor, textbuf, 1);
 						else if (event->window_key.alt)
-							TextCursorCmdDeleteBackwardPascalWord(&selected_view->cursor, textbuf, 1);
+							TextCursorCmdDeleteBackwardPascalWord(app, &selected_view->cursor, textbuf, 1);
 						else
-							TextCursorCmdDeleteBackward(&selected_view->cursor, textbuf, 1);
+							TextCursorCmdDeleteBackward(app, &selected_view->cursor, textbuf, 1);
 					} break;
 					case OS_KeyboardKey_End: TextCursorCmdEndOfLine(&selected_view->cursor, textbuf); break;
 					case OS_KeyboardKey_Home: TextCursorCmdStartOfLine(&selected_view->cursor, textbuf); break;
@@ -936,7 +989,7 @@ EntryPoint(int32 argc, const char* const argv[])
 					case 'D':
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdDeleteToMarker(&selected_view->cursor, textbuf);
+							TextCursorCmdDeleteToMarker(app, &selected_view->cursor, textbuf);
 					} break;
 					case 'C':
 					{
@@ -946,7 +999,7 @@ EntryPoint(int32 argc, const char* const argv[])
 					case 'V':
 					{
 						if (event->window_key.ctrl)
-							TextCursorCmdPaste(app, &selected_view->cursor, textbuf);
+							TextCursorCmdPaste(app, &selected_view->cursor, textbuf, 1);
 					} break;
 					case ' ':
 					{
@@ -994,7 +1047,7 @@ EntryPoint(int32 argc, const char* const argv[])
 
 					selected_view = (app->is_right_view_selected) ? &app->right_view : &app->left_view;
 					textbuf = TextBufferFromIndex(app, selected_view->textbuf_index);
-						
+					
 					SetCursorPosFromMouse_(app, selected_view, textbuf, event->window_mouse_click.mouse_x, event->window_mouse_click.mouse_y);
 					TextCursorCmdPlaceMarker(&selected_view->cursor);
 					app->is_mouse_dragging = true;
@@ -1092,6 +1145,7 @@ EntryPoint(int32 argc, const char* const argv[])
 
 		R3_Present(app->r3);
 		ArenaRestore(scratch);
+		TraceFrameEnd();
 	}
 
 	R3_FreePipeline(app->r3, &app->quads_pipeline);

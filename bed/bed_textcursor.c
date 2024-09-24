@@ -129,7 +129,7 @@ TextCursorCmdInsert(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amou
 }
 
 BED_API void
-TextCursorCmdDeleteBackward(TextCursor* cursor, TextBuffer* textbuf, intz amount)
+TextCursorCmdDeleteBackward(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount)
 {
 	Trace();
 
@@ -143,7 +143,7 @@ TextCursorCmdDeleteBackward(TextCursor* cursor, TextBuffer* textbuf, intz amount
 	}
 	intz size = cursor->offset - it;
 
-	TextBufferDelete(textbuf, it, size);
+	TextBufferDelete(app, textbuf, it, size);
 	if (cursor->offset < cursor->marker_offset)
 		cursor->marker_offset -= size;
 	cursor->offset = it;
@@ -169,6 +169,7 @@ TextCursorCmdLeft(TextCursor* cursor, TextBuffer* textbuf, intz amount)
 BED_API void
 TextCursorCmdRight(TextCursor* cursor, TextBuffer* textbuf, intz amount)
 {
+	Trace();
 	intz it = cursor->offset;
 	intz last_valid_it = it;
 	
@@ -350,8 +351,9 @@ TextCursorCmdPlaceMarker(TextCursor* cursor)
 }
 
 BED_API void
-TextCursorCmdDeleteToMarker(TextCursor* cursor, TextBuffer* textbuf)
+TextCursorCmdDeleteToMarker(App* app, TextCursor* cursor, TextBuffer* textbuf)
 {
+	Trace();
 	intz offset, size;
 	if (cursor->offset < cursor->marker_offset)
 	{
@@ -366,7 +368,7 @@ TextCursorCmdDeleteToMarker(TextCursor* cursor, TextBuffer* textbuf)
 	else
 		return;
 
-	TextBufferDelete(textbuf, offset, size);
+	TextBufferDelete(app, textbuf, offset, size);
 	cursor->offset = offset;
 	cursor->marker_offset = offset;
 }
@@ -420,7 +422,7 @@ TextCursorCmdLeftPascalWord(TextCursor* cursor, TextBuffer* textbuf, intz amount
 }
 
 BED_API void
-TextCursorCmdDeleteBackwardSnakeWord(TextCursor* cursor, TextBuffer* textbuf, intz amount)
+TextCursorCmdDeleteBackwardSnakeWord(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount)
 {
 	Trace();
 	for (intz i = 0; i < amount; ++i)
@@ -428,7 +430,7 @@ TextCursorCmdDeleteBackwardSnakeWord(TextCursor* cursor, TextBuffer* textbuf, in
 		if (cursor->offset == 0)
 			break;
 		intz start = FindSimpleBoundaryBackward_(textbuf, cursor->offset, SimpleBoundarySnakeWordProc_);
-		TextBufferDelete(textbuf, start, cursor->offset - start);
+		TextBufferDelete(app, textbuf, start, cursor->offset - start);
 		if (cursor->marker_offset > cursor->offset)
 			cursor->marker_offset -= (cursor->offset - start);
 		cursor->offset -= (cursor->offset - start);
@@ -436,15 +438,15 @@ TextCursorCmdDeleteBackwardSnakeWord(TextCursor* cursor, TextBuffer* textbuf, in
 }
 
 BED_API void
-TextCursorCmdDeleteBackwardPascalWord(TextCursor* cursor, TextBuffer* textbuf, intz amount)
+TextCursorCmdDeleteBackwardPascalWord(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount)
 {
 	Trace();
 	for (intz i = 0; i < amount; ++i)
 	{
 		if (cursor->offset == 0)
 			break;
-		intz start = FindSimpleBoundaryBackward_(textbuf, cursor->offset, SimpleBoundarySnakeWordProc_);
-		TextBufferDelete(textbuf, start, cursor->offset - start);
+		intz start = FindSimpleBoundaryBackward_(textbuf, cursor->offset, SimpleBoundaryPascalWordProc_);
+		TextBufferDelete(app, textbuf, start, cursor->offset - start);
 		if (cursor->marker_offset > cursor->offset)
 			cursor->marker_offset -= (cursor->offset - start);
 		cursor->offset -= (cursor->offset - start);
@@ -476,18 +478,21 @@ TextCursorCmdCopy(App* app, TextCursor* cursor, TextBuffer* textbuf)
 }
 
 BED_API void
-TextCursorCmdPaste(App* app, TextCursor* cursor, TextBuffer* textbuf)
+TextCursorCmdPaste(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount)
 {
 	Trace();
 	ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
 	OS_ClipboardContents clip = OS_GetClipboard(AllocatorFromArena(scratch.arena), OS_ClipboardContentType_Text, app->window, NULL);
 
-	uint8* mem = TextBufferInsert(app, textbuf, cursor->offset, clip.contents.size);
-	if (cursor->marker_offset > cursor->offset)
-		cursor->marker_offset += clip.contents.size;
-	cursor->offset += clip.contents.size;
+	for (intz i = 0; i < amount; ++i)
+	{
+		uint8* mem = TextBufferInsert(app, textbuf, cursor->offset, clip.contents.size);
+		if (cursor->marker_offset > cursor->offset)
+			cursor->marker_offset += clip.contents.size;
+		cursor->offset += clip.contents.size;
+		MemoryCopy(mem, clip.contents.data, clip.contents.size);
+	}
 
-	MemoryCopy(mem, clip.contents.data, clip.contents.size);
 	ArenaRestore(scratch);
 }
 
@@ -575,4 +580,40 @@ TextCursorCmdSetMarker(TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int
 {
 	Trace();
 	cursor->marker_offset = TextBufferOffsetFromLineCol(textbuf, pos, tab_size);
+}
+
+BED_API void
+TextCursorPlayCommands(App* app, TextCursor* cursor, TextBuffer* textbuf, intz command_count, TextCursorCmd const commands[])
+{
+	Trace();
+	for (intz i = 0; i < command_count; ++i)
+	{
+		TextCursorCmd const* cmd = &commands[i];
+		switch (cmd->kind)
+		{
+			case TextCursorCmdKind_Null: Log(LOG_WARN, "TextCursorCmd.kind is Null..."); break;
+			case TextCursorCmdKind_Insert: TextCursorCmdInsert(app, cursor, textbuf, cmd->amount, cmd->codepoint); break;
+			case TextCursorCmdKind_DeleteBackward: TextCursorCmdDeleteBackward(app, cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_Left: TextCursorCmdLeft(cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_Right: TextCursorCmdRight(cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_Up: TextCursorCmdUp(cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_Down: TextCursorCmdDown(cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_EndOfLine: TextCursorCmdEndOfLine(cursor, textbuf); break;
+			case TextCursorCmdKind_StartOfLine: TextCursorCmdStartOfLine(cursor, textbuf); break;
+			case TextCursorCmdKind_PlaceMarker: TextCursorCmdPlaceMarker(cursor); break;
+			case TextCursorCmdKind_DeleteToMarker: TextCursorCmdDeleteToMarker(app, cursor, textbuf); break;
+			case TextCursorCmdKind_RightSnakeWord: TextCursorCmdRightSnakeWord(cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_LeftSnakeWord: TextCursorCmdLeftSnakeWord(cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_DeleteBackwardSnakeWord: TextCursorCmdDeleteBackwardSnakeWord(app, cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_RightPascalWord: TextCursorCmdRightPascalWord(cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_LeftPascalWord: TextCursorCmdLeftPascalWord(cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_DeleteBackwardPascalWord: TextCursorCmdDeleteBackwardPascalWord(app, cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_Copy: TextCursorCmdCopy(app, cursor, textbuf); break;
+			case TextCursorCmdKind_Paste: TextCursorCmdPaste(app, cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_UpParagraph: TextCursorCmdUpParagraph(cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_DownParagraph: TextCursorCmdDownParagraph(cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_Set: TextCursorCmdSet(cursor, textbuf, cmd->linecol, app->tab_size); break;
+			case TextCursorCmdKind_SetMarker: TextCursorCmdSetMarker(cursor, textbuf, cmd->linecol, app->tab_size); break;
+		}
+	}
 }

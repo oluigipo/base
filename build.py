@@ -123,9 +123,10 @@ outdir = None
 middir = None
 output_name = None
 windows_subsystem = "console"
+tracy = False
 
 def main():
-    global project, is_debug, force_rebuild, target, outdir, middir, output_name, windows_subsystem
+    global project, is_debug, force_rebuild, target, outdir, middir, output_name, windows_subsystem, tracy
     
     ap = argparse.ArgumentParser()
     ap.add_argument('project')
@@ -135,6 +136,7 @@ def main():
     ap.add_argument('-no-compile-commands', action='store_true')
     ap.add_argument('-asan', action='store_true')
     ap.add_argument('-ubsan', action='store_true')
+    ap.add_argument('-tracy', action='store_true')
     args = ap.parse_args()
 
     project = args.project
@@ -144,6 +146,7 @@ def main():
     gen_compile_commands = not args.no_compile_commands
     asan = args.asan
     ubsan = args.ubsan
+    tracy = args.tracy
 
     with open(f'{project}/build.txt', 'r') as file:
         lines = file.read().splitlines()
@@ -155,6 +158,10 @@ def main():
     
     Path(middir).mkdir(parents=True, exist_ok=True)
 
+    allowed_tags = [target]
+    if tracy:
+        allowed_tags.append("tracy")
+
     objs = []
     shaders = []
     cmds = []
@@ -163,7 +170,6 @@ def main():
     incdirs = []
     libdirs = []
     output_name = None
-    allowed_tags = [target]
     odin = None
     is_root = False
     original_output_name = None

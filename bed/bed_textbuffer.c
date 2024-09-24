@@ -1,24 +1,98 @@
 #include "bed.h"
 
 static TextBuffer*
-MakeTextBuffer_(App* app, intz* out_index)
+AllocTextBuffer_(App* app, intz* out_index)
 {
-	if (app->textbuf_pool_count+1 >= app->textbuf_pool_cap)
+	Trace();
+	intz index;
+
+	if (app->textbuf_pool_first_free)
 	{
-		intz new_cap = app->textbuf_pool_cap + (app->textbuf_pool_cap >> 1) + 1;
-		AllocatorError err;
-		if (!AllocatorResizeArrayOk(&app->heap, new_cap, sizeof(TextBuffer), alignof(TextBuffer), &app->textbuf_pool, app->textbuf_pool_cap, &err))
+		index = app->textbuf_pool_first_free - 1;
+		app->textbuf_pool_first_free = app->textbuf_pool[index].next_free;
+	}
+	else
+	{
+		if (app->textbuf_pool_count+1 >= app->textbuf_pool_cap)
 		{
-			Log(LOG_ERROR, "could not resize textbuf pool: %u", (uint32)err);
-			*out_index = 0;
-			return NULL;
+			intz new_cap = app->textbuf_pool_cap + (app->textbuf_pool_cap >> 1) + 1;
+			AllocatorError err;
+			if (!AllocatorResizeArrayOk(&app->heap, new_cap, sizeof(TextBuffer), alignof(TextBuffer), &app->textbuf_pool, app->textbuf_pool_cap, &err))
+			{
+				Log(LOG_ERROR, "could not resize textbuf pool: %u", (uint32)err);
+				*out_index = 0;
+				return NULL;
+			}
+			app->textbuf_pool_cap = new_cap;
 		}
-		app->textbuf_pool_cap = new_cap;
+		index = app->textbuf_pool_count++;
 	}
 
-	intz index = app->textbuf_pool_count++;
 	*out_index = index+1;
 	return &app->textbuf_pool[index];
+}
+
+static intz
+PushEditText_(App* app, TextBuffer* textbuf, intz deleted_size)
+{
+	Trace();
+	if (textbuf->edit_text_buffer_size + deleted_size > textbuf->edit_text_buffer_cap)
+	{
+		AllocatorError err;
+		intz desired_cap = textbuf->edit_text_buffer_cap + (textbuf->edit_text_buffer_cap>>1) + 1;
+		desired_cap = Max(desired_cap, textbuf->edit_text_buffer_size + deleted_size);
+		if (!AllocatorResizeOk(&app->heap, desired_cap, 1, &textbuf->edit_text_buffer, textbuf->edit_text_buffer_cap, &err))
+		{
+			Log(LOG_ERROR, "could not resize textbuf edit text buffer: %u", (uint32)err);
+			return -1;
+		}
+		textbuf->edit_text_buffer_cap = desired_cap;
+	}
+
+	intz offset = textbuf->edit_text_buffer_size;
+	textbuf->edit_text_buffer_size += deleted_size;
+	return offset;
+}
+
+static void
+PushEdit_(App* app, TextBuffer* textbuf, intz offset, intz size, String deleted)
+{
+	Trace();
+	AllocatorError err;
+	Range deleted_text_range = {};
+	if (deleted.size)
+	{
+		intz offset = PushEditText_(app, textbuf, deleted.size);
+		if (offset == -1)
+			return;
+		deleted_text_range = (Range) {
+			.start = offset,
+			.end = offset + deleted.size,
+		};
+		MemoryCopy(
+			textbuf->edit_text_buffer + offset,
+			deleted.data,
+			deleted.size);
+	}
+
+	if (textbuf->edits_count+1 > textbuf->edits_cap)
+	{
+		intz desired_cap = textbuf->edits_cap + (textbuf->edits_cap>>1) + 1;
+		if (!AllocatorResizeArrayOk(&app->heap, desired_cap, sizeof(TextBufferEdit), alignof(TextBufferEdit), &textbuf->edits, textbuf->edits_cap, &err))
+		{
+			Log(LOG_ERROR, "could not resize textbuf edit buffer: %u", (uint32)err);
+			return;
+		}
+		textbuf->edits_cap = desired_cap;
+	}
+
+	textbuf->edits[textbuf->edits_count++] = (TextBufferEdit) {
+		.file_edit_range = {
+			offset,
+			offset + size,
+		},
+		.range_into_edit_text_buffer = deleted_text_range,
+	};
 }
 
 BED_API TextBuffer*
@@ -54,7 +128,7 @@ TextBufferFromFile(App* app, String path, TextBufferKind kind, intz* out_index)
 		return NULL;
 	}
 
-	TextBuffer* textbuf = MakeTextBuffer_(app, out_index);
+	TextBuffer* textbuf = AllocTextBuffer_(app, out_index);
 	if (!textbuf)
 	{
 		Log(LOG_ERROR, "could not make text buffer when opening path: %S", path);
@@ -75,7 +149,8 @@ TextBufferFromFile(App* app, String path, TextBufferKind kind, intz* out_index)
 
 	*textbuf = (TextBuffer) {
 		.kind = kind,
-		.utf8_text =utf8_text,
+		.ref_count = 1,
+		.utf8_text = utf8_text,
 		.size = total_size,
 		.gap_start = size,
 		.gap_end = total_size,
@@ -87,7 +162,7 @@ BED_API TextBuffer*
 TextBufferFromString(App* app, String str, TextBufferKind kind, intz* out_index)
 {
 	Trace();
-	TextBuffer* textbuf = MakeTextBuffer_(app, out_index);
+	TextBuffer* textbuf = AllocTextBuffer_(app, out_index);
 	if (!textbuf)
 	{
 		Log(LOG_ERROR, "could not make text buffer from string: %S", str);
@@ -106,7 +181,8 @@ TextBufferFromString(App* app, String str, TextBufferKind kind, intz* out_index)
 
 	*textbuf = (TextBuffer) {
 		.kind = kind,
-		.utf8_text =utf8_text,
+		.ref_count = 1,
+		.utf8_text = utf8_text,
 		.size = total_size,
 		.gap_start = str.size,
 		.gap_end = total_size,
@@ -114,11 +190,64 @@ TextBufferFromString(App* app, String str, TextBufferKind kind, intz* out_index)
 	return textbuf;
 }
 
+BED_API TextBuffer*
+TextBufferAcquire(App* app, intz index)
+{
+	Trace();
+	if (index <= 0 || index > app->textbuf_pool_count)
+	{
+		Log(LOG_WARN, "trying to acquire invalid textbuffer index: %Z", index);
+		return NULL;
+	}
+	TextBuffer* textbuf = &app->textbuf_pool[index - 1];
+	if (textbuf->next_free || !textbuf->kind)
+	{
+		Log(LOG_WARN, "trying to acquire textbuffer that is inactive", index);
+		return NULL;
+	}
+
+	++textbuf->ref_count;
+	return textbuf;
+}
+
+BED_API void
+TextBufferRelease(App* app, intz index)
+{
+	Trace();
+	if (index <= 0 || index > app->textbuf_pool_count)
+	{
+		Log(LOG_WARN, "trying to release invalid textbuffer index: %Z", index);
+		return;
+	}
+	TextBuffer* textbuf = &app->textbuf_pool[index - 1];
+	if (textbuf->next_free || !textbuf->kind)
+	{
+		Log(LOG_WARN, "trying to release textbuffer that is inactive", index);
+		return;
+	}
+	
+	if (--textbuf->ref_count == 0)
+	{
+		AllocatorFree(&app->heap, textbuf->utf8_text, textbuf->size, NULL);
+		if (textbuf->cf_kinds)
+			AllocatorFreeArray(&app->heap, sizeof(CF_TokenKind), textbuf->cf_kinds, textbuf->cf_cap, NULL);
+		if (textbuf->cf_ranges)
+			AllocatorFreeArray(&app->heap, sizeof(CF_SourceRange), textbuf->cf_ranges, textbuf->cf_cap, NULL);
+		if (textbuf->edits)
+			AllocatorFreeArray(&app->heap, sizeof(TextBufferEdit), textbuf->edits, textbuf->edits_cap, NULL);
+		if (textbuf->edit_text_buffer)
+			AllocatorFree(&app->heap, textbuf->edit_text_buffer, textbuf->edit_text_buffer_cap, NULL);
+		MemoryZero(textbuf, sizeof(*textbuf));
+		textbuf->next_free = (uint32)app->textbuf_pool_first_free;
+		app->textbuf_pool_first_free = index;
+	}
+}
+
 BED_API void
 TextBufferRefreshTokens(App* app, TextBuffer* textbuf)
 {
 	Trace();
-	if (textbuf->change_start == -1 && textbuf->cf_cap)
+	if (textbuf->dirty_changes_start == -1 && textbuf->cf_cap)
 	{
 		// NOTE: no change has been made, nothing to do
 		return;
@@ -164,8 +293,8 @@ TextBufferRefreshTokens(App* app, TextBuffer* textbuf)
 	textbuf->cf_count = lex.token_count;
 	textbuf->cf_kinds = lex.token_kinds;
 	textbuf->cf_ranges = lex.source_ranges;
-	textbuf->change_start = -1;
-	textbuf->change_end = -1;
+	textbuf->dirty_changes_start = -1;
+	textbuf->dirty_changes_end = -1;
 }
 
 BED_API void
@@ -235,7 +364,7 @@ TextBufferLineColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size)
 			++result.line;
 		}
 		else if (codepoint == '\t')
-			result.col += tab_size;
+			result.col = RoundToNextTab(result.col-1, tab_size) + 1;
 		else
 			++result.col;
 	}
@@ -249,7 +378,7 @@ TextBufferLineColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size)
 			++result.line;
 		}
 		else if (codepoint == '\t')
-			result.col += tab_size;
+			result.col = RoundToNextTab(result.col-1, tab_size) + 1;
 		else
 			++result.col;
 	}
@@ -271,7 +400,7 @@ TextBufferColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size)
 		if (sample == '\n')
 			return result;
 		else if (sample == '\t')
-			result += tab_size;
+			result = RoundToNextTab(result-1, tab_size) + 1;
 		else if (IsStartOfCodepoint(sample))
 			++result;
 	}
@@ -345,47 +474,86 @@ TextBufferInsert(App* app, TextBuffer* textbuf, intz offset, intz size)
 
 	uint8* result = &textbuf->utf8_text[textbuf->gap_start];
 	textbuf->gap_start += size;
-	if (textbuf->change_start == -1)
+
+	// Dirty changes
+	if (textbuf->dirty_changes_start == -1)
 	{
-		textbuf->change_start = offset;
-		textbuf->change_end = offset + size;
+		textbuf->dirty_changes_start = offset;
+		textbuf->dirty_changes_end = offset + size;
 	}
 	else
 	{
-		textbuf->change_start = Min(textbuf->change_start, offset);
-		textbuf->change_end = Max(textbuf->change_end, offset + size);
+		textbuf->dirty_changes_start = Min(textbuf->dirty_changes_start, offset);
+		textbuf->dirty_changes_end = Max(textbuf->dirty_changes_end, offset + size);
 	}
+
+	// Edits
+	if (textbuf->edits_count > 0 &&
+		textbuf->edits[textbuf->edits_count-1].range_into_edit_text_buffer.end == 0 &&
+		textbuf->edits[textbuf->edits_count-1].file_edit_range.end == offset)
+	{
+		textbuf->edits[textbuf->edits_count-1].file_edit_range.end += size;
+	}
+	else
+		PushEdit_(app, textbuf, offset, size, StrNull);
+
 	return result;
 }
 
 BED_API void
-TextBufferDelete(TextBuffer* textbuf, intz offset, intz size)
+TextBufferDelete(App* app, TextBuffer* textbuf, intz offset, intz size)
 {
 	Trace();
+	String deleted_str = {};
 	if (offset == textbuf->gap_start)
+	{
+		deleted_str = StrMake(size, textbuf->utf8_text + textbuf->gap_end);
 		textbuf->gap_end += size;
+	}
 	else if (offset + size == textbuf->gap_start)
+	{
+		deleted_str = StrMake(size, textbuf->utf8_text + textbuf->gap_start);
 		textbuf->gap_start -= size;
+	}
 	else
 	{
 		TextBufferMoveGapToOffset(textbuf, offset);
+		deleted_str = StrMake(size, textbuf->utf8_text + textbuf->gap_end);
 		textbuf->gap_end += size;
 	}
 
-	if (textbuf->change_start == -1)
+	// Dirty changes
+	if (textbuf->dirty_changes_start == -1)
 	{
-		textbuf->change_start = offset;
-		textbuf->change_end = offset;
+		textbuf->dirty_changes_start = offset;
+		textbuf->dirty_changes_end = offset;
 	}
 	else
 	{
-		if (textbuf->change_start > offset)
-			textbuf->change_start -= size;
-		if (textbuf->change_end > offset+size)
-			textbuf->change_end -= size;
-		else if (textbuf->change_end > offset)
-			textbuf->change_end = offset;
+		if (textbuf->dirty_changes_start > offset)
+			textbuf->dirty_changes_start -= size;
+		if (textbuf->dirty_changes_end > offset+size)
+			textbuf->dirty_changes_end -= size;
+		else if (textbuf->dirty_changes_end > offset)
+			textbuf->dirty_changes_end = offset;
 	}
+
+	// Edits
+	if (textbuf->edits_count > 0 &&
+		textbuf->edits[textbuf->edits_count-1].range_into_edit_text_buffer.end != 0 &&
+		textbuf->edits[textbuf->edits_count-1].file_edit_range.start == offset + size)
+	{
+		TextBufferEdit* edit = &textbuf->edits[textbuf->edits_count-1];
+		PushEditText_(app, textbuf, size);
+
+		uint8* mem = textbuf->edit_text_buffer + edit->range_into_edit_text_buffer.start;
+		intz prev_size = edit->range_into_edit_text_buffer.end - edit->range_into_edit_text_buffer.start;
+		MemoryMove(mem + size, mem, prev_size);
+		MemoryCopy(mem, deleted_str.data, size);
+		edit->range_into_edit_text_buffer.end += size;
+	}
+	else
+		PushEdit_(app, textbuf, offset, size, deleted_str);
 }
 
 BED_API String

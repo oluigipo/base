@@ -10,12 +10,26 @@
 #	define BED_API
 #endif
 
+struct Range
+{
+	intz start;
+	intz end;
+}
+typedef Range;
+
 struct Rect
 {
 	int32 x1, y1;
 	int32 x2, y2;
 }
 typedef Rect;
+
+struct TextBufferEdit
+{
+	Range file_edit_range;
+	Range range_into_edit_text_buffer; // if 0, then it's typing
+}
+typedef TextBufferEdit;
 
 enum TextBufferKind
 {
@@ -29,19 +43,29 @@ struct TextBuffer
 {
 	TextBufferKind kind;
 	uint32 next_free;
+	intz ref_count; // multiple textviews can access the same textbuffer
 
 	uint8* utf8_text;
 	intz size;
 	intz gap_start;
 	intz gap_end;
 
-	intz change_start;
-	intz change_end;
+	intz dirty_changes_start;
+	intz dirty_changes_end;
 
 	intz cf_count;
 	intz cf_cap;
 	CF_TokenKind* cf_kinds;
 	CF_SourceRange* cf_ranges;
+
+	// for undo & redo
+	intz edits_count;
+	intz edits_usable_count; // if count < usable_count, then we can redo
+	intz edits_cap;
+	TextBufferEdit* edits;
+	intz edit_text_buffer_size;
+	intz edit_text_buffer_cap;
+	uint8* edit_text_buffer;
 }
 typedef TextBuffer;
 
@@ -232,10 +256,18 @@ RectCutSplitH(Rect* from, Rect* out_left, Rect* out_right)
 
 // ===========================================================================
 // ===========================================================================
-// UTF-8 Utils
+// Utils
 static inline bool
 IsStartOfCodepoint(uint8 ch)
 { return (ch & 0x80) == 0 || (ch & 0x40) != 0; }
+
+static inline int32
+RoundToNextTab(int32 col, int32 tab_size)
+{
+	int32 rem = col % tab_size;
+	col += tab_size - rem;
+	return col;
+}
 
 // ===========================================================================
 // ===========================================================================
@@ -244,6 +276,8 @@ BED_API TextBuffer* TextBufferFromIndex    (App* app, intz index);
 BED_API TextBuffer* TextBufferFromFile     (App* app, String path, TextBufferKind kind, intz* out_index);
 BED_API TextBuffer* TextBufferFromString   (App* app, String str, TextBufferKind kind, intz* out_index);
 BED_API void        TextBufferRefreshTokens(App* app, TextBuffer* textbuf);
+BED_API TextBuffer* TextBufferAcquire      (App* app, intz index);
+BED_API void        TextBufferRelease      (App* app, intz index);
 
 BED_API void    TextBufferGetStrings       (TextBuffer* textbuf, String* out_left, String* out_right);
 BED_API uint8   TextBufferSample           (TextBuffer* textbuf, intz offset);
@@ -252,17 +286,59 @@ BED_API int32   TextBufferLineCount        (TextBuffer* textbuf);
 BED_API LineCol TextBufferLineColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size);
 BED_API int32   TextBufferColFromOffset    (TextBuffer* textbuf, intz offset, int32 tab_size);
 BED_API void    TextBufferMoveGapToOffset  (TextBuffer* textbuf, intz offset);
-BED_API uint8*  TextBufferInsert           (App* app, TextBuffer* textbuf, intz offset, intz size);
-BED_API void    TextBufferDelete           (TextBuffer* textbuf, intz offset, intz size);
 BED_API String  TextBufferStringFromRange  (TextBuffer* textbuf, intz offset, intz size);
 BED_API bool    TextBufferLineIterator     (TextBuffer* textbuf, intz* it, String* left_str, String* right_str);
 BED_API intz    TextBufferOffsetFromLineCol(TextBuffer* textbuf, LineCol pos, int32 tab_size);
 
+BED_API uint8*  TextBufferInsert           (App* app, TextBuffer* textbuf, intz offset, intz size);
+BED_API void    TextBufferDelete           (App* app, TextBuffer* textbuf, intz offset, intz size);
+BED_API intz    TextBufferUndo             (TextBuffer* textbuf);
+BED_API intz    TextBufferRedo             (TextBuffer* textbuf);
+
 // ===========================================================================
 // ===========================================================================
 // TextCursor API
+enum TextCursorCmdKind
+{
+	TextCursorCmdKind_Null = 0,
+	TextCursorCmdKind_Insert,                   // amount, codepoint
+	TextCursorCmdKind_DeleteBackward,           // amount
+	TextCursorCmdKind_Left,                     // amount
+	TextCursorCmdKind_Right,                    // amount
+	TextCursorCmdKind_Up,                       // amount
+	TextCursorCmdKind_Down,                     // amount
+	TextCursorCmdKind_EndOfLine,                //
+	TextCursorCmdKind_StartOfLine,              //
+	TextCursorCmdKind_PlaceMarker,              //
+	TextCursorCmdKind_DeleteToMarker,           //
+	TextCursorCmdKind_RightSnakeWord,           // amount
+	TextCursorCmdKind_LeftSnakeWord,            // amount
+	TextCursorCmdKind_DeleteBackwardSnakeWord,  // amount
+	TextCursorCmdKind_RightPascalWord,          // amount
+	TextCursorCmdKind_LeftPascalWord,           // amount
+	TextCursorCmdKind_DeleteBackwardPascalWord, // amount
+	TextCursorCmdKind_Copy,                     //
+	TextCursorCmdKind_Paste,                    // amount
+	TextCursorCmdKind_UpParagraph,              // amount
+	TextCursorCmdKind_DownParagraph,            // amount
+	TextCursorCmdKind_Set,                      // linecol
+	TextCursorCmdKind_SetMarker,                // linecol
+}
+typedef TextCursorCmdKind;
+
+struct TextCursorCmd
+{
+	TextCursorCmdKind kind;
+	uint32 codepoint;
+	LineCol linecol;
+	intz amount;
+}
+typedef TextCursorCmd;
+
+BED_API void TextCursorPlayCommands(App* app, TextCursor* cursor, TextBuffer* textbuf, intz command_count, TextCursorCmd const commands[]);
+
 BED_API void TextCursorCmdInsert                 (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount, uint32 codepoint);
-BED_API void TextCursorCmdDeleteBackward         (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdDeleteBackward         (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdLeft                   (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdRight                  (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdUp                     (TextCursor* cursor, TextBuffer* textbuf, intz amount);
@@ -270,19 +346,19 @@ BED_API void TextCursorCmdDown                   (TextCursor* cursor, TextBuffer
 BED_API void TextCursorCmdEndOfLine              (TextCursor* cursor, TextBuffer* textbuf);
 BED_API void TextCursorCmdStartOfLine            (TextCursor* cursor, TextBuffer* textbuf);
 BED_API void TextCursorCmdPlaceMarker            (TextCursor* cursor);
-BED_API void TextCursorCmdDeleteToMarker         (TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdDeleteToMarker         (App* app, TextCursor* cursor, TextBuffer* textbuf);
 BED_API void TextCursorCmdRightSnakeWord         (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdLeftSnakeWord          (TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdDeleteBackwardSnakeWord(TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdDeleteBackwardSnakeWord(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdCopy                   (App* app, TextCursor* cursor, TextBuffer* textbuf);
-BED_API void TextCursorCmdPaste                  (App* app, TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdPaste                  (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdUpParagraph            (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdDownParagraph          (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdSet                    (TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int32 tab_size);
 BED_API void TextCursorCmdSetMarker              (TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int32 tab_size);
 BED_API void TextCursorCmdRightPascalWord        (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdLeftPascalWord         (TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdDeleteBackwardPascalWord(TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdDeleteBackwardPascalWord(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
 
 // ===========================================================================
 // ===========================================================================
@@ -294,6 +370,6 @@ struct CIndentCtx
 }
 typedef CIndentCtx;
 
-BED_API int32      CIndentPushLine          (CIndentCtx* cindent, String line);
+BED_API int32 CIndentPushLine(CIndentCtx* cindent, String line, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index, intz base_line_offset);
 
 #endif

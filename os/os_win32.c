@@ -2311,17 +2311,27 @@ OS_PollEvents(bool wait, Arena* output_arena, intsize* out_event_count)
 	
 	if (wait)
 	{
-		MSG message;
-		GetMessageW(&message, NULL, 0, 0);
-		TranslateMessage(&message);
-		DispatchMessageW(&message);
+		while (ArenaEnd(output_arena) == events)
+		{
+			MSG message;
+			GetMessageW(&message, NULL, 0, 0);
+			TranslateMessage(&message);
+			DispatchMessageW(&message);
+			while (PeekMessageW(&message, NULL, 0, 0, PM_REMOVE) > 0)
+			{
+				TranslateMessage(&message);
+				DispatchMessageW(&message);
+			}
+		}
 	}
-	
-	MSG message;
-	while (PeekMessageW(&message, NULL, 0, 0, PM_REMOVE))
+	else
 	{
-		TranslateMessage(&message);
-		DispatchMessageW(&message);
+		MSG message;
+		while (PeekMessageW(&message, NULL, 0, 0, PM_REMOVE) > 0)
+		{
+			TranslateMessage(&message);
+			DispatchMessageW(&message);
+		}
 	}
 	
 	g_win32.polling_event_output_arena = NULL;

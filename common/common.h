@@ -219,6 +219,7 @@ static_assert(CONFIG_ARENA_DEFAULT_ALIGNMENT != 0 && IsPowerOf2(CONFIG_ARENA_DEF
 static inline void*
 MemoryZeroSafe(void* restrict dst, intz size)
 {
+	Trace();
 	MemoryZero(dst, size);
 #if defined(__GNUC__) || defined(__clang__)
 	__asm__ __volatile__ ("" : "+X"(dst) :: "memory");
@@ -449,6 +450,7 @@ ByteSwap64(uint64 x)
 static inline FORCE_INLINE uint16
 EncodeF16(float32 x)
 {
+	Trace();
 	union
 	{
 		float32 f;
@@ -472,6 +474,7 @@ EncodeF16(float32 x)
 static inline FORCE_INLINE float32
 DecodeF16(uint16 x)
 {
+	Trace();
 	uint32 sign = x >> 15;
 	uint32 exponent = (x >> 10) & 0x1f;
 	uint32 mantissa = x & 0x3ff;
@@ -642,6 +645,7 @@ MemoryStrnstr(const char* left, const char* right, intz limit)
 static inline uint32
 StringDecode(String str, intz* index)
 {
+	Trace();
 	const uint8* head = str.data + *index;
 	const uint8* const end = str.data + str.size;
 	
@@ -690,6 +694,7 @@ StringEncodedCodepointSize(uint32 codepoint)
 static inline intz
 StringEncode(uint8* buffer, intz size, uint32 codepoint)
 {
+	Trace();
 	intz needed = StringEncodedCodepointSize(codepoint);
 	if (size < needed)
 		return 0;
@@ -729,6 +734,7 @@ StringEncode(uint8* buffer, intz size, uint32 codepoint)
 static inline intz
 StringDecodedLength(String str)
 {
+	Trace();
 	intz len = 0;
 	
 	intz it = 0;
@@ -741,6 +747,7 @@ StringDecodedLength(String str)
 static inline int32
 StringCompare(String a, String b)
 {
+	Trace();
 	int32 result = MemoryCompare(a.data, b.data, Min(a.size, b.size));
 	
 	if (result == 0 && a.size != b.size)
@@ -752,6 +759,7 @@ StringCompare(String a, String b)
 static inline bool
 StringEquals(String a, String b)
 {
+	Trace();
 	if (a.size != b.size)
 		return false;
 	if (a.data == b.data)
@@ -763,6 +771,7 @@ StringEquals(String a, String b)
 static inline bool
 StringEndsWith(String check, String s)
 {
+	Trace();
 	if (s.size > check.size)
 		return false;
 	
@@ -777,6 +786,7 @@ StringEndsWith(String check, String s)
 static inline bool
 StringStartsWith(String check, String s)
 {
+	Trace();
 	if (s.size > check.size)
 		return false;
 	
@@ -786,6 +796,7 @@ StringStartsWith(String check, String s)
 static inline String
 StringSubstr(String str, intz index, intz size)
 {
+	Trace();
 	if (index >= str.size)
 		return StrNull;
 	
@@ -805,12 +816,14 @@ StringSubstr(String str, intz index, intz size)
 static inline String
 StringFromCString(char const* cstr)
 {
+	Trace();
 	return StrMake(MemoryStrlen(cstr), cstr);
 }
 
 static inline String
 StringSlice(String str, intz begin, intz end)
 {
+	Trace();
 	if (begin < 0)
 		begin = (intz)str.size + begin + 1;
 	if (end < 0)
@@ -829,6 +842,7 @@ StringSlice(String str, intz begin, intz end)
 static inline String
 StringSliceEnd(String str, intz count)
 {
+	Trace();
 	count = ClampMax(count, (intz)str.size);
 	str.data += (intz)str.size - count;
 	str.size = count;
@@ -838,6 +852,7 @@ StringSliceEnd(String str, intz count)
 static inline intz
 StringIndexOf(String str, uint8 ch, intz start_index)
 {
+	Trace();
 	if (start_index < 0)
 		start_index = 0;
 	if (start_index >= (intz)str.size)
@@ -856,6 +871,7 @@ StringIndexOf(String str, uint8 ch, intz start_index)
 static inline intsize
 StringIndexOfSubstr(String str, String substr, intsize start_index)
 {
+	Trace();
 	if (start_index < 0)
 		start_index = 0;
 	if (start_index >= (intsize)str.size)
@@ -885,6 +901,7 @@ StringIndexOfSubstr(String str, String substr, intsize start_index)
 static inline String
 StringFromFixedBuffer(Buffer buf)
 {
+	Trace();
 	if (!buf.size)
 		return StrNull;
 
@@ -900,6 +917,7 @@ static inline FORCE_INLINE intz StringPrintfFunc_(char* buf, intz buf_size, cons
 static inline intz
 StringVPrintfBuffer(char* buf, intz len, const char* fmt, va_list args)
 {
+	Trace();
 	Assert(buf && len >= 0);
 	
 	return StringPrintfFunc_(buf, len, fmt, args);
@@ -908,6 +926,7 @@ StringVPrintfBuffer(char* buf, intz len, const char* fmt, va_list args)
 static inline intz
 StringPrintfBuffer(char* buf, intz len, const char* fmt, ...)
 {
+	Trace();
 	Assert(buf && len >= 0);
 	
 	va_list args;
@@ -922,6 +941,7 @@ StringPrintfBuffer(char* buf, intz len, const char* fmt, ...)
 static inline String
 StringVPrintf(char* buf, intz len, const char* fmt, va_list args)
 {
+	Trace();
 	Assert(buf && len);
 	
 	String result = {
@@ -935,6 +955,7 @@ StringVPrintf(char* buf, intz len, const char* fmt, va_list args)
 static inline String
 StringPrintf(char* buf, intz len, const char* fmt, ...)
 {
+	Trace();
 	Assert(buf && len);
 	
 	va_list args;
@@ -953,12 +974,14 @@ StringPrintf(char* buf, intz len, const char* fmt, ...)
 static inline intz
 StringVPrintfSize(const char* fmt, va_list args)
 {
+	Trace();
 	return StringPrintfFunc_(NULL, 0, fmt, args);
 }
 
 static inline intz
 StringPrintfSize(const char* fmt, ...)
 {
+	Trace();
 	va_list args;
 	va_start(args, fmt);
 	
@@ -1011,6 +1034,7 @@ StringFillBuf_(char** p, char* end, intz* count, char fill, intsize fillsize)
 static inline FORCE_INLINE intz
 StringPrintfFunc_(char* buf, intz buf_size, const char* restrict fmt, va_list args)
 {
+	Trace();
 	intz count = 0;
 	const char* fmt_end = fmt + MemoryStrlen(fmt);
 	
@@ -1511,6 +1535,7 @@ String_stbsp__raise_to_power10(float64* restrict ohi, float64* restrict olo, flo
 static inline int32
 String_stbsp__real_to_str(char const** start, uint32* len, char out[64], int32* decimal_pos, float64 value, uint32 frac_digits)
 {
+	Trace();
 	static uint64 const stbsp__powten[20] = {
 		1,
 		10,
@@ -1692,6 +1717,7 @@ String_stbsp__real_to_str(char const** start, uint32* len, char out[64], int32* 
 static inline Arena
 ArenaFromMemory(void* memory, intz size)
 {
+	Trace();
 	Assert(((uintptr)memory & (uintptr)~(CONFIG_ARENA_DEFAULT_ALIGNMENT-1)) == (uintptr)memory);
 	
 	Arena result = {
@@ -1706,6 +1732,7 @@ ArenaFromMemory(void* memory, intz size)
 static inline Arena*
 ArenaBootstrap(Arena arena)
 {
+	Trace();
 	Arena* ptr = (Arena*)ArenaPushAligned(&arena, sizeof(Arena), alignof(Arena));
 	*ptr = arena;
 	return ptr;
@@ -1714,6 +1741,7 @@ ArenaBootstrap(Arena arena)
 static inline void*
 ArenaEndAligned(Arena* arena, intz alignment)
 {
+	Trace();
 	Assert(alignment != 0 && IsPowerOf2(alignment));
 	
 	intptr target_offset = AlignUp((intptr)arena->memory + arena->offset, alignment-1) - (intptr)arena->memory;
@@ -1724,6 +1752,7 @@ ArenaEndAligned(Arena* arena, intz alignment)
 static inline void*
 ArenaPushDirtyAligned(Arena* arena, intz size, intz alignment)
 {
+	Trace();
 	Assert(alignment != 0 && IsPowerOf2(alignment));
 	SafeAssert((intsize)size >= 0);
 	
@@ -1746,6 +1775,7 @@ ArenaPushDirtyAligned(Arena* arena, intz size, intz alignment)
 static inline void
 ArenaPop(Arena* arena, void* ptr)
 {
+	Trace();
 	uint8* p = (uint8*)ptr;
 	SafeAssert(p >= arena->memory && p <= arena->memory + arena->offset);
 	
@@ -1756,6 +1786,7 @@ ArenaPop(Arena* arena, void* ptr)
 static inline String
 ArenaVPrintf(Arena* arena, char const* fmt, va_list args)
 {
+	Trace();
 	va_list args2;
 	va_copy(args2, args);
 	
@@ -1776,6 +1807,7 @@ ArenaVPrintf(Arena* arena, char const* fmt, va_list args)
 static inline String
 ArenaPrintf(Arena* arena, char const* fmt, ...)
 {
+	Trace();
 	va_list args;
 	va_start(args, fmt);
 	String result = ArenaVPrintf(arena, fmt, args);
@@ -1798,6 +1830,7 @@ ArenaSave(Arena* arena)
 static inline char*
 ArenaPushCString(Arena* arena, String str)
 {
+	Trace();
 	char* buffer = (char*)ArenaPushDirtyAligned(arena, str.size + 1, 1);
 	if (buffer)
 	{
@@ -1818,6 +1851,7 @@ ArenaPushDirty(Arena* arena, intz size)
 static inline void*
 ArenaPushAligned(Arena* arena, intz size, intz alignment)
 {
+	Trace();
 	void* data = ArenaPushDirtyAligned(arena, size, alignment);
 	if (data)
 		MemoryZero(data, size);
@@ -1827,6 +1861,7 @@ ArenaPushAligned(Arena* arena, intz size, intz alignment)
 static inline void*
 ArenaPush(Arena* arena, intz size)
 {
+	Trace();
 	void* data = ArenaPushDirtyAligned(arena, size, CONFIG_ARENA_DEFAULT_ALIGNMENT);
 	if (data)
 		MemoryZero(data, size);
@@ -1836,6 +1871,7 @@ ArenaPush(Arena* arena, intz size)
 static inline void*
 ArenaPushMemory(Arena* arena, const void* buf, intz size)
 {
+	Trace();
 	void* data = ArenaPushDirtyAligned(arena, size, 1);
 	if (data)
 		MemoryCopy(data, buf, size);
@@ -1845,6 +1881,7 @@ ArenaPushMemory(Arena* arena, const void* buf, intz size)
 static inline void*
 ArenaPushMemoryAligned(Arena* arena, const void* buf, intz size, intz alignment)
 {
+	Trace();
 	void* data = ArenaPushDirtyAligned(arena, size, alignment);
 	if (data)
 		MemoryCopy(data, buf, size);
@@ -1854,6 +1891,7 @@ ArenaPushMemoryAligned(Arena* arena, const void* buf, intz size, intz alignment)
 static inline String
 ArenaPushString(Arena* arena, String str)
 {
+	Trace();
 	void* data = ArenaPushDirtyAligned(arena, str.size, 1);
 	String result = { 0 };
 	if (data)
@@ -1864,6 +1902,7 @@ ArenaPushString(Arena* arena, String str)
 static inline String
 ArenaPushStringAligned(Arena* arena, String str, intz alignment)
 {
+	Trace();
 	void* data = ArenaPushDirtyAligned(arena, str.size, alignment);
 	String result = { 0 };
 	if (data)
@@ -2176,6 +2215,7 @@ AllocatorFreeArray(Allocator* allocator, intsize size, void* old_ptr, intsize ol
 static inline FORCE_INLINE uint64
 HashString(String memory)
 {
+	Trace();
 	uint64 result = 14695981039346656037u;
 	
 	for (uintsize i = 0; i < memory.size; ++i)
@@ -2286,6 +2326,7 @@ Log(int32 level, char const* fmt, ...)
 NO_RETURN static inline void FORCE_NOINLINE
 AssertionFailure(char const* expr, char const* func, char const* file, int32 line)
 {
+	Trace();
 	ThreadContext* thread_ctx = ThisThreadContext();
 	if (thread_ctx->assertion_failure_proc)
 	{
