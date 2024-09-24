@@ -203,7 +203,7 @@ DeleteWithoutMakingEdit_(TextBuffer* textbuf, intz offset, intz size)
 	}
 	else if (offset + size == textbuf->gap_start)
 	{
-		result = StrMake(size, textbuf->utf8_text + textbuf->gap_start);
+		result = StrMake(size, textbuf->utf8_text + textbuf->gap_start - size);
 		textbuf->gap_start -= size;
 	}
 	else
@@ -748,14 +748,14 @@ TextBufferUndo(App* app, TextBuffer* textbuf, TextBufferEdit* out_edit)
 			size = RangeSize(edit->delete.edit_text_buffer);
 			String str = StrMake(size, textbuf->edit_text_buffer + edit->delete.edit_text_buffer.start);
 			InsertWithoutMakingEdit_(app, textbuf, offset, str);
-			// textbuf->edit_text_buffer_size = edit->delete.edit_text_buffer.end;
+			textbuf->edit_text_buffer_size = edit->delete.edit_text_buffer.end;
 		} break;
 		case TextBufferEditKind_Insert:
 		{
 			offset = edit->insert.edit_range.start;
 			size = RangeSize(edit->insert.edit_range);
 			DeleteWithoutMakingEdit_(textbuf, offset, size);
-			// textbuf->edit_text_buffer_size = edit->insert.edit_text_buffer.end;
+			textbuf->edit_text_buffer_size = edit->insert.edit_text_buffer.end;
 		} break;
 		case TextBufferEditKind_Transpose:
 		{
@@ -792,7 +792,7 @@ TextBufferRedo(App* app, TextBuffer* textbuf, TextBufferEdit* out_edit)
 			offset = edit->delete.edit_range.start;
 			size = RangeSize(edit->delete.edit_range);
 			DeleteWithoutMakingEdit_(textbuf, offset, size);
-			// textbuf->edit_text_buffer_size = edit->delete.edit_text_buffer.end;
+			textbuf->edit_text_buffer_size = edit->delete.edit_text_buffer.end;
 			SafeAssert(textbuf->edit_text_buffer_size <= textbuf->edit_text_buffer_usable_size);
 		} break;
 		case TextBufferEditKind_Insert:
@@ -801,7 +801,7 @@ TextBufferRedo(App* app, TextBuffer* textbuf, TextBufferEdit* out_edit)
 			size = RangeSize(edit->insert.edit_text_buffer);
 			String str = StrMake(size, textbuf->edit_text_buffer + edit->insert.edit_text_buffer.start);
 			InsertWithoutMakingEdit_(app, textbuf, offset, str);
-			// textbuf->edit_text_buffer_size = edit->insert.edit_text_buffer.end;
+			textbuf->edit_text_buffer_size = edit->insert.edit_text_buffer.end;
 			SafeAssert(textbuf->edit_text_buffer_size <= textbuf->edit_text_buffer_usable_size);
 		} break;
 		case TextBufferEditKind_Transpose:
