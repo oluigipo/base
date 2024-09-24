@@ -596,6 +596,7 @@ EntryPoint(int32 argc, const char* const argv[])
 		.arena = global_arena,
 		.tab_size = 4,
 		.heap = OS_HeapAllocator(),
+		.tick_rate = OS_TickRate(),
 		.c_background = 0xFF0F0F0F,
 		.c_foreground = 0xFFCCCCCC,
 		.c_operators = 0xFF7575DC,
@@ -996,6 +997,11 @@ EntryPoint(int32 argc, const char* const argv[])
 						if (event->window_key.ctrl)
 							TextCursorCmdCopy(app, &selected_view->cursor, textbuf);
 					} break;
+					case 'X':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdCut(app, &selected_view->cursor, textbuf);
+					} break;
 					case 'V':
 					{
 						if (event->window_key.ctrl)
@@ -1014,6 +1020,16 @@ EntryPoint(int32 argc, const char* const argv[])
 							selected_view = (app->is_right_view_selected) ? &app->right_view : &app->left_view;
 							textbuf = TextBufferFromIndex(app, selected_view->textbuf_index);
 						}
+					} break;
+					case 'Z':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdUndo(app, &selected_view->cursor, textbuf);
+					} break;
+					case 'Y':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdRedo(app, &selected_view->cursor, textbuf);
 					} break;
 				}
 				ScrollTextViewToCursor_(app, selected_view);

@@ -1976,18 +1976,17 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 			}
 		} break;
 
-		//case WM_MOUSEMOVE:
-		//{
-		//	POINT point;
-		//	point.x = GET_X_LPARAM(lparam);
-		//	point.y = GET_Y_LPARAM(lparam);
-		//	ScreenToClient(hwnd, &point);
-//
-		//	OS_LockExclusive(&window_data->mouse_state_lock);
-		//	window_data->mouse_state.pos[0] = (float32)point.x;
-		//	window_data->mouse_state.pos[1] = (float32)point.y;
-		//	OS_UnlockExclusive(&window_data->mouse_state_lock);
-		//} break;
+		case WM_MOUSEMOVE:
+		{
+			POINT point;
+			point.x = GET_X_LPARAM(lparam);
+			point.y = GET_Y_LPARAM(lparam);
+			ScreenToClient(hwnd, &point);
+
+			os_event.kind = OS_EventKind_WindowMouseMove;
+			os_event.window_mouse_move.mouse_x = point.x;
+			os_event.window_mouse_move.mouse_y = point.y;
+		} break;
 		
 		case WM_SETCURSOR:
 		{

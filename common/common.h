@@ -553,19 +553,19 @@ MemoryCopyX16(void* restrict dst, const void* restrict src)
 
 static inline FORCE_INLINE void*
 MemoryCopy(void* restrict dst, const void* restrict src, intz size)
-{ Trace(); Assert(size >= 0); return memcpy(dst, src, (size_t)size); }
+{ Trace(); Assert(size >= 0); return size == 0 ? dst : memcpy(dst, src, (size_t)size); }
 
 static inline FORCE_INLINE void*
 MemoryMove(void* dst, const void* src, intz size)
-{ Trace(); Assert(size >= 0); return memmove(dst, src, (size_t)size); }
+{ Trace(); Assert(size >= 0); return size == 0 ? dst : memmove(dst, src, (size_t)size); }
 
 static inline FORCE_INLINE void*
 MemorySet(void* restrict dst, uint8 byte, intz size)
-{ Trace(); Assert(size >= 0); return memset(dst, byte, (size_t)size); }
+{ Trace(); Assert(size >= 0); return size == 0 ? dst : memset(dst, byte, (size_t)size); }
 
 static inline FORCE_INLINE int32
 MemoryCompare(const void* left_, const void* right_, intz size)
-{ Trace(); Assert(size >= 0); return memcmp(left_, right_, (size_t)size); }
+{ Trace(); Assert(size >= 0); return size == 0 ? 0 : memcmp(left_, right_, (size_t)size); }
 
 static inline intz
 MemoryStrlen(const char* restrict cstr)

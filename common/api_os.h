@@ -372,6 +372,7 @@ enum OS_EventKind
 	OS_EventKind_WindowMouseWheel,
 	OS_EventKind_WindowMouseClick,
 	OS_EventKind_WindowMouseRelease,
+	OS_EventKind_WindowMouseMove,
 }
 typedef OS_EventKind;
 
@@ -388,6 +389,7 @@ struct OS_Event
 		struct { int32 total_width, total_height; int32 user_width, user_height; } window_resize;
 		struct { int32 delta; int32 mouse_x, mouse_y; } window_mouse_wheel;
 		struct { OS_MouseButton button; int32 mouse_x, mouse_y; } window_mouse_click;
+		struct { int32 mouse_x, mouse_y; } window_mouse_move;
 	};
 }
 typedef OS_Event;

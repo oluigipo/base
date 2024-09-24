@@ -26,8 +26,10 @@ typedef Rect;
 
 struct TextBufferEdit
 {
+	bool is_insertion : 1;
+	uint64 tick : 63;
 	Range file_edit_range;
-	Range range_into_edit_text_buffer; // if 0, then it's typing
+	Range range_into_edit_text_buffer;
 }
 typedef TextBufferEdit;
 
@@ -36,6 +38,7 @@ enum TextBufferKind
 	TextBufferKind_Null = 0,
 	TextBufferKind_NormalText,
 	TextBufferKind_C,
+	TextBufferKind_SingleLine,
 }
 typedef TextBufferKind;
 
@@ -128,6 +131,7 @@ struct App
 	OS_Window window;
 	R3_Context* r3;
 	Allocator heap;
+	uint64 tick_rate;
 
 	bool is_closing;
 	bool is_mouse_dragging;
@@ -290,10 +294,10 @@ BED_API String  TextBufferStringFromRange  (TextBuffer* textbuf, intz offset, in
 BED_API bool    TextBufferLineIterator     (TextBuffer* textbuf, intz* it, String* left_str, String* right_str);
 BED_API intz    TextBufferOffsetFromLineCol(TextBuffer* textbuf, LineCol pos, int32 tab_size);
 
-BED_API uint8*  TextBufferInsert           (App* app, TextBuffer* textbuf, intz offset, intz size);
+BED_API void    TextBufferInsert           (App* app, TextBuffer* textbuf, intz offset, String str);
 BED_API void    TextBufferDelete           (App* app, TextBuffer* textbuf, intz offset, intz size);
-BED_API intz    TextBufferUndo             (TextBuffer* textbuf);
-BED_API intz    TextBufferRedo             (TextBuffer* textbuf);
+BED_API intz    TextBufferUndo             (App* app, TextBuffer* textbuf, intz* out_size, bool* out_was_insertion);
+BED_API intz    TextBufferRedo             (App* app, TextBuffer* textbuf, intz* out_size, bool* out_was_insertion);
 
 // ===========================================================================
 // ===========================================================================
@@ -318,11 +322,14 @@ enum TextCursorCmdKind
 	TextCursorCmdKind_LeftPascalWord,           // amount
 	TextCursorCmdKind_DeleteBackwardPascalWord, // amount
 	TextCursorCmdKind_Copy,                     //
+	TextCursorCmdKind_Cut,                      //
 	TextCursorCmdKind_Paste,                    // amount
 	TextCursorCmdKind_UpParagraph,              // amount
 	TextCursorCmdKind_DownParagraph,            // amount
 	TextCursorCmdKind_Set,                      // linecol
 	TextCursorCmdKind_SetMarker,                // linecol
+	TextCursorCmdKind_Undo,                     // 
+	TextCursorCmdKind_Redo,                     // 
 }
 typedef TextCursorCmdKind;
 
@@ -351,6 +358,7 @@ BED_API void TextCursorCmdRightSnakeWord         (TextCursor* cursor, TextBuffer
 BED_API void TextCursorCmdLeftSnakeWord          (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdDeleteBackwardSnakeWord(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdCopy                   (App* app, TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdCut                    (App* app, TextCursor* cursor, TextBuffer* textbuf);
 BED_API void TextCursorCmdPaste                  (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdUpParagraph            (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdDownParagraph          (TextCursor* cursor, TextBuffer* textbuf, intz amount);
@@ -359,6 +367,8 @@ BED_API void TextCursorCmdSetMarker              (TextCursor* cursor, TextBuffer
 BED_API void TextCursorCmdRightPascalWord        (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdLeftPascalWord         (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdDeleteBackwardPascalWord(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdUndo                   (App* app, TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdRedo                   (App* app, TextCursor* cursor, TextBuffer* textbuf);
 
 // ===========================================================================
 // ===========================================================================

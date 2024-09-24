@@ -119,13 +119,15 @@ TextCursorCmdInsert(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amou
 	intz encoded_size = StringEncodedCodepointSize(codepoint);
 	intz size = amount * encoded_size;
 
-	uint8* insert_buffer = TextBufferInsert(app, textbuf, cursor->offset, size);
+	ArenaSavepoint scratch = ArenaSave(app->arena);
+	uint8* insert_buffer = ArenaPushDirtyAligned(scratch.arena, size, 1);
+	for (intz i = 0; i < amount; ++i)
+		StringEncode(insert_buffer + i * encoded_size, size, codepoint);
+
+	TextBufferInsert(app, textbuf, cursor->offset, StrMake(size, insert_buffer));
 	if (cursor->offset < cursor->marker_offset)
 		cursor->marker_offset += size;
 	cursor->offset += size;
-
-	for (intz i = 0; i < amount; ++i)
-		StringEncode(insert_buffer + i * encoded_size, size, codepoint);
 }
 
 BED_API void
@@ -478,6 +480,14 @@ TextCursorCmdCopy(App* app, TextCursor* cursor, TextBuffer* textbuf)
 }
 
 BED_API void
+TextCursorCmdCut(App* app, TextCursor* cursor, TextBuffer* textbuf)
+{
+	Trace();
+	TextCursorCmdCopy(app, cursor, textbuf);
+	TextCursorCmdDeleteToMarker(app, cursor, textbuf);
+}
+
+BED_API void
 TextCursorCmdPaste(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount)
 {
 	Trace();
@@ -486,13 +496,13 @@ TextCursorCmdPaste(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amoun
 
 	for (intz i = 0; i < amount; ++i)
 	{
-		uint8* mem = TextBufferInsert(app, textbuf, cursor->offset, clip.contents.size);
+		TextBufferInsert(app, textbuf, cursor->offset, clip.contents);
 		if (cursor->marker_offset > cursor->offset)
 			cursor->marker_offset += clip.contents.size;
 		cursor->offset += clip.contents.size;
-		MemoryCopy(mem, clip.contents.data, clip.contents.size);
 	}
 
+	SafeAssert(cursor->offset >= 0 && cursor->offset <= TextBufferSize(textbuf));
 	ArenaRestore(scratch);
 }
 
@@ -583,6 +593,40 @@ TextCursorCmdSetMarker(TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int
 }
 
 BED_API void
+TextCursorCmdUndo(App* app, TextCursor* cursor, TextBuffer* textbuf)
+{
+	Trace();
+	bool was_insertion;
+	intz size;
+	intz new_offset = TextBufferUndo(app, textbuf, &size, &was_insertion);
+	if (new_offset != -1)
+	{
+		if (cursor->marker_offset > new_offset + size)
+			cursor->marker_offset += (was_insertion) ? size : -size;
+		else if (cursor->marker_offset > new_offset)
+			cursor->marker_offset = new_offset;
+		cursor->offset = new_offset;
+	}
+}
+
+BED_API void
+TextCursorCmdRedo(App* app, TextCursor* cursor, TextBuffer* textbuf)
+{
+	Trace();
+	bool was_insertion;
+	intz size;
+	intz new_offset = TextBufferRedo(app, textbuf, &size, &was_insertion);
+	if (new_offset != -1)
+	{
+		if (cursor->marker_offset > new_offset + size)
+			cursor->marker_offset += (was_insertion) ? size : -size;
+		else if (cursor->marker_offset > new_offset)
+			cursor->marker_offset = new_offset;
+		cursor->offset = new_offset;
+	}
+}
+
+BED_API void
 TextCursorPlayCommands(App* app, TextCursor* cursor, TextBuffer* textbuf, intz command_count, TextCursorCmd const commands[])
 {
 	Trace();
@@ -609,11 +653,14 @@ TextCursorPlayCommands(App* app, TextCursor* cursor, TextBuffer* textbuf, intz c
 			case TextCursorCmdKind_LeftPascalWord: TextCursorCmdLeftPascalWord(cursor, textbuf, cmd->amount); break;
 			case TextCursorCmdKind_DeleteBackwardPascalWord: TextCursorCmdDeleteBackwardPascalWord(app, cursor, textbuf, cmd->amount); break;
 			case TextCursorCmdKind_Copy: TextCursorCmdCopy(app, cursor, textbuf); break;
+			case TextCursorCmdKind_Cut: TextCursorCmdCut(app, cursor, textbuf); break;
 			case TextCursorCmdKind_Paste: TextCursorCmdPaste(app, cursor, textbuf, cmd->amount); break;
 			case TextCursorCmdKind_UpParagraph: TextCursorCmdUpParagraph(cursor, textbuf, cmd->amount); break;
 			case TextCursorCmdKind_DownParagraph: TextCursorCmdDownParagraph(cursor, textbuf, cmd->amount); break;
 			case TextCursorCmdKind_Set: TextCursorCmdSet(cursor, textbuf, cmd->linecol, app->tab_size); break;
 			case TextCursorCmdKind_SetMarker: TextCursorCmdSetMarker(cursor, textbuf, cmd->linecol, app->tab_size); break;
+			case TextCursorCmdKind_Undo: TextCursorCmdUndo(app, cursor, textbuf); break;
+			case TextCursorCmdKind_Redo: TextCursorCmdRedo(app, cursor, textbuf); break;
 		}
 	}
 }

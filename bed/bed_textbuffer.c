@@ -55,24 +55,24 @@ PushEditText_(App* app, TextBuffer* textbuf, intz deleted_size)
 }
 
 static void
-PushEdit_(App* app, TextBuffer* textbuf, intz offset, intz size, String deleted)
+PushEdit_(App* app, TextBuffer* textbuf, intz offset, intz size, String changed, bool is_insertion, uint64 tick)
 {
 	Trace();
 	AllocatorError err;
-	Range deleted_text_range = {};
-	if (deleted.size)
+	Range changed_text_range = {};
+	if (changed.size)
 	{
-		intz offset = PushEditText_(app, textbuf, deleted.size);
+		intz offset = PushEditText_(app, textbuf, changed.size);
 		if (offset == -1)
 			return;
-		deleted_text_range = (Range) {
+		changed_text_range = (Range) {
 			.start = offset,
-			.end = offset + deleted.size,
+			.end = offset + changed.size,
 		};
 		MemoryCopy(
 			textbuf->edit_text_buffer + offset,
-			deleted.data,
-			deleted.size);
+			changed.data,
+			changed.size);
 	}
 
 	if (textbuf->edits_count+1 > textbuf->edits_cap)
@@ -87,12 +87,120 @@ PushEdit_(App* app, TextBuffer* textbuf, intz offset, intz size, String deleted)
 	}
 
 	textbuf->edits[textbuf->edits_count++] = (TextBufferEdit) {
+		.is_insertion = is_insertion,
+		.tick = tick,
 		.file_edit_range = {
 			offset,
 			offset + size,
 		},
-		.range_into_edit_text_buffer = deleted_text_range,
+		.range_into_edit_text_buffer = changed_text_range,
 	};
+	textbuf->edits_usable_count = textbuf->edits_count;
+	textbuf->edit_text_buffer_size = changed_text_range.end;
+}
+
+static void
+InsertWithoutMakingEdit_(App* app, TextBuffer* textbuf, intz offset, String str)
+{
+	Trace();
+	intz gap_size = textbuf->gap_end - textbuf->gap_start;
+	SafeAssert(gap_size >= 0);
+	SafeAssert(textbuf->size >= gap_size);
+	SafeAssert(offset >= 0 && offset <= textbuf->size - gap_size);
+
+	if (str.size > gap_size)
+	{
+		intz new_size = textbuf->size + (textbuf->size >> 1) + 1;
+		new_size = Max(new_size, textbuf->size + str.size);
+		intz new_gap_size = new_size - (textbuf->size - gap_size);
+		AllocatorError err;
+		uint8* new_buffer = AllocatorAlloc(&app->heap, new_size, 1, &err);
+		SafeAssert(!err);
+		if (offset < textbuf->gap_start)
+		{
+			intz size_to_gap = textbuf->gap_start - offset;
+			MemoryCopy(new_buffer, textbuf->utf8_text, offset);
+			MemoryCopy(new_buffer+offset+new_gap_size, textbuf->utf8_text+offset, size_to_gap);
+			MemoryCopy(new_buffer+offset+new_gap_size+size_to_gap, textbuf->utf8_text+textbuf->gap_end, textbuf->size - textbuf->gap_end);
+		}
+		else if (offset > textbuf->gap_start)
+		{
+			intz size_to_gap = textbuf->gap_end - (offset + gap_size);
+			MemoryCopy(new_buffer, textbuf->utf8_text, offset);
+			MemoryCopy(new_buffer+offset+new_gap_size, textbuf->utf8_text+offset, size_to_gap);
+			MemoryCopy(new_buffer+offset+new_gap_size+size_to_gap, textbuf->utf8_text+textbuf->gap_end, textbuf->size - textbuf->gap_end);
+		}
+		else
+		{
+			MemoryCopy(new_buffer, textbuf->utf8_text, offset);
+			MemoryCopy(new_buffer+offset+new_gap_size, textbuf->utf8_text+textbuf->gap_end, textbuf->size - textbuf->gap_end);
+		}
+		AllocatorFree(&app->heap, textbuf->utf8_text, textbuf->size, &err);
+		SafeAssert(!err);
+		textbuf->utf8_text = new_buffer;
+		textbuf->gap_start = offset;
+		textbuf->gap_end = offset + new_gap_size;
+		textbuf->size = new_size;
+	}
+	else if (offset != textbuf->gap_start)
+		TextBufferMoveGapToOffset(textbuf, offset);
+
+	uint8* result = &textbuf->utf8_text[textbuf->gap_start];
+	MemoryCopy(result, str.data, str.size);
+	textbuf->gap_start += str.size;
+
+	// Dirty changes
+	if (textbuf->dirty_changes_start == -1)
+	{
+		textbuf->dirty_changes_start = offset;
+		textbuf->dirty_changes_end = offset + str.size;
+	}
+	else
+	{
+		textbuf->dirty_changes_start = Min(textbuf->dirty_changes_start, offset);
+		textbuf->dirty_changes_end = Max(textbuf->dirty_changes_end, offset + str.size);
+	}
+}
+
+static String
+DeleteWithoutMakingEdit_(TextBuffer* textbuf, intz offset, intz size)
+{
+	Trace();
+	String result = {};
+	if (offset == textbuf->gap_start)
+	{
+		result = StrMake(size, textbuf->utf8_text + textbuf->gap_end);
+		textbuf->gap_end += size;
+	}
+	else if (offset + size == textbuf->gap_start)
+	{
+		result = StrMake(size, textbuf->utf8_text + textbuf->gap_start);
+		textbuf->gap_start -= size;
+	}
+	else
+	{
+		TextBufferMoveGapToOffset(textbuf, offset);
+		result = StrMake(size, textbuf->utf8_text + textbuf->gap_end);
+		textbuf->gap_end += size;
+	}
+
+	// Dirty changes
+	if (textbuf->dirty_changes_start == -1)
+	{
+		textbuf->dirty_changes_start = offset;
+		textbuf->dirty_changes_end = offset;
+	}
+	else
+	{
+		if (textbuf->dirty_changes_start > offset)
+			textbuf->dirty_changes_start -= size;
+		if (textbuf->dirty_changes_end > offset+size)
+			textbuf->dirty_changes_end -= size;
+		else if (textbuf->dirty_changes_end > offset)
+			textbuf->dirty_changes_end = offset;
+	}
+
+	return result;
 }
 
 BED_API TextBuffer*
@@ -300,7 +408,6 @@ TextBufferRefreshTokens(App* app, TextBuffer* textbuf)
 BED_API void
 TextBufferGetStrings(TextBuffer* textbuf, String* out_left, String* out_right)
 {
-	Trace();
 	if (out_left)
 		*out_left = StrMake(textbuf->gap_start, textbuf->utf8_text);
 	if (out_right)
@@ -310,7 +417,6 @@ TextBufferGetStrings(TextBuffer* textbuf, String* out_left, String* out_right)
 BED_API uint8
 TextBufferSample(TextBuffer* textbuf, intz offset)
 {
-	Trace();
 	intz gap_size = textbuf->gap_end - textbuf->gap_start;
 	SafeAssert(gap_size >= 0 && gap_size <= textbuf->size);
 	SafeAssert(offset >= 0 && offset < textbuf->size - gap_size);
@@ -431,117 +537,45 @@ TextBufferMoveGapToOffset(TextBuffer* textbuf, intz offset)
 	}
 }
 
-BED_API uint8*
-TextBufferInsert(App* app, TextBuffer* textbuf, intz offset, intz size)
+BED_API void
+TextBufferInsert(App* app, TextBuffer* textbuf, intz offset, String str)
 {
 	Trace();
-	if (size > textbuf->gap_end - textbuf->gap_start)
-	{
-		intz new_size = textbuf->size + (textbuf->size >> 1) + 1;
-		intz gap_size = textbuf->gap_end - textbuf->gap_start;
-		intz new_gap_size = new_size - (textbuf->size - gap_size);
-		AllocatorError err;
-		uint8* new_buffer = AllocatorAlloc(&app->heap, new_size, 1, &err);
-		SafeAssert(!err);
-		if (offset < textbuf->gap_start)
-		{
-			intz size_to_gap = textbuf->gap_start - offset;
-			MemoryCopy(new_buffer, textbuf->utf8_text, offset);
-			MemoryCopy(new_buffer+offset+new_gap_size, textbuf->utf8_text+offset, size_to_gap);
-			MemoryCopy(new_buffer+offset+new_gap_size+size_to_gap, textbuf->utf8_text+textbuf->gap_end, textbuf->size - textbuf->gap_end);
-		}
-		else if (offset > textbuf->gap_start)
-		{
-			intz size_to_gap = textbuf->gap_end - (offset + gap_size);
-			MemoryCopy(new_buffer, textbuf->utf8_text, offset);
-			MemoryCopy(new_buffer+offset+new_gap_size, textbuf->utf8_text+offset, size_to_gap);
-			MemoryCopy(new_buffer+offset+new_gap_size+size_to_gap, textbuf->utf8_text+textbuf->gap_end, textbuf->size - textbuf->gap_end);
-		}
-		else
-		{
-			MemoryCopy(new_buffer, textbuf->utf8_text, offset);
-			MemoryCopy(new_buffer+offset+new_gap_size, textbuf->utf8_text+textbuf->gap_end, textbuf->size - textbuf->gap_end);
-		}
-		AllocatorFree(&app->heap, textbuf->utf8_text, textbuf->size, &err);
-		SafeAssert(!err);
-		textbuf->utf8_text = new_buffer;
-		textbuf->gap_start = offset;
-		textbuf->gap_end = offset + new_gap_size;
-		textbuf->size = new_size;
-	}
-	else if (offset != textbuf->gap_start)
-		TextBufferMoveGapToOffset(textbuf, offset);
-
-	uint8* result = &textbuf->utf8_text[textbuf->gap_start];
-	textbuf->gap_start += size;
-
-	// Dirty changes
-	if (textbuf->dirty_changes_start == -1)
-	{
-		textbuf->dirty_changes_start = offset;
-		textbuf->dirty_changes_end = offset + size;
-	}
-	else
-	{
-		textbuf->dirty_changes_start = Min(textbuf->dirty_changes_start, offset);
-		textbuf->dirty_changes_end = Max(textbuf->dirty_changes_end, offset + size);
-	}
+	InsertWithoutMakingEdit_(app, textbuf, offset, str);
 
 	// Edits
+	uint64 now = OS_Tick();
 	if (textbuf->edits_count > 0 &&
-		textbuf->edits[textbuf->edits_count-1].range_into_edit_text_buffer.end == 0 &&
-		textbuf->edits[textbuf->edits_count-1].file_edit_range.end == offset)
+		textbuf->edits[textbuf->edits_count-1].is_insertion &&
+		textbuf->edits[textbuf->edits_count-1].file_edit_range.end == offset &&
+		textbuf->edits[textbuf->edits_count-1].tick >= now - app->tick_rate / 10 * 3)
 	{
-		textbuf->edits[textbuf->edits_count-1].file_edit_range.end += size;
+		TextBufferEdit* edit = &textbuf->edits[textbuf->edits_count-1];
+		PushEditText_(app, textbuf, str.size);
+
+		uint8* mem = textbuf->edit_text_buffer + edit->range_into_edit_text_buffer.start;
+		intz prev_size = edit->range_into_edit_text_buffer.end - edit->range_into_edit_text_buffer.start;
+		MemoryCopy(mem + prev_size, str.data, str.size);
+		edit->file_edit_range.end += str.size;
+		edit->range_into_edit_text_buffer.end += str.size;
+		edit->tick = now;
 	}
 	else
-		PushEdit_(app, textbuf, offset, size, StrNull);
-
-	return result;
+		PushEdit_(app, textbuf, offset, str.size, str, true, now);
 }
 
 BED_API void
 TextBufferDelete(App* app, TextBuffer* textbuf, intz offset, intz size)
 {
 	Trace();
-	String deleted_str = {};
-	if (offset == textbuf->gap_start)
-	{
-		deleted_str = StrMake(size, textbuf->utf8_text + textbuf->gap_end);
-		textbuf->gap_end += size;
-	}
-	else if (offset + size == textbuf->gap_start)
-	{
-		deleted_str = StrMake(size, textbuf->utf8_text + textbuf->gap_start);
-		textbuf->gap_start -= size;
-	}
-	else
-	{
-		TextBufferMoveGapToOffset(textbuf, offset);
-		deleted_str = StrMake(size, textbuf->utf8_text + textbuf->gap_end);
-		textbuf->gap_end += size;
-	}
-
-	// Dirty changes
-	if (textbuf->dirty_changes_start == -1)
-	{
-		textbuf->dirty_changes_start = offset;
-		textbuf->dirty_changes_end = offset;
-	}
-	else
-	{
-		if (textbuf->dirty_changes_start > offset)
-			textbuf->dirty_changes_start -= size;
-		if (textbuf->dirty_changes_end > offset+size)
-			textbuf->dirty_changes_end -= size;
-		else if (textbuf->dirty_changes_end > offset)
-			textbuf->dirty_changes_end = offset;
-	}
+	String deleted_str = DeleteWithoutMakingEdit_(textbuf, offset, size);
 
 	// Edits
+	uint64 now = OS_Tick();
 	if (textbuf->edits_count > 0 &&
-		textbuf->edits[textbuf->edits_count-1].range_into_edit_text_buffer.end != 0 &&
-		textbuf->edits[textbuf->edits_count-1].file_edit_range.start == offset + size)
+		!textbuf->edits[textbuf->edits_count-1].is_insertion &&
+		textbuf->edits[textbuf->edits_count-1].file_edit_range.start == offset + size &&
+		textbuf->edits[textbuf->edits_count-1].tick >= now - app->tick_rate / 10 * 3)
 	{
 		TextBufferEdit* edit = &textbuf->edits[textbuf->edits_count-1];
 		PushEditText_(app, textbuf, size);
@@ -550,10 +584,12 @@ TextBufferDelete(App* app, TextBuffer* textbuf, intz offset, intz size)
 		intz prev_size = edit->range_into_edit_text_buffer.end - edit->range_into_edit_text_buffer.start;
 		MemoryMove(mem + size, mem, prev_size);
 		MemoryCopy(mem, deleted_str.data, size);
+		edit->file_edit_range.start -= size;
 		edit->range_into_edit_text_buffer.end += size;
+		edit->tick = now;
 	}
 	else
-		PushEdit_(app, textbuf, offset, size, deleted_str);
+		PushEdit_(app, textbuf, offset, size, deleted_str, false, now);
 }
 
 BED_API String
@@ -637,4 +673,54 @@ TextBufferOffsetFromLineCol(TextBuffer* textbuf, LineCol pos, int32 tab_size)
 	}
 
 	return it;
+}
+
+BED_API intz
+TextBufferUndo(App* app, TextBuffer* textbuf, intz* out_size, bool* out_was_insertion)
+{
+	Trace();
+	if (textbuf->edits_count <= 0)
+		return -1;
+
+	TextBufferEdit* edit = &textbuf->edits[--textbuf->edits_count];
+	intz size = edit->file_edit_range.end - edit->file_edit_range.start;
+	if (edit->is_insertion)
+		DeleteWithoutMakingEdit_(textbuf, edit->file_edit_range.start, size);
+	else
+	{
+		intz str_size = edit->range_into_edit_text_buffer.end - edit->range_into_edit_text_buffer.start;
+		String str = StrMake(str_size, textbuf->edit_text_buffer + edit->range_into_edit_text_buffer.start);
+		InsertWithoutMakingEdit_(app, textbuf, edit->file_edit_range.start, str);
+	}
+
+	if (out_size)
+		*out_size = size;
+	if (out_was_insertion)
+		*out_was_insertion = edit->is_insertion;
+	return edit->file_edit_range.start;
+}
+
+BED_API intz
+TextBufferRedo(App* app, TextBuffer* textbuf, intz* out_size, bool* out_was_insertion)
+{
+	Trace();
+	if (textbuf->edits_count >= textbuf->edits_usable_count)
+		return -1;
+
+	TextBufferEdit* edit = &textbuf->edits[textbuf->edits_count++];
+	intz size = edit->file_edit_range.end - edit->file_edit_range.start;
+	if (edit->is_insertion)
+	{
+		intz str_size = edit->range_into_edit_text_buffer.end - edit->range_into_edit_text_buffer.start;
+		String str = StrMake(str_size, textbuf->edit_text_buffer + edit->range_into_edit_text_buffer.start);
+		InsertWithoutMakingEdit_(app, textbuf, edit->file_edit_range.start, str);
+	}
+	else
+		DeleteWithoutMakingEdit_(textbuf, edit->file_edit_range.start, size);
+
+	if (out_size)
+		*out_size = size;
+	if (out_was_insertion)
+		*out_was_insertion = edit->is_insertion;
+	return edit->file_edit_range.start;
 }
