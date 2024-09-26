@@ -42,6 +42,7 @@ MsbIndex(uint64 value)
 BED_API int32
 CIndentPushLine(CIndentCtx* cindent, String line, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index, intz base_line_offset)
 {
+	// TODO(ljre): make this function faster
 	Trace();
 	int32 braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
 	int32 parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
@@ -162,16 +163,23 @@ CIndentPushLine(CIndentCtx* cindent, String line, intz cf_count, CF_TokenKind co
 	return this_scope_nesting;
 }
 
+static int32
+SizeInLinesOfTextView_(App* app, TextView* view)
+{
+	int32 visible_height = view->layout.text_screen.y2 - view->layout.text_screen.y1;
+	int32 visible_line_count = (visible_height + app->glyph_line_height-1) / app->glyph_line_height;
+	float32 visible_line_count_rem = (visible_height % app->glyph_line_height) / (float32)app->glyph_line_height;
+	int32 line_count = visible_line_count - (visible_line_count_rem < 0.75f);
+	return line_count;
+}
+
 static void
 ScrollTextViewToCursor_(App* app, TextView* view)
 {
 	Trace();
 	TextBuffer* textbuf = TextBufferFromIndex(app, view->textbuf_index);
 	LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
-	int32 visible_height = view->layout.text_screen.y2 - view->layout.text_screen.y1;
-	int32 visible_line_count = (visible_height + app->glyph_line_height-1) / app->glyph_line_height;
-	float32 visible_line_count_rem = (visible_height % app->glyph_line_height) / (float32)app->glyph_line_height;
-	int32 line_count = visible_line_count - (visible_line_count_rem < 0.75f);
+	int32 line_count = SizeInLinesOfTextView_(app, view);
 
 	if (view->line > cursor_pos.line)
 		view->line = cursor_pos.line;
@@ -896,7 +904,7 @@ EntryPoint(int32 argc, const char* const argv[])
 			.kind = TextViewKind_File,
 			.cursor = {},
 			.line = 1,
-			.file_path = StrInit("bed/bed.c"),
+			.file_path = StrInit("Expr.cpp"),
 		};
 		TextBufferFromFile(app, app->left_view.file_path, TextBufferKind_C, &app->left_view.textbuf_index);
 		app->right_view = (TextView) {
@@ -933,9 +941,10 @@ EntryPoint(int32 argc, const char* const argv[])
 				should_resize_buffers = true;
 			else if (event->kind == OS_EventKind_WindowKeyPressed)
 			{
+				bool should_scroll_to_cursor = true;
 				switch (event->window_key.key)
 				{
-					default: break;
+					default: should_scroll_to_cursor = false; break;
 					case OS_KeyboardKey_Left:
 					{
 						if (event->window_key.ctrl)
@@ -1041,8 +1050,29 @@ EntryPoint(int32 argc, const char* const argv[])
 						if (event->window_key.ctrl)
 							TextCursorCmdDeleteLine(app, &selected_view->cursor, textbuf);
 					} break;
+					case 'Q':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdDuplicateLine(app, &selected_view->cursor, textbuf, 1);
+					} break;
+					case OS_KeyboardKey_PageUp:
+					{
+						if (event->window_key.ctrl)
+							selected_view->cursor.offset = 0;
+						else
+							TextCursorCmdUp(&selected_view->cursor, textbuf, SizeInLinesOfTextView_(app, selected_view));
+					} break;
+					case OS_KeyboardKey_PageDown:
+					{
+						if (event->window_key.ctrl)
+							selected_view->cursor.offset = TextBufferSize(textbuf);
+						else
+							TextCursorCmdDown(&selected_view->cursor, textbuf, SizeInLinesOfTextView_(app, selected_view));
+					} break;
 				}
-				ScrollTextViewToCursor_(app, selected_view);
+
+				if (should_scroll_to_cursor)
+					ScrollTextViewToCursor_(app, selected_view);
 			}
 			else if (event->kind == OS_EventKind_WindowTyping)
 			{

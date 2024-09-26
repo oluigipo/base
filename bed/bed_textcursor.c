@@ -131,6 +131,15 @@ TextCursorCmdInsert(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amou
 }
 
 BED_API void
+TextCursorCmdInsertString(App* app, TextCursor* cursor, TextBuffer* textbuf, String str)
+{
+	TextBufferInsert(app, textbuf, cursor->offset, str);
+	if (cursor->offset < cursor->marker_offset)
+		cursor->marker_offset += str.size;
+	cursor->offset += str.size;
+}
+
+BED_API void
 TextCursorCmdDeleteBackward(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount)
 {
 	Trace();
@@ -746,6 +755,32 @@ TextCursorCmdMoveLineDown(App* app, TextCursor* cursor, TextBuffer* textbuf, int
 }
 
 BED_API void
+TextCursorCmdDuplicateLine(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount)
+{
+	Trace();
+	intz original_offset = cursor->offset;
+	TextCursorCmdStartOfLine(cursor, textbuf);
+	intz start = cursor->offset;
+	intz offset_from_start = original_offset - start;
+	TextCursorCmdEndOfLine(cursor, textbuf);
+	intz end = cursor->offset;
+	Range range = RangeMake(start, end);
+	intz size = RangeSize(range);
+
+	ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
+	uint8* buf = ArenaPushAligned(scratch.arena, size + 1, 1);
+	buf[0] = '\n';
+	TextBufferWriteRangeToBuffer(textbuf, range, size, buf + 1);
+	String str = StrMake(size + 1, buf);
+
+	for (intz i = 0; i < amount; ++i)
+		TextCursorCmdInsertString(app, cursor, textbuf, str);
+
+	TextCursorCmdStartOfLine(cursor, textbuf);
+	cursor->offset += offset_from_start;
+}
+
+BED_API void
 TextCursorPlayCommands(App* app, TextCursor* cursor, TextBuffer* textbuf, intz command_count, TextCursorCmd const commands[])
 {
 	Trace();
@@ -756,6 +791,7 @@ TextCursorPlayCommands(App* app, TextCursor* cursor, TextBuffer* textbuf, intz c
 		{
 			case TextCursorCmdKind_Null: Log(LOG_WARN, "TextCursorCmd.kind is Null..."); break;
 			case TextCursorCmdKind_Insert: TextCursorCmdInsert(app, cursor, textbuf, cmd->amount, cmd->codepoint); break;
+			case TextCursorCmdKind_InsertString: TextCursorCmdInsertString(app, cursor, textbuf, cmd->string); break;
 			case TextCursorCmdKind_DeleteBackward: TextCursorCmdDeleteBackward(app, cursor, textbuf, cmd->amount); break;
 			case TextCursorCmdKind_Left: TextCursorCmdLeft(cursor, textbuf, cmd->amount); break;
 			case TextCursorCmdKind_Right: TextCursorCmdRight(cursor, textbuf, cmd->amount); break;
@@ -783,6 +819,7 @@ TextCursorPlayCommands(App* app, TextCursor* cursor, TextBuffer* textbuf, intz c
 			case TextCursorCmdKind_DeleteLine: TextCursorCmdDeleteLine(app, cursor, textbuf); break;
 			case TextCursorCmdKind_MoveLineUp: TextCursorCmdMoveLineUp(app, cursor, textbuf, cmd->amount); break;
 			case TextCursorCmdKind_MoveLineDown: TextCursorCmdMoveLineDown(app, cursor, textbuf, cmd->amount); break;
+			case TextCursorCmdKind_DuplicateLine: TextCursorCmdDuplicateLine(app, cursor, textbuf, cmd->amount); break;
 		}
 	}
 }

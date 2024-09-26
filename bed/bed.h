@@ -414,6 +414,7 @@ enum TextCursorCmdKind
 {
 	TextCursorCmdKind_Null = 0,
 	TextCursorCmdKind_Insert,                   // amount, codepoint
+	TextCursorCmdKind_InsertString,             // string
 	TextCursorCmdKind_DeleteBackward,           // amount
 	TextCursorCmdKind_Left,                     // amount
 	TextCursorCmdKind_Right,                    // amount
@@ -441,6 +442,7 @@ enum TextCursorCmdKind
 	TextCursorCmdKind_DeleteLine,               //
 	TextCursorCmdKind_MoveLineUp,               // amount
 	TextCursorCmdKind_MoveLineDown,             // amount
+	TextCursorCmdKind_DuplicateLine,            // amount
 }
 typedef TextCursorCmdKind;
 
@@ -450,39 +452,42 @@ struct TextCursorCmd
 	uint32 codepoint;
 	LineCol linecol;
 	intz amount;
+	String string;
 }
 typedef TextCursorCmd;
 
 BED_API void TextCursorPlayCommands(App* app, TextCursor* cursor, TextBuffer* textbuf, intz command_count, TextCursorCmd const commands[]);
 
-BED_API void TextCursorCmdInsert                 (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount, uint32 codepoint);
-BED_API void TextCursorCmdDeleteBackward         (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdLeft                   (TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdRight                  (TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdUp                     (TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdDown                   (TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdEndOfLine              (TextCursor* cursor, TextBuffer* textbuf);
-BED_API void TextCursorCmdStartOfLine            (TextCursor* cursor, TextBuffer* textbuf);
-BED_API void TextCursorCmdPlaceMarker            (TextCursor* cursor);
-BED_API void TextCursorCmdDeleteToMarker         (App* app, TextCursor* cursor, TextBuffer* textbuf);
-BED_API void TextCursorCmdRightSnakeWord         (TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdLeftSnakeWord          (TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdDeleteBackwardSnakeWord(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdCopy                   (App* app, TextCursor* cursor, TextBuffer* textbuf);
-BED_API void TextCursorCmdCut                    (App* app, TextCursor* cursor, TextBuffer* textbuf);
-BED_API void TextCursorCmdPaste                  (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdUpParagraph            (TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdDownParagraph          (TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdSet                    (TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int32 tab_size);
-BED_API void TextCursorCmdSetMarker              (TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int32 tab_size);
-BED_API void TextCursorCmdRightPascalWord        (TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdLeftPascalWord         (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdInsert                  (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount, uint32 codepoint);
+BED_API void TextCursorCmdInsertString            (App* app, TextCursor* cursor, TextBuffer* textbuf, String str);
+BED_API void TextCursorCmdDeleteBackward          (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdLeft                    (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdRight                   (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdUp                      (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdDown                    (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdEndOfLine               (TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdStartOfLine             (TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdPlaceMarker             (TextCursor* cursor);
+BED_API void TextCursorCmdDeleteToMarker          (App* app, TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdRightSnakeWord          (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdLeftSnakeWord           (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdDeleteBackwardSnakeWord (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdCopy                    (App* app, TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdCut                     (App* app, TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdPaste                   (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdUpParagraph             (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdDownParagraph           (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdSet                     (TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int32 tab_size);
+BED_API void TextCursorCmdSetMarker               (TextCursor* cursor, TextBuffer* textbuf, LineCol pos, int32 tab_size);
+BED_API void TextCursorCmdRightPascalWord         (TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdLeftPascalWord          (TextCursor* cursor, TextBuffer* textbuf, intz amount);
 BED_API void TextCursorCmdDeleteBackwardPascalWord(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdUndo                   (App* app, TextCursor* cursor, TextBuffer* textbuf);
-BED_API void TextCursorCmdRedo                   (App* app, TextCursor* cursor, TextBuffer* textbuf);
-BED_API void TextCursorCmdDeleteLine             (App* app, TextCursor* cursor, TextBuffer* textbuf);
-BED_API void TextCursorCmdMoveLineUp             (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
-BED_API void TextCursorCmdMoveLineDown           (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdUndo                    (App* app, TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdRedo                    (App* app, TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdDeleteLine              (App* app, TextCursor* cursor, TextBuffer* textbuf);
+BED_API void TextCursorCmdMoveLineUp              (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdMoveLineDown            (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
+BED_API void TextCursorCmdDuplicateLine           (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
 
 // ===========================================================================
 // ===========================================================================

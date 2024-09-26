@@ -1,4 +1,5 @@
 #include "bed.h"
+#include <immintrin.h>
 
 static TextBuffer*
 AllocTextBuffer_(App* app, intz* out_index)
@@ -141,6 +142,7 @@ InsertWithoutMakingEdit_(App* app, TextBuffer* textbuf, intz offset, String str)
 	{
 		intz new_size = textbuf->size + (textbuf->size >> 1) + 1;
 		new_size = Max(new_size, textbuf->size + str.size);
+		new_size = AlignUp(new_size, 31);
 		intz new_gap_size = new_size - (textbuf->size - gap_size);
 		AllocatorError err;
 		uint8* new_buffer = AllocatorAlloc(&app->heap, new_size, 1, &err);
@@ -260,6 +262,75 @@ TransposeWithoutMakingEdit_(App* app, TextBuffer* textbuf, Range first, Range se
 		DeleteWithoutMakingEdit_(textbuf, first.start, first_size);
 	if (second_size)
 		InsertWithoutMakingEdit_(app, textbuf, first.start, second_buffer);
+}
+
+static int32
+CountLinesInTwoStrings_(String left, String right)
+{
+	Trace();
+	int32 result = 1;
+
+#if CONFIG_ARCH_SSELEVEL < 51
+	for (intz i = 0; i < left_str.size; ++i)
+		result += (left_str.data[i] == '\n');
+	for (intz i = 0; i < right_str.size; ++i)
+		result += (right_str.data[i] == '\n');
+#else
+	__m256i linebreak = _mm256_set1_epi8('\n');
+	__m256i lsbmask = _mm256_set1_epi32(0xFF);
+	__m256i acc = _mm256_setzero_si256();
+	__m256i zero = _mm256_setzero_si256();
+
+	intz i;
+	for (i = 0; i+31 < left.size; i += 32)
+	{
+		__m256i chars = _mm256_loadu_si256((void*)&left.data[i]);
+		chars = _mm256_cmpeq_epi8(chars, linebreak);
+		chars = _mm256_sub_epi8(zero, chars);
+		
+		__m256i v0 = chars;
+		__m256i v1 = _mm256_srli_epi32(chars, 8);
+		__m256i v2 = _mm256_srli_epi32(chars, 16);
+		__m256i v3 = _mm256_srli_epi32(chars, 24);
+
+		v0 = _mm256_and_si256(v0, lsbmask);
+		v1 = _mm256_and_si256(v1, lsbmask);
+		v2 = _mm256_and_si256(v2, lsbmask);
+
+		__m256i total = _mm256_add_epi32(_mm256_add_epi32(v0, v1), _mm256_add_epi32(v2, v3));
+		acc = _mm256_add_epi32(acc, total);
+	}
+	for (; i < left.size; ++i)
+		result += (left.data[i] == '\n');
+	for (i = 0; i+31 < right.size; i += 32)
+	{
+		__m256i chars = _mm256_loadu_si256((void*)&right.data[i]);
+		chars = _mm256_cmpeq_epi8(chars, linebreak);
+		chars = _mm256_sub_epi8(zero, chars);
+		
+		__m256i v0 = chars;
+		__m256i v1 = _mm256_srli_epi32(chars, 8);
+		__m256i v2 = _mm256_srli_epi32(chars, 16);
+		__m256i v3 = _mm256_srli_epi32(chars, 24);
+
+		v0 = _mm256_and_si256(v0, lsbmask);
+		v1 = _mm256_and_si256(v1, lsbmask);
+		v2 = _mm256_and_si256(v2, lsbmask);
+
+		__m256i total = _mm256_add_epi32(_mm256_add_epi32(v0, v1), _mm256_add_epi32(v2, v3));
+		acc = _mm256_add_epi32(acc, total);
+	}
+	for (; i < right.size; ++i)
+		result += (right.data[i] == '\n');
+
+	acc = _mm256_add_epi32(acc, _mm256_permute2f128_ps(acc, acc, 1));
+	result += _mm256_extract_epi32(acc, 0);
+	result += _mm256_extract_epi32(acc, 1);
+	result += _mm256_extract_epi32(acc, 2);
+	result += _mm256_extract_epi32(acc, 3);
+#endif
+
+	return result;
 }
 
 BED_API TextBuffer*
@@ -496,17 +567,11 @@ BED_API int32
 TextBufferLineCount(TextBuffer* textbuf)
 {
 	Trace();
-	int32 result = 1;
 	String left_str = {};
 	String right_str = {};
 	TextBufferGetStrings(textbuf, &left_str, &right_str);
 
-	for (intz i = 0; i < left_str.size; ++i)
-		result += (left_str.data[i] == '\n');
-	for (intz i = 0; i < right_str.size; ++i)
-		result += (right_str.data[i] == '\n');
-
-	return result;
+	return CountLinesInTwoStrings_(left_str, right_str);
 }
 
 BED_API LineCol
@@ -517,9 +582,10 @@ TextBufferLineColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size)
 	String left_str = {};
 	String right_str = {};
 	TextBufferGetStrings(textbuf, &left_str, &right_str);
+
+#if 0
 	intz it;
 	uint32 codepoint;
-
 	it = 0;
 	while (codepoint = StringDecode(left_str, &it), codepoint && it <= offset)
 	{
@@ -547,6 +613,25 @@ TextBufferLineColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size)
 		else
 			++result.col;
 	}
+#else
+	if (offset > textbuf->gap_start)
+		right_str = StringSlice(right_str, 0, offset - textbuf->gap_start);
+	else
+	{
+		left_str = StringSlice(left_str, 0, offset);
+		right_str = StrNull;
+	}
+
+	result.line = CountLinesInTwoStrings_(left_str, right_str);
+	for (intz it = offset-1; it >= 0; --it)
+	{
+		uint8 sample = TextBufferSample(textbuf, it);
+		if (sample == '\n')
+			break;
+		if (IsStartOfCodepoint(sample))
+			++result.col;
+	}
+#endif
 
 	return result;
 }
@@ -688,9 +773,11 @@ TextBufferLineIterator(TextBuffer* textbuf, intz* it_, String* left_str, String*
 	intz it = *it_;
 	if (it >= TextBufferSize(textbuf))
 		return false;
-
+	
 	intz start = it;
 	intz end = it;
+	
+#if 0
 	for (;; ++it)
 	{
 		if (it >= TextBufferSize(textbuf))
@@ -702,7 +789,37 @@ TextBufferLineIterator(TextBuffer* textbuf, intz* it_, String* left_str, String*
 	}
 	end = it;
 	++it;
-	
+#else
+	String left, right;
+	TextBufferGetStrings(textbuf, &left, &right);
+	bool found = false;
+
+	if (it < left.size)
+	{
+		String rem = StringSlice(left, it, -1);
+		uint8 const* ptr_end = MemoryFindByte(rem.data, '\n', rem.size);
+		if (ptr_end)
+		{
+			end = ptr_end - left.data;
+			it = end + 1;
+			found = true;
+		}
+		else
+			it = left.size;
+	}
+
+	if (!found)
+	{
+		String rem = StringSlice(right, it - left.size, -1);
+		uint8 const* ptr_end = MemoryFindByte(rem.data, '\n', rem.size);
+		if (!ptr_end)
+			ptr_end = rem.data + rem.size;
+
+		end = left.size + (ptr_end - right.data);
+		it = end + 1;
+	}
+#endif
+
 	if (start < textbuf->gap_start && end > textbuf->gap_start)
 	{
 		*left_str = StrMake(textbuf->gap_start - start, textbuf->utf8_text + start);

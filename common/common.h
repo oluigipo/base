@@ -645,7 +645,6 @@ MemoryStrnstr(const char* left, const char* right, intz limit)
 static inline uint32
 StringDecode(String str, intz* index)
 {
-	Trace();
 	const uint8* head = str.data + *index;
 	const uint8* const end = str.data + str.size;
 	
@@ -798,7 +797,7 @@ StringSubstr(String str, intz index, intz size)
 {
 	Trace();
 	if (index >= str.size)
-		return StrNull;
+		return StrMake(0, str.data + str.size);
 	
 	str.data += index;
 	str.size -= index;
@@ -828,12 +827,10 @@ StringSlice(String str, intz begin, intz end)
 		begin = (intz)str.size + begin + 1;
 	if (end < 0)
 		end = (intz)str.size + end + 1;
-	if (begin >= end)
-		return StrNull;
 	
 	begin = ClampMax(begin, (intz)str.size);
-	end   = ClampMax(end,   (intz)str.size);
-	
+	end   = Clamp(end, begin, (intz)str.size);
+
 	str.data += begin;
 	str.size = end - begin;
 	return str;
@@ -903,7 +900,7 @@ StringFromFixedBuffer(Buffer buf)
 {
 	Trace();
 	if (!buf.size)
-		return StrNull;
+		return buf;
 
 	uint8 const* zero = (uint8 const*)MemoryFindByte(buf.data, 0, buf.size);
 	String result = buf;

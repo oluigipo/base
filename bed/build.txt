@@ -3,6 +3,7 @@ fxc bed/shader_quad.hlsl ps_4_0 Pixel
 
 define CONFIG_WINDOWS_SUBSYSTEM
 subsystem windows
+avx 2
 
 @tracy define CONFIG_ENABLE_TRACY
 @tracy lib "C:\b\ext\tracy\Release\TracyClient.lib"

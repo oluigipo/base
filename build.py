@@ -124,9 +124,11 @@ middir = None
 output_name = None
 windows_subsystem = "console"
 tracy = False
+avx = None
 
 def main():
     global project, is_debug, force_rebuild, target, outdir, middir, output_name, windows_subsystem, tracy
+    global avx
     
     ap = argparse.ArgumentParser()
     ap.add_argument('project')
@@ -173,6 +175,7 @@ def main():
     odin = None
     is_root = False
     original_output_name = None
+    avx = None
     for line in lines:
         tokens = shlex.split(line.strip())
         should_skip_line = False
@@ -265,7 +268,12 @@ def main():
                 windows_subsystem = subsystem
             case ['root']:
                 is_root = True
-    
+            case ['avx', *args]:
+                if len(args) > 0 and args[0] == '2':
+                    avx = 2
+                else:
+                    avx = 1
+
     retcode = build_cmds(cmds)
     match target:
         case 'win64':
@@ -342,12 +350,16 @@ def build_cmds(cmds):
     return 0
 
 def build_win64(objs, libs, defines, incdirs, libdirs, asan, ubsan):
-    global project, is_debug, force_rebuild, target, outdir, middir, output_name
+    global project, is_debug, force_rebuild, target, outdir, middir, output_name, avx
 
     cflags_platform = ['-mlzcnt', '-march=x86-64-v2']
     cflags_debug    = [*CFLAGS_DEBUG, '-g']
     cflags_opt      = [*CFLAGS_OPT,   '-O2']
     linkflags_debug = ['-g']
+    if avx == 1:
+        cflags_platform.append('-mavx')
+    elif avx == 2:
+        cflags_platform.append('-mavx2')
 
     cflags    = ['-Icommon', '-I.', '-Ithird_party_include', '-I'+middir, '-std=c2x',   *CFLAGS_WARNINGS, *cflags_platform]
     cxxflags  = ['-Icommon', '-I.', '-Ithird_party_include', '-I'+middir, '-std=c++14', *CFLAGS_WARNINGS, *cflags_platform]
