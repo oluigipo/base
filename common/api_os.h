@@ -394,7 +394,7 @@ struct OS_Event
 }
 typedef OS_Event;
 
-API OS_Event* OS_PollEvents(bool wait, Arena* output_arena, intsize* out_event_count);
+API OS_Event* OS_PollEvents(uint64 wait_ns, Arena* output_arena, intsize* out_event_count);
 
 //------------------------------------------------------------------------
 // Polling Input

@@ -494,8 +494,10 @@ BED_API void TextCursorCmdDuplicateLine           (App* app, TextCursor* cursor,
 // Automatic C/C++ Indentation API
 struct CIndentCtx
 {
+	bool preproc_nesting;
 	uint64 braces_nesting_bitset;
 	uint64 parens_nesting_bitset;
+	uint64 unfinished_stmt_nesting_bitset;
 }
 typedef CIndentCtx;
 

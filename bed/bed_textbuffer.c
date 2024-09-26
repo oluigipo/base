@@ -520,7 +520,9 @@ TextBufferRefreshTokens(App* app, TextBuffer* textbuf)
 			CF_LexingFlag_AllowGnu |
 			CF_LexingFlag_AllowContextSensetiveKeywords |
 			CF_LexingFlag_AllowCxx |
-			CF_LexingFlag_IncludeComments,
+			CF_LexingFlag_IncludeComments |
+			CF_LexingFlag_IncludeEscapedLinebreaks |
+			CF_LexingFlag_IncludeLinebreaks,
 		.kind_allocator = app->heap,
 		.source_range_allocator = app->heap,
 	});

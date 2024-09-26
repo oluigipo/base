@@ -46,52 +46,37 @@ CIndentPushLine(CIndentCtx* cindent, String line, intz cf_count, CF_TokenKind co
 	Trace();
 	int32 braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
 	int32 parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
+	int32 unfinished_stmt_nesting = MsbIndex(cindent->unfinished_stmt_nesting_bitset);
 	int32 scope_nesting = Max(braces_nesting, parens_nesting);
+	scope_nesting = Max(scope_nesting, unfinished_stmt_nesting) + cindent->preproc_nesting;
 	int32 this_scope_nesting = scope_nesting;
 	int32 parens_nesting_at_start = parens_nesting;
 
-	while (line.size > 0 && line.data[0] == '\t')
+	bool is_preproc_line = false;
+	bool is_first_iter = true;
+	CF_TokenKind last_token = 0;
+	Range line_range = RangeMakeSized(base_line_offset, line.size);
+	for (intz i = start_cf_index; i < cf_count; ++i)
 	{
-		line = StringSlice(line, 1, -1);
-		++base_line_offset;
-	}
-
-	for (intz i = 0; i < line.size; ++i)
-	{
-		uint8 ch = line.data[i];
-
-		// NOTE(ljre): Check if we're inside a comment, and if we are, jump to the next non-comment char
-		bool is_inside_comment = false;
-		for (intz cf_i = start_cf_index; cf_i < cf_count; ++cf_i)
-		{
-			CF_TokenKind kind = cf_kinds[cf_i];
-			CF_SourceRange const* range = &cf_ranges[cf_i];
-
-			if (range->end - base_line_offset <= i)
-				continue;
-			if (range->begin - base_line_offset > i)
-			{
-				start_cf_index = cf_i;
-				break;
-			}
-
-			if (kind == CF_TokenKind_Comment || kind == CF_TokenKind_MultilineComment ||
-				kind == CF_TokenKind_LitString || kind == CF_TokenKind_LitWideString || kind == CF_TokenKind_LitUtf8String ||
-				kind == CF_TokenKind_LitChar || kind == CF_TokenKind_LitWideChar || kind == CF_TokenKind_LitUtf8Char)
-			{
-				i = range->end - base_line_offset;
-				is_inside_comment = true;
-				break;
-			}
-		}
-		if (is_inside_comment)
-		{
-			--i;
+		CF_TokenKind kind = cf_kinds[i];
+		CF_SourceRange const* range = &cf_ranges[i];
+		if (range->end <= line_range.start)
 			continue;
-		}
+		if (range->begin > line_range.end)
+			break;
+
+		if (is_first_iter && kind == CF_TokenKind_SymHash)
+			is_preproc_line = true;
+
+		if (kind != CF_TokenKind_Comment &&
+			kind != CF_TokenKind_MultilineComment &&
+			kind != CF_TokenKind_EscapedLinebreak &&
+			kind != CF_TokenKind_Linebreak)
+			last_token = kind;
 
 		bool just_closed = false;
-		if (ch == '{')
+		bool just_opened = false;
+		if (kind == CF_TokenKind_SymLeftCurl)
 		{
 			// NOTE(ljre): If we're opening a brace in the same line a paren was open, the "ownership" of
 			//             this indentation level will go to the brace.
@@ -108,36 +93,188 @@ CIndentPushLine(CIndentCtx* cindent, String line, intz cf_count, CF_TokenKind co
 				cindent->parens_nesting_bitset = UnsetMsb(cindent->parens_nesting_bitset);
 				--scope_nesting; // it will be incremented this iteration again
 			}
+			else if (scope_nesting > 0 && scope_nesting == unfinished_stmt_nesting)
+			{
+				cindent->unfinished_stmt_nesting_bitset = UnsetMsb(cindent->unfinished_stmt_nesting_bitset);
+				--scope_nesting;
+			}
 
 			SafeAssert(scope_nesting <= 63);
 			cindent->braces_nesting_bitset |= 1ULL << scope_nesting;
 			braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
+			just_opened = true;
 		}
-		else if (ch == '(')
+		else if (kind == CF_TokenKind_SymLeftParen)
 		{
 			SafeAssert(scope_nesting <= 63);
 			cindent->parens_nesting_bitset |= 1ULL << scope_nesting;
 			parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
+			just_opened = true;
 		}
-		else if (ch == '}')
+		else if (kind == CF_TokenKind_SymRightCurl)
 		{
 			cindent->braces_nesting_bitset = UnsetMsb(cindent->braces_nesting_bitset);
 			braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
 			just_closed = true;
 		}
-		else if (ch == ')')
+		else if (kind == CF_TokenKind_SymRightParen)
 		{
+			if (scope_nesting > 0 && scope_nesting == unfinished_stmt_nesting)
+			{
+				cindent->unfinished_stmt_nesting_bitset = UnsetMsb(cindent->unfinished_stmt_nesting_bitset);
+				--scope_nesting;
+			}
 			cindent->parens_nesting_bitset = UnsetMsb(cindent->parens_nesting_bitset);
 			parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
 			just_closed = true;
 		}
 		else
+		{
+			is_first_iter = false;
 			continue;
+		}
 
 		scope_nesting = Max(braces_nesting, parens_nesting);
-		if (i == 0 && just_closed)
-			this_scope_nesting = scope_nesting;
+		scope_nesting = Max(scope_nesting, unfinished_stmt_nesting) + cindent->preproc_nesting;
+		if (is_first_iter)
+		{
+			if (just_closed)
+				this_scope_nesting = scope_nesting;
+			else if (just_opened)
+			{
+				SafeAssert(scope_nesting > 0);
+				this_scope_nesting = scope_nesting - 1;
+			}
+		}
+		is_first_iter = false;
 	}
+
+	if (last_token != 0)
+	{
+		if (is_preproc_line)
+		{
+			if (last_token == CF_TokenKind_EscapedLinebreak)
+				cindent->preproc_nesting = true;
+		}
+		else if (cindent->preproc_nesting)
+			cindent->preproc_nesting = false;
+		else
+		{
+			bool could_be_unfinished_stmt = (
+				last_token != CF_TokenKind_SymRightCurl &&
+				last_token != CF_TokenKind_SymLeftCurl &&
+				last_token != CF_TokenKind_SymLeftParen &&
+				last_token != CF_TokenKind_SymComma &&
+				last_token != CF_TokenKind_SymColon &&
+				last_token != CF_TokenKind_SymSemicolon);
+
+			if (scope_nesting > 0 && scope_nesting == unfinished_stmt_nesting && !could_be_unfinished_stmt)
+				cindent->unfinished_stmt_nesting_bitset = UnsetMsb(cindent->unfinished_stmt_nesting_bitset);
+			else if (could_be_unfinished_stmt)
+			{
+				if (scope_nesting > 0 && scope_nesting == braces_nesting)
+					cindent->unfinished_stmt_nesting_bitset |= 1ULL << scope_nesting;
+				// else if (scope_nesting > 0 && scope_nesting == parens_nesting && parens_nesting_at_start == parens_nesting)
+				// 	cindent->unfinished_stmt_nesting_bitset |= 1ULL << scope_nesting;
+			}
+		}
+	}
+
+	// for (intz i = 0; i < line.size; ++i)
+	// {
+	// 	while (i < line.size && (line.data[0] == ' ' || line.data[0] == '\t'))
+	// 		++i;
+	// 	uint8 ch = line.data[i];
+
+	// 	// NOTE(ljre): Check if we're inside a comment, and if we are, jump to the next non-comment char
+	// 	bool is_inside_comment = false;
+	// 	for (intz cf_i = start_cf_index; cf_i < cf_count; ++cf_i)
+	// 	{
+	// 		CF_TokenKind kind = cf_kinds[cf_i];
+	// 		CF_SourceRange const* range = &cf_ranges[cf_i];
+
+	// 		if (range->end - base_line_offset <= i)
+	// 			continue;
+	// 		if (range->begin - base_line_offset > i)
+	// 		{
+	// 			start_cf_index = cf_i;
+	// 			break;
+	// 		}
+
+	// 		if (kind == CF_TokenKind_Comment || kind == CF_TokenKind_MultilineComment ||
+	// 			kind == CF_TokenKind_LitString || kind == CF_TokenKind_LitWideString || kind == CF_TokenKind_LitUtf8String ||
+	// 			kind == CF_TokenKind_LitChar || kind == CF_TokenKind_LitWideChar || kind == CF_TokenKind_LitUtf8Char)
+	// 		{
+	// 			i = range->end - base_line_offset;
+	// 			is_inside_comment = true;
+	// 			break;
+	// 		}
+	// 	}
+	// 	if (is_inside_comment)
+	// 	{
+	// 		--i;
+	// 		continue;
+	// 	}
+
+	// 	bool just_closed = false;
+	// 	bool just_opened = false;
+	// 	if (ch == '{')
+	// 	{
+	// 		// NOTE(ljre): If we're opening a brace in the same line a paren was open, the "ownership" of
+	// 		//             this indentation level will go to the brace.
+	// 		//             This makes it indent the following code:
+	// 		//                 Test(a, {
+	// 		//                         .f = "abc"
+	// 		//                     }, c)
+	// 		//             as:
+	// 		//                 Test(a, {
+	// 		//                    .f = "abc"
+	// 		//                 }, c);
+	// 		if (braces_nesting + 1 == parens_nesting && parens_nesting > parens_nesting_at_start)
+	// 		{
+	// 			cindent->parens_nesting_bitset = UnsetMsb(cindent->parens_nesting_bitset);
+	// 			--scope_nesting; // it will be incremented this iteration again
+	// 		}
+
+	// 		SafeAssert(scope_nesting <= 63);
+	// 		cindent->braces_nesting_bitset |= 1ULL << scope_nesting;
+	// 		braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
+	// 		just_opened = true;
+	// 	}
+	// 	else if (ch == '(')
+	// 	{
+	// 		SafeAssert(scope_nesting <= 63);
+	// 		cindent->parens_nesting_bitset |= 1ULL << scope_nesting;
+	// 		parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
+	// 		just_opened = true;
+	// 	}
+	// 	else if (ch == '}')
+	// 	{
+	// 		cindent->braces_nesting_bitset = UnsetMsb(cindent->braces_nesting_bitset);
+	// 		braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
+	// 		just_closed = true;
+	// 	}
+	// 	else if (ch == ')')
+	// 	{
+	// 		cindent->parens_nesting_bitset = UnsetMsb(cindent->parens_nesting_bitset);
+	// 		parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
+	// 		just_closed = true;
+	// 	}
+	// 	else
+	// 		continue;
+
+	// 	scope_nesting = Max(braces_nesting, parens_nesting);
+	// 	if (i == 0)
+	// 	{
+	// 		if (just_closed)
+	// 			this_scope_nesting = scope_nesting;
+	// 		else if (just_opened)
+	// 		{
+	// 			SafeAssert(scope_nesting > 0);
+	// 			this_scope_nesting = scope_nesting - 1;
+	// 		}
+	// 	}
+	// }
 
 	// for (intz i = 0; i < line.size; ++i)
 	// {
@@ -196,6 +333,29 @@ SetCursorPosFromMouse_(App* app, TextView* view, TextBuffer* textbuf, int32 mous
 	int32 col = (mouse_x - left_padding) / app->glyph_advance + 1;
 	int32 line = (mouse_y - top_padding) / app->glyph_line_height + view->line;
 	TextCursorCmdSet(&view->cursor, textbuf, (LineCol) { line, col }, 4);
+}
+
+static String
+RemoveIndentationFromFile_(App* app, Arena* arena, String str)
+{
+	uint8* start = ArenaEnd(arena);
+
+	for (intz it = 0; it < str.size;)
+	{
+		intz line_start = it;
+		uint8 const* end_ptr = MemoryFindByte(str.data + it, '\n', str.size - it);
+		intz line_end = (end_ptr) ? end_ptr - str.data + 1 : str.size;
+		String line = StringSlice(str, line_start, line_end);
+
+		while (line.size > 0 && (line.data[0] == ' ' || line.data[0] == '\t'))
+			line = StringSlice(line, 1, -1);
+
+		ArenaPushString(arena, line);
+		it = line_end;
+	}
+
+	uint8* end = ArenaEnd(arena);
+	return StrRange(start, end);
 }
 
 struct QuadVertex_
@@ -512,6 +672,10 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 						break;
 					CF_TokenKind tok_kind = textbuf->cf_kinds[i];
 					uint32 color = 0;
+
+					if (tok_kind == CF_TokenKind_Linebreak ||
+						tok_kind == CF_TokenKind_EscapedLinebreak)
+						continue;
 
 					if (is_first_iter && tok_kind == CF_TokenKind_SymHash)
 						is_preproc_line = true;
@@ -899,14 +1063,19 @@ EntryPoint(int32 argc, const char* const argv[])
 	}
 
 	// make default views
+	for ArenaTempScope(app->arena)
 	{
 		app->left_view = (TextView) {
 			.kind = TextViewKind_File,
 			.cursor = {},
 			.line = 1,
-			.file_path = StrInit("Expr.cpp"),
+			.file_path = StrInit("os/os_win32.c"),
 		};
-		TextBufferFromFile(app, app->left_view.file_path, TextBufferKind_C, &app->left_view.textbuf_index);
+		String str = {};
+		SafeAssert(OS_ReadEntireFile(app->left_view.file_path, app->arena, (void**)&str.data, &str.size, NULL));
+		// str = RemoveIndentationFromFile_(app, app->arena, str);
+		TextBufferFromString(app, str, TextBufferKind_C, &app->left_view.textbuf_index);
+		
 		app->right_view = (TextView) {
 			.kind = TextViewKind_Scratch,
 			.cursor = {},
@@ -920,7 +1089,7 @@ EntryPoint(int32 argc, const char* const argv[])
 	{
 		ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
 		intz event_count;
-		OS_Event* events = OS_PollEvents(!is_first_frame, scratch.arena, &event_count);
+		OS_Event* events = OS_PollEvents(is_first_frame ? 0 : UINT64_MAX, scratch.arena, &event_count);
 
 		TraceFrameBegin();
 

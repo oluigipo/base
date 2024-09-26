@@ -2301,7 +2301,7 @@ OS_Init(int32 systems)
 }
 
 API OS_Event*
-OS_PollEvents(bool wait, Arena* output_arena, intsize* out_event_count)
+OS_PollEvents(uint64 wait_ns, Arena* output_arena, intsize* out_event_count)
 {
 	Trace();
 	for (WindowData_* window_data = g_win32.windows; window_data; window_data = window_data->next)
@@ -2318,18 +2318,31 @@ OS_PollEvents(bool wait, Arena* output_arena, intsize* out_event_count)
 	OS_Event* events = ArenaEndAligned(output_arena, alignof(OS_Event));
 	g_win32.polling_event_output_arena = output_arena;
 	
-	if (wait)
+	if (wait_ns)
 	{
-		while (ArenaEnd(output_arena) == events)
+		bool ok = true;
+		if (wait_ns != UINT64_MAX)
 		{
-			MSG message;
-			GetMessageW(&message, NULL, 0, 0);
-			TranslateMessage(&message);
-			DispatchMessageW(&message);
-			while (PeekMessageW(&message, NULL, 0, 0, PM_REMOVE) > 0)
+			DWORD ms = (DWORD)Max(1, wait_ns / 1000000);
+			DWORD result = MsgWaitForMultipleObjects(0, NULL, TRUE, ms, QS_ALLEVENTS);
+			if (result == WAIT_FAILED)
+				Log(LOG_WARN, "MsgWaitForMultipleObjects failed with code: %u", GetLastError());
+			ok = (result != WAIT_TIMEOUT);
+		}
+		
+		if (ok)
+		{
+			while (ArenaEnd(output_arena) == events)
 			{
+				MSG message;
+				GetMessageW(&message, NULL, 0, 0);
 				TranslateMessage(&message);
 				DispatchMessageW(&message);
+				while (PeekMessageW(&message, NULL, 0, 0, PM_REMOVE) > 0)
+				{
+					TranslateMessage(&message);
+					DispatchMessageW(&message);
+				}
 			}
 		}
 	}
