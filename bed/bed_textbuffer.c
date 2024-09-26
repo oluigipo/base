@@ -630,7 +630,9 @@ TextBufferLineColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size)
 		uint8 sample = TextBufferSample(textbuf, it);
 		if (sample == '\n')
 			break;
-		if (IsStartOfCodepoint(sample))
+		if (sample == '\t')
+			result.col = RoundToNextTab(result.col-1, tab_size) + 1;
+		else if (IsStartOfCodepoint(sample))
 			++result.col;
 	}
 #endif

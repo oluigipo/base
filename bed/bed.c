@@ -40,7 +40,7 @@ MsbIndex(uint64 value)
 }
 
 BED_API int32
-CIndentPushLine(CIndentCtx* cindent, String line, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index, intz base_line_offset)
+CIndentPushLine(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index)
 {
 	// TODO(ljre): make this function faster
 	Trace();
@@ -55,7 +55,6 @@ CIndentPushLine(CIndentCtx* cindent, String line, intz cf_count, CF_TokenKind co
 	bool is_preproc_line = false;
 	bool is_first_iter = true;
 	CF_TokenKind last_token = 0;
-	Range line_range = RangeMakeSized(base_line_offset, line.size);
 	for (intz i = start_cf_index; i < cf_count; ++i)
 	{
 		CF_TokenKind kind = cf_kinds[i];
@@ -624,7 +623,7 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 			}
 			else
 				str = left_str;
-			intz this_scope_nesting = CIndentPushLine(&cindent, str, textbuf->cf_count, textbuf->cf_kinds, textbuf->cf_ranges, last_cf_index, prev_it);
+			intz this_scope_nesting = CIndentPushLine(&cindent, RangeMakeSized(prev_it, str.size), textbuf->cf_count, textbuf->cf_kinds, textbuf->cf_ranges, last_cf_index);
 
 			intz consumed_tabs = 0;
 			while (consumed_tabs < str.size && consumed_tabs < this_scope_nesting)

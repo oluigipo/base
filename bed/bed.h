@@ -501,6 +501,6 @@ struct CIndentCtx
 }
 typedef CIndentCtx;
 
-BED_API int32 CIndentPushLine(CIndentCtx* cindent, String line, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index, intz base_line_offset);
+BED_API int32 CIndentPushLine(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index);
 
 #endif
