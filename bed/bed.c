@@ -1,4 +1,5 @@
 #include "common.h"
+#include "common_atomic.h"
 #include "api_os.h"
 #include "api_render3.h"
 #include "cfront/api.h"
@@ -11,6 +12,7 @@
 #include "third_party/cdwrite.h"
 #include <d3d11_1.h>
 #include <math.h>
+#include <windows.h>
 
 #define BED_API static
 #include "bed.h"
@@ -19,6 +21,147 @@
 
 IncludeBinary(g_quads_vs, "shader_quad_vs.dxil");
 IncludeBinary(g_quads_ps, "shader_quad_ps.dxil");
+
+struct Console
+{
+	HPCON hpcon;
+	HANDLE conside_input, conside_output;
+	HANDLE con_input, con_output;
+	PROCESS_INFORMATION cmd_process_info;
+	OS_Thread thread;
+
+	alignas(64) int32 should_return;
+}
+typedef Console;
+
+static int32
+ConsoleThreadProc_(void* user_data)
+{
+	Trace();
+	Console* console = user_data;
+
+	while (!AtomicLoad32Acq(&console->should_return))
+	{
+		DWORD wait_result = WaitForSingleObject(console->con_output, 1);
+		if (wait_result != WAIT_OBJECT_0)
+			continue;
+
+		char string_read[4096] = {};
+		DWORD chars_read = 0;
+		BOOL ok = ReadFile(console->con_output, string_read, sizeof(string_read)-2, &chars_read, NULL);
+		if (!ok)
+		{
+			if (AtomicLoad32Relaxed(&console->should_return))
+				break;
+			HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
+			SafeAssert(SUCCEEDED(hr)); // just so we can see it in the debugger
+		}
+		string_read[chars_read] = '\n';
+		string_read[chars_read+1] = 0;
+
+		OutputDebugStringA(string_read);
+	}
+
+	return 0;
+}
+
+static void
+DeinitConsole(Console* console)
+{
+	AtomicStore32Rel(&console->should_return, 1);
+	if (console->hpcon)
+		ClosePseudoConsole(console->hpcon);
+	if (console->thread.ptr)
+	{
+		OS_JoinThread(console->thread);
+		OS_DestroyThread(console->thread);
+	}
+	if (console->conside_input)
+		CloseHandle(console->conside_input);
+	if (console->conside_output)
+		CloseHandle(console->conside_output);
+	if (console->con_input)
+		CloseHandle(console->con_input);
+	if (console->con_output)
+		CloseHandle(console->con_output);
+	MemoryZero(console, sizeof(*console));
+}
+
+static bool
+InitConsole(App* app, Console* console)
+{
+	SetConsoleOutputCP(CP_UTF8);
+	SetConsoleCP(CP_UTF8);
+
+	MemoryZero(console, sizeof(*console));
+	if (!CreatePipe(&console->conside_input, &console->con_input, NULL, 0))
+		return DeinitConsole(console), false;
+	if (!CreatePipe(&console->con_output, &console->conside_output, NULL, 0))
+		return DeinitConsole(console), false;
+
+	HRESULT hr = CreatePseudoConsole(
+		(COORD) { 80, 8001 },
+		console->conside_input,
+		console->conside_output,
+		0,
+		&console->hpcon);
+	if (!SUCCEEDED(hr))
+		return DeinitConsole(console), false;
+
+	STARTUPINFOEXW startup_info = {
+		.StartupInfo.cb = sizeof(STARTUPINFOEXW),
+	};
+
+	SIZE_T bytes_required = 0;
+	InitializeProcThreadAttributeList(NULL, 1, 0, &bytes_required);
+
+	startup_info.lpAttributeList = AllocatorAlloc(&app->heap, (intz)bytes_required, 16, NULL);
+	if (!InitializeProcThreadAttributeList(startup_info.lpAttributeList, 1, 0, &(SIZE_T) { bytes_required }))
+	{
+		AllocatorFree(&app->heap, startup_info.lpAttributeList, (intz)bytes_required, NULL);
+		return DeinitConsole(console), false;
+	}
+
+	if (!UpdateProcThreadAttribute(
+			startup_info.lpAttributeList,
+			0,
+			PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+			console->hpcon,
+			sizeof(HPCON),
+			NULL,
+			NULL))
+	{
+		AllocatorFree(&app->heap, startup_info.lpAttributeList, (intz)bytes_required, NULL);
+		return DeinitConsole(console), false;
+	}
+
+	wchar_t cmd_path[] = L"C:\\Windows\\System32\\cmd.exe";
+	BOOL process_ok = CreateProcessW(
+			NULL,
+			cmd_path,
+			NULL,
+			NULL,
+			FALSE,
+			EXTENDED_STARTUPINFO_PRESENT,
+			NULL,
+			NULL,
+			&startup_info.StartupInfo,
+			&console->cmd_process_info);
+	AllocatorFree(&app->heap, startup_info.lpAttributeList, (intz)bytes_required, NULL);
+	if (!process_ok)
+		return DeinitConsole(console), false;
+
+	console->thread = OS_CreateThread(&(OS_ThreadDesc) {
+		.proc = ConsoleThreadProc_,
+		.user_data = console,
+		.name = StrInit("Console Thread"),
+	});
+
+	String command = StrInit("start.\r\n");
+	WriteFile(console->con_input, command.data, command.size, NULL, NULL);
+
+	return true;
+}
 
 static uint64
 UnsetMsb(uint64 value)
@@ -40,7 +183,7 @@ MsbIndex(uint64 value)
 }
 
 BED_API int32
-CIndentPushLine(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index)
+CIndentPushRange(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index)
 {
 	// TODO(ljre): make this function faster
 	Trace();
@@ -48,11 +191,12 @@ CIndentPushLine(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKi
 	int32 parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
 	int32 unfinished_stmt_nesting = MsbIndex(cindent->unfinished_stmt_nesting_bitset);
 	int32 scope_nesting = Max(braces_nesting, parens_nesting);
-	scope_nesting = Max(scope_nesting, unfinished_stmt_nesting) + cindent->preproc_nesting;
+	scope_nesting = Max(scope_nesting, unfinished_stmt_nesting);
 	int32 this_scope_nesting = scope_nesting;
 	int32 parens_nesting_at_start = parens_nesting;
 
-	bool is_preproc_line = false;
+	bool prev_is_preproc_line = cindent->preproc_nesting;
+	bool is_preproc_line = cindent->preproc_nesting;
 	bool is_first_iter = true;
 	CF_TokenKind last_token = 0;
 	for (intz i = start_cf_index; i < cf_count; ++i)
@@ -61,7 +205,7 @@ CIndentPushLine(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKi
 		CF_SourceRange const* range = &cf_ranges[i];
 		if (range->end <= line_range.start)
 			continue;
-		if (range->begin > line_range.end)
+		if (range->begin >= line_range.end)
 			break;
 
 		if (is_first_iter && kind == CF_TokenKind_SymHash)
@@ -69,7 +213,6 @@ CIndentPushLine(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKi
 
 		if (kind != CF_TokenKind_Comment &&
 			kind != CF_TokenKind_MultilineComment &&
-			kind != CF_TokenKind_EscapedLinebreak &&
 			kind != CF_TokenKind_Linebreak)
 			last_token = kind;
 
@@ -134,7 +277,7 @@ CIndentPushLine(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKi
 		}
 
 		scope_nesting = Max(braces_nesting, parens_nesting);
-		scope_nesting = Max(scope_nesting, unfinished_stmt_nesting) + cindent->preproc_nesting;
+		scope_nesting = Max(scope_nesting, unfinished_stmt_nesting);
 		if (is_first_iter)
 		{
 			if (just_closed)
@@ -148,15 +291,16 @@ CIndentPushLine(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKi
 		is_first_iter = false;
 	}
 
+	// NOTE(ljre): indent multi-line preproc statements
+	if (is_preproc_line && prev_is_preproc_line)
+		++this_scope_nesting;
+
+	// NOTE(ljre): indent next line if this stmt/expr didn't end in this line
+	cindent->preproc_nesting = false;
 	if (last_token != 0)
 	{
 		if (is_preproc_line)
-		{
-			if (last_token == CF_TokenKind_EscapedLinebreak)
-				cindent->preproc_nesting = true;
-		}
-		else if (cindent->preproc_nesting)
-			cindent->preproc_nesting = false;
+			cindent->preproc_nesting = (last_token == CF_TokenKind_EscapedLinebreak);
 		else
 		{
 			bool could_be_unfinished_stmt = (
@@ -179,123 +323,6 @@ CIndentPushLine(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKi
 		}
 	}
 
-	// for (intz i = 0; i < line.size; ++i)
-	// {
-	// 	while (i < line.size && (line.data[0] == ' ' || line.data[0] == '\t'))
-	// 		++i;
-	// 	uint8 ch = line.data[i];
-
-	// 	// NOTE(ljre): Check if we're inside a comment, and if we are, jump to the next non-comment char
-	// 	bool is_inside_comment = false;
-	// 	for (intz cf_i = start_cf_index; cf_i < cf_count; ++cf_i)
-	// 	{
-	// 		CF_TokenKind kind = cf_kinds[cf_i];
-	// 		CF_SourceRange const* range = &cf_ranges[cf_i];
-
-	// 		if (range->end - base_line_offset <= i)
-	// 			continue;
-	// 		if (range->begin - base_line_offset > i)
-	// 		{
-	// 			start_cf_index = cf_i;
-	// 			break;
-	// 		}
-
-	// 		if (kind == CF_TokenKind_Comment || kind == CF_TokenKind_MultilineComment ||
-	// 			kind == CF_TokenKind_LitString || kind == CF_TokenKind_LitWideString || kind == CF_TokenKind_LitUtf8String ||
-	// 			kind == CF_TokenKind_LitChar || kind == CF_TokenKind_LitWideChar || kind == CF_TokenKind_LitUtf8Char)
-	// 		{
-	// 			i = range->end - base_line_offset;
-	// 			is_inside_comment = true;
-	// 			break;
-	// 		}
-	// 	}
-	// 	if (is_inside_comment)
-	// 	{
-	// 		--i;
-	// 		continue;
-	// 	}
-
-	// 	bool just_closed = false;
-	// 	bool just_opened = false;
-	// 	if (ch == '{')
-	// 	{
-	// 		// NOTE(ljre): If we're opening a brace in the same line a paren was open, the "ownership" of
-	// 		//             this indentation level will go to the brace.
-	// 		//             This makes it indent the following code:
-	// 		//                 Test(a, {
-	// 		//                         .f = "abc"
-	// 		//                     }, c)
-	// 		//             as:
-	// 		//                 Test(a, {
-	// 		//                    .f = "abc"
-	// 		//                 }, c);
-	// 		if (braces_nesting + 1 == parens_nesting && parens_nesting > parens_nesting_at_start)
-	// 		{
-	// 			cindent->parens_nesting_bitset = UnsetMsb(cindent->parens_nesting_bitset);
-	// 			--scope_nesting; // it will be incremented this iteration again
-	// 		}
-
-	// 		SafeAssert(scope_nesting <= 63);
-	// 		cindent->braces_nesting_bitset |= 1ULL << scope_nesting;
-	// 		braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
-	// 		just_opened = true;
-	// 	}
-	// 	else if (ch == '(')
-	// 	{
-	// 		SafeAssert(scope_nesting <= 63);
-	// 		cindent->parens_nesting_bitset |= 1ULL << scope_nesting;
-	// 		parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
-	// 		just_opened = true;
-	// 	}
-	// 	else if (ch == '}')
-	// 	{
-	// 		cindent->braces_nesting_bitset = UnsetMsb(cindent->braces_nesting_bitset);
-	// 		braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
-	// 		just_closed = true;
-	// 	}
-	// 	else if (ch == ')')
-	// 	{
-	// 		cindent->parens_nesting_bitset = UnsetMsb(cindent->parens_nesting_bitset);
-	// 		parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
-	// 		just_closed = true;
-	// 	}
-	// 	else
-	// 		continue;
-
-	// 	scope_nesting = Max(braces_nesting, parens_nesting);
-	// 	if (i == 0)
-	// 	{
-	// 		if (just_closed)
-	// 			this_scope_nesting = scope_nesting;
-	// 		else if (just_opened)
-	// 		{
-	// 			SafeAssert(scope_nesting > 0);
-	// 			this_scope_nesting = scope_nesting - 1;
-	// 		}
-	// 	}
-	// }
-
-	// for (intz i = 0; i < line.size; ++i)
-	// {
-	// 	uint8 ch = line.data[i];
-	// 	if (ch == '}')
-	// 	{
-	// 		cindent->braces_nesting_bitset = UnsetMsb(cindent->braces_nesting_bitset);
-	// 		braces_nesting = MsbIndex(cindent->braces_nesting_bitset);
-	// 	}
-	// 	else if (ch == ')')
-	// 	{
-	// 		cindent->parens_nesting_bitset = UnsetMsb(cindent->parens_nesting_bitset);
-	// 		parens_nesting = MsbIndex(cindent->parens_nesting_bitset);
-	// 	}
-	// 	else
-	// 		continue;
-
-	// 	scope_nesting = Max(braces_nesting, parens_nesting);
-	// 	if (i == 0)
-	// 		this_scope_nesting = scope_nesting;
-	// }
-
 	return this_scope_nesting;
 }
 
@@ -313,7 +340,7 @@ static void
 ScrollTextViewToCursor_(App* app, TextView* view)
 {
 	Trace();
-	TextBuffer* textbuf = TextBufferFromIndex(app, view->textbuf_index);
+	TextBuffer* textbuf = TextBufferFromHandle(app, view->textbuf);
 	LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
 	int32 line_count = SizeInLinesOfTextView_(app, view);
 
@@ -334,29 +361,6 @@ SetCursorPosFromMouse_(App* app, TextView* view, TextBuffer* textbuf, int32 mous
 	TextCursorCmdSet(&view->cursor, textbuf, (LineCol) { line, col }, 4);
 }
 
-static String
-RemoveIndentationFromFile_(App* app, Arena* arena, String str)
-{
-	uint8* start = ArenaEnd(arena);
-
-	for (intz it = 0; it < str.size;)
-	{
-		intz line_start = it;
-		uint8 const* end_ptr = MemoryFindByte(str.data + it, '\n', str.size - it);
-		intz line_end = (end_ptr) ? end_ptr - str.data + 1 : str.size;
-		String line = StringSlice(str, line_start, line_end);
-
-		while (line.size > 0 && (line.data[0] == ' ' || line.data[0] == '\t'))
-			line = StringSlice(line, 1, -1);
-
-		ArenaPushString(arena, line);
-		it = line_end;
-	}
-
-	uint8* end = ArenaEnd(arena);
-	return StrRange(start, end);
-}
-
 struct QuadVertex_
 {
 	float32 pos[2];
@@ -375,7 +379,6 @@ typedef QuadUniform_;
 static void
 PushQuad_(Arena* arena, float32 pos[4], int16 texcoords[4], int16 texindex, int16 texkind, uint32 color)
 {
-	Trace();
 	if (!texcoords)
 		texcoords = (int16[4]) { 0, 0, INT16_MAX, INT16_MAX };
 	ArenaPushStructInit(arena, QuadVertex_, {
@@ -437,8 +440,8 @@ PushText_(App* app, Arena* arena, TextPositioning_ pos, String str, uint32 color
 
 	intz it = 0;
 	intz prev_it = 0;
-	uint32 codepoint;
-	while (prev_it = it, codepoint = StringDecode(str, &it), codepoint)
+	uint32 codepoint = 0;
+	while (prev_it = it, StringDecode(str, &it, &codepoint))
 	{
 		if (codepoint == ' ')
 		{
@@ -551,7 +554,7 @@ UpdateTextViewLayout_(App* app, TextView* view, Rect rect, int32 line_count)
 	Trace();
 	if (line_count == 0)
 	{
-		TextBuffer* textbuf = TextBufferFromIndex(app, view->textbuf_index);
+		TextBuffer* textbuf = TextBufferFromHandle(app, view->textbuf);
 		line_count = TextBufferLineCount(textbuf);
 	}
 
@@ -586,7 +589,7 @@ static void
 PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex, uint32 color, uint32 status_bar_color)
 {
 	Trace();
-	TextBuffer* textbuf = TextBufferFromIndex(app, view->textbuf_index);
+	TextBuffer* textbuf = TextBufferFromHandle(app, view->textbuf);
 	TextBufferRefreshTokens(app, textbuf);
 	int32 line_count = TextBufferLineCount(textbuf);
 	
@@ -601,6 +604,8 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 	int32 scope_nesting_at_marker = 0;
 	int32 consumed_nesting_at_cursor = 0;
 	int32 consumed_nesting_at_marker = 0;
+	bool cursor_is_inside_view = false;
+	bool marker_is_inside_view = false;
 	{
 		CIndentCtx cindent = {};
 		intz last_cf_index = 0;
@@ -610,8 +615,14 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 		int32 line = 1;
 		intz it = 0;
 		intz prev_it = 0;
+		intz prev_pushed_range = 0;
 		for (; prev_it = it, TextBufferLineIterator(textbuf, &it, &left_str, &right_str); ++line)
 		{
+			if (line < first_line)
+				continue;
+			if (line > last_line)
+				break;
+
 			ArenaSavepoint scratch = ArenaSave(ScratchArena(1, &arena));
 			String str = {};
 			if (right_str.size)
@@ -623,7 +634,18 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 			}
 			else
 				str = left_str;
-			intz this_scope_nesting = CIndentPushLine(&cindent, RangeMakeSized(prev_it, str.size), textbuf->cf_count, textbuf->cf_kinds, textbuf->cf_ranges, last_cf_index);
+
+			if (prev_pushed_range != prev_it)
+			{
+				// NOTE(ljre): On the first line we'll actually render, push entire range before it
+				Range range_to_push = RangeMake(prev_pushed_range, prev_it);
+				prev_pushed_range = prev_it;
+				CIndentPushRange(&cindent, range_to_push, textbuf->cf_count, textbuf->cf_kinds, textbuf->cf_ranges, 0);
+			}
+
+			Range range_to_push = RangeMake(prev_pushed_range, it);
+			prev_pushed_range = it;
+			intz this_scope_nesting = CIndentPushRange(&cindent, range_to_push, textbuf->cf_count, textbuf->cf_kinds, textbuf->cf_ranges, last_cf_index);
 
 			intz consumed_tabs = 0;
 			while (consumed_tabs < str.size && consumed_tabs < this_scope_nesting)
@@ -638,28 +660,22 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 			{
 				scope_nesting_at_cursor = this_scope_nesting;
 				consumed_nesting_at_cursor = consumed_tabs;
+				cursor_is_inside_view = true;
 			}
 			if (view->cursor.marker_offset >= prev_it && view->cursor.marker_offset < it)
 			{
 				scope_nesting_at_marker = this_scope_nesting;
 				consumed_nesting_at_marker = consumed_tabs;
-			}
-
-			if (line < first_line)
-			{
-				ArenaRestore(scratch);
-				continue;
-			}
-			if (line > last_line)
-			{
-				ArenaRestore(scratch);
-				break;
+				marker_is_inside_view = true;
 			}
 
 			str = StringSlice(str, consumed_tabs, -1);
 
-			ColorRange_* color_ranges = ArenaEndAligned(scratch.arena, alignof(ColorRange_));
+			ColorRange_* color_ranges = NULL;
+			intz color_ranges_count = 0;
+			if (textbuf->kind == TextBufferKind_CFile)
 			{
+				color_ranges = ArenaEndAligned(scratch.arena, alignof(ColorRange_));
 				bool is_preproc_line = false;
 				bool is_first_iter = true;
 				for (intz i = last_cf_index; i < textbuf->cf_count; last_cf_index = i++)
@@ -710,8 +726,8 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 							.end = range->end - prev_it - consumed_tabs,
 						});
 				}
+				color_ranges_count = (ColorRange_*)ArenaEnd(scratch.arena) - color_ranges;
 			}
-			intz color_ranges_count = (ColorRange_*)ArenaEnd(scratch.arena) - color_ranges;
 
 			Rect pos = layout->text_screen;
 			pos.x1 += this_scope_nesting * app->glyph_advance * app->tab_size;
@@ -722,20 +738,26 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 		}
 	}
 
-	LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
-	LineCol marker_pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
-	PushQuad_(arena, (float32[4]) {
-		layout->text_screen.x1 + (cursor_pos.col - 1 + (scope_nesting_at_cursor - consumed_nesting_at_cursor) * app->tab_size) * app->glyph_advance,
-		layout->text_screen.y1 + (cursor_pos.line - first_line) * app->glyph_line_height,
-		app->glyph_advance,
-		app->glyph_height,
-	}, NULL, 1, 0, 0xCF7F7F7F);
-	PushQuad_(arena, (float32[4]) {
-		layout->text_screen.x1 + (marker_pos.col - 1 + (scope_nesting_at_marker - consumed_nesting_at_marker) * app->tab_size) * app->glyph_advance,
-		layout->text_screen.y1 + (marker_pos.line - first_line) * app->glyph_line_height,
-		app->glyph_advance,
-		app->glyph_height,
-	}, NULL, 1, 0, 0x7F3F3F3F);
+	if (cursor_is_inside_view)
+	{
+		LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
+		PushQuad_(arena, (float32[4]) {
+			layout->text_screen.x1 + (cursor_pos.col - 1 + (scope_nesting_at_cursor - consumed_nesting_at_cursor) * app->tab_size) * app->glyph_advance,
+			layout->text_screen.y1 + (cursor_pos.line - first_line) * app->glyph_line_height,
+			app->glyph_advance,
+			app->glyph_height,
+		}, NULL, 1, 0, 0xCF7F7F7F);
+	}
+	if (marker_is_inside_view)
+	{
+		LineCol marker_pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
+		PushQuad_(arena, (float32[4]) {
+			layout->text_screen.x1 + (marker_pos.col - 1 + (scope_nesting_at_marker - consumed_nesting_at_marker) * app->tab_size) * app->glyph_advance,
+			layout->text_screen.y1 + (marker_pos.line - first_line) * app->glyph_line_height,
+			app->glyph_advance,
+			app->glyph_height,
+		}, NULL, 1, 0, 0x7F3F3F3F);
+	}
 
 	PushRect_(arena, layout->line_bar, NULL, 1, 0, 0xFF2F2F2F);
 	for (int32 i = 0; i <= last_line-first_line; ++i)
@@ -750,12 +772,70 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 	Rect status_bar_text = layout->status_bar_text;
 	status_bar_text.y1 += 2;
 	String view_name = {};
-	if (view->kind == TextViewKind_File)
-		view_name = view->file_path;
-	else if (view->kind == TextViewKind_Scratch)
+	if (textbuf->kind == TextBufferKind_CFile)
+	{
+		view_name = textbuf->file_absolute_path;
+		if (StringStartsWith(view_name, app->project_path))
+		{
+			view_name = StringSlice(view_name, app->project_path.size, -1);
+			if (view_name.size > 0 && view_name.data[0] == '/')
+				view_name = StringSlice(view_name, 1, -1);
+		}
+	}
+	else if (textbuf->kind == TextBufferKind_Scratch)
 		view_name = Str("*scratch*");
 	PushText2_(app, arena, status_bar_text, view_name, 0xFFFFFFFF, 0, 1, 0, NULL);
 }
+
+static void
+PushPanel_(App* app, Panel* panel, Arena* output_arena, Rect rect, bool is_selected)
+{
+	Trace();
+	switch (panel->state)
+	{
+		default: Log(LOG_ERROR, "panel is in invalid state: %u", (uint32)panel->state); break;
+		case PanelState_TextView:
+		{
+			TextView* view = &panel->text_view;
+			PushTextView_(app, view, output_arena, rect, 0, 0xFFFFFFFF, is_selected ? 0xFF3F3F3F : 0xFF1F1F1F);
+		} break;
+		case PanelState_OpenFileView:
+		{
+			OpenFileView* view = &panel->open_file_view;
+
+			for (intz i = 0; i < 2; ++i)
+			{
+				String entries = view->all_entries_names;
+				for (intz entry_index = 0; entries.size > 0; ++entry_index)
+				{
+					String entry = StringFromFixedBuffer(entries);
+					entries = StringSlice(entries, entry.size + 1, -1);
+					SafeAssert(entry.size > 1);
+					uint8 prefix = entry.data[0];
+
+					if (prefix == 'D' && i != 0)
+						continue;
+					else if (prefix == 'F' && i != 1)
+						continue;
+
+					entry = StringSlice(entry, 1, -1);
+
+					Rect line = RectCutTop(&rect, app->glyph_line_height);
+					if (entry_index == view->selected_option)
+						PushRect_(output_arena, line, NULL, 1, 0, 0xFF3F3F3F);
+					Rect icon = RectCutLeft(&line, app->glyph_line_height);
+					RectCutLeft(&line, 4);
+
+					PushRect_(output_arena, icon, NULL, 1, 0, (prefix == 'D') ? 0xFF0080FF : 0xFFCCCCCC);
+					PushText2_(app, output_arena, line, entry, 0xFFFFFFFF, 0, 1, 0, NULL);
+				}
+			}
+		} break;
+	}
+}
+
+static void PanelProcessEvent(App* app, Panel* panel, OS_Event const* event);
+static void PanelProcessCursorDrag(App* app, Panel* panel, OS_MouseState const* mouse);
 
 API int32
 EntryPoint(int32 argc, const char* const argv[])
@@ -777,6 +857,12 @@ EntryPoint(int32 argc, const char* const argv[])
 		.c_string = 0xFF76E2E2,
 		.c_keyword = 0xFFF34CFF,
 	});
+
+	{
+		Arena local = ArenaFromMemory(app->project_path_buffer, sizeof(app->project_path_buffer));
+		app->project_path = OS_ResolveToAbsolutePath(Str("."), AllocatorFromArena(&local), NULL);
+		Log(LOG_INFO, "working dir: %S", app->project_path);
+	}
 
 	app->window = OS_CreateWindow(&(OS_WindowDesc) {
 		.title = StrInit("bed"),
@@ -1064,37 +1150,38 @@ EntryPoint(int32 argc, const char* const argv[])
 	// make default views
 	for ArenaTempScope(app->arena)
 	{
-		app->left_view = (TextView) {
-			.kind = TextViewKind_File,
-			.cursor = {},
-			.line = 1,
-			.file_path = StrInit("os/os_win32.c"),
+		app->left_panel = (Panel) {
+			.state = PanelState_TextView,
+			.text_view = {
+				.cursor = {},
+				.line = 1,
+			},
 		};
-		String str = {};
-		SafeAssert(OS_ReadEntireFile(app->left_view.file_path, app->arena, (void**)&str.data, &str.size, NULL));
-		// str = RemoveIndentationFromFile_(app, app->arena, str);
-		TextBufferFromString(app, str, TextBufferKind_C, &app->left_view.textbuf_index);
-		
-		app->right_view = (TextView) {
-			.kind = TextViewKind_Scratch,
-			.cursor = {},
-			.line = 1,
+		String file = StrInit("os/os_win32.c");
+		TextBufferFromFile(app, file, TextBufferKind_CFile, &app->left_panel.text_view.textbuf);
+
+		app->right_panel = (Panel) {
+			.state = PanelState_TextView,
+			.text_view = {
+				.cursor = {},
+				.line = 1,
+			},
 		};
-		TextBufferFromString(app, Str("Hello, World!\nπ"), TextBufferKind_C, &app->right_view.textbuf_index);
+		TextBufferFromString(app, Str("Hello, World!\nπ"), TextBufferKind_Scratch, &app->right_panel.text_view.textbuf);
 	}
+
+	// console test
+	// Console console = {};
+	// SafeAssert(InitConsole(app, &console));
 
 	bool is_first_frame = true;
 	for (; !app->is_closing; is_first_frame = false)
 	{
+		TraceFrameBegin();
 		ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
 		intz event_count;
 		OS_Event* events = OS_PollEvents(is_first_frame ? 0 : UINT64_MAX, scratch.arena, &event_count);
 
-		TraceFrameBegin();
-
-		TextView* selected_view = (app->is_right_view_selected) ? &app->right_view : &app->left_view;
-		TextBuffer* textbuf = TextBufferFromIndex(app, selected_view->textbuf_index);
-		
 		bool set_cursor_pos_from_mouse_already = false;
 		bool should_resize_buffers = false;
 		for (intz i = 0; i < event_count; ++i)
@@ -1102,178 +1189,56 @@ EntryPoint(int32 argc, const char* const argv[])
 			OS_Event* event = &events[i];
 			if (event->window_handle.ptr != app->window.ptr)
 				continue;
+			Panel* panel_to_handle_event = (app->is_right_panel_selected) ? &app->right_panel : &app->left_panel;
 
 			if (event->kind == OS_EventKind_WindowClose)
+			{
 				app->is_closing = true;
+				panel_to_handle_event = NULL;
+			}
 			else if (event->kind == OS_EventKind_WindowResize)
+			{
 				should_resize_buffers = true;
+				panel_to_handle_event = NULL;
+			}
 			else if (event->kind == OS_EventKind_WindowKeyPressed)
 			{
-				bool should_scroll_to_cursor = true;
 				switch (event->window_key.key)
 				{
-					default: should_scroll_to_cursor = false; break;
-					case OS_KeyboardKey_Left:
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdLeftSnakeWord(&selected_view->cursor, textbuf, 1);
-						else if (event->window_key.alt)
-							TextCursorCmdLeftPascalWord(&selected_view->cursor, textbuf, 1);
-						else
-							TextCursorCmdLeft(&selected_view->cursor, textbuf, 1);
-					} break;
-					case OS_KeyboardKey_Right:
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdRightSnakeWord(&selected_view->cursor, textbuf, 1);
-						else if (event->window_key.alt)
-							TextCursorCmdRightPascalWord(&selected_view->cursor, textbuf, 1);
-						else
-							TextCursorCmdRight(&selected_view->cursor, textbuf, 1);
-					} break;
-					case OS_KeyboardKey_Up:
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdUpParagraph(&selected_view->cursor, textbuf, 1);
-						else if (event->window_key.alt)
-							TextCursorCmdMoveLineUp(app, &selected_view->cursor, textbuf, 1);
-						else
-							TextCursorCmdUp(&selected_view->cursor, textbuf, 1);
-					} break;
-					case OS_KeyboardKey_Down:
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdDownParagraph(&selected_view->cursor, textbuf, 1);
-						else if (event->window_key.alt)
-							TextCursorCmdMoveLineDown(app, &selected_view->cursor, textbuf, 1);
-						else
-							TextCursorCmdDown(&selected_view->cursor, textbuf, 1);
-					} break;
-					case OS_KeyboardKey_Backspace:
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdDeleteBackwardSnakeWord(app, &selected_view->cursor, textbuf, 1);
-						else if (event->window_key.alt)
-							TextCursorCmdDeleteBackwardPascalWord(app, &selected_view->cursor, textbuf, 1);
-						else
-							TextCursorCmdDeleteBackward(app, &selected_view->cursor, textbuf, 1);
-					} break;
-					case OS_KeyboardKey_End: TextCursorCmdEndOfLine(&selected_view->cursor, textbuf); break;
-					case OS_KeyboardKey_Home: TextCursorCmdStartOfLine(&selected_view->cursor, textbuf); break;
-					case OS_KeyboardKey_Enter:
-					{
-						TextCursorCmdInsert(app, &selected_view->cursor, textbuf, 1, '\n');
-					} break;
-					case OS_KeyboardKey_Tab:
-					{
-						if (event->window_key.shift)
-							TextCursorCmdInsert(app, &selected_view->cursor, textbuf, 1, '\t');
-					} break;
-					case 'D':
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdDeleteToMarker(app, &selected_view->cursor, textbuf);
-					} break;
-					case 'C':
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdCopy(app, &selected_view->cursor, textbuf);
-					} break;
-					case 'X':
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdCut(app, &selected_view->cursor, textbuf);
-					} break;
-					case 'V':
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdPaste(app, &selected_view->cursor, textbuf, 1);
-					} break;
-					case ' ':
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdPlaceMarker(&selected_view->cursor);
-					} break;
+					default: break;
 					case OS_KeyboardKey_Comma:
 					{
 						if (event->window_key.ctrl)
 						{
-							app->is_right_view_selected ^= 1;
-							selected_view = (app->is_right_view_selected) ? &app->right_view : &app->left_view;
-							textbuf = TextBufferFromIndex(app, selected_view->textbuf_index);
+							app->is_right_panel_selected ^= 1;
+							panel_to_handle_event = NULL;
 						}
 					} break;
-					case 'Z':
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdUndo(app, &selected_view->cursor, textbuf);
-					} break;
-					case 'Y':
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdRedo(app, &selected_view->cursor, textbuf);
-					} break;
-					case 'R':
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdDeleteLine(app, &selected_view->cursor, textbuf);
-					} break;
-					case 'Q':
-					{
-						if (event->window_key.ctrl)
-							TextCursorCmdDuplicateLine(app, &selected_view->cursor, textbuf, 1);
-					} break;
-					case OS_KeyboardKey_PageUp:
-					{
-						if (event->window_key.ctrl)
-							selected_view->cursor.offset = 0;
-						else
-							TextCursorCmdUp(&selected_view->cursor, textbuf, SizeInLinesOfTextView_(app, selected_view));
-					} break;
-					case OS_KeyboardKey_PageDown:
-					{
-						if (event->window_key.ctrl)
-							selected_view->cursor.offset = TextBufferSize(textbuf);
-						else
-							TextCursorCmdDown(&selected_view->cursor, textbuf, SizeInLinesOfTextView_(app, selected_view));
-					} break;
 				}
-
-				if (should_scroll_to_cursor)
-					ScrollTextViewToCursor_(app, selected_view);
 			}
 			else if (event->kind == OS_EventKind_WindowTyping)
 			{
 				uint32 codepoint = event->window_typing.codepoint;
-				if (!(event->window_typing.ctrl && codepoint == ' '))
-				{
-					TextCursorCmdInsert(app, &selected_view->cursor, textbuf, 1, codepoint);
-					ScrollTextViewToCursor_(app, selected_view);
-				}
+				if (event->window_typing.ctrl && codepoint == ' ')
+					panel_to_handle_event = NULL;
 			}
 			else if (event->kind == OS_EventKind_WindowMouseWheel)
 			{
-				TextView* view_to_scroll;
 				if (event->window_mouse_wheel.mouse_x < app->window_width / 2)
-					view_to_scroll = &app->left_view;
+					panel_to_handle_event = &app->left_panel;
 				else
-					view_to_scroll = &app->right_view;
-				view_to_scroll->line = ClampMin(view_to_scroll->line - event->window_mouse_wheel.delta*5, 1);
+					panel_to_handle_event = &app->right_panel;
 			}
 			else if (event->kind == OS_EventKind_WindowMouseClick)
 			{
 				if (event->window_mouse_click.button == OS_MouseButton_Left)
 				{
 					if (event->window_mouse_click.mouse_x < app->window_width / 2)
-						app->is_right_view_selected = false;
+						app->is_right_panel_selected = false;
 					else
-						app->is_right_view_selected = true;
+						app->is_right_panel_selected = true;
 
-					selected_view = (app->is_right_view_selected) ? &app->right_view : &app->left_view;
-					textbuf = TextBufferFromIndex(app, selected_view->textbuf_index);
-					
-					SetCursorPosFromMouse_(app, selected_view, textbuf, event->window_mouse_click.mouse_x, event->window_mouse_click.mouse_y);
-					TextCursorCmdPlaceMarker(&selected_view->cursor);
+					panel_to_handle_event = (app->is_right_panel_selected) ? &app->right_panel : &app->left_panel;
 					app->is_mouse_dragging = true;
 					set_cursor_pos_from_mouse_already = true;
 				}
@@ -1283,12 +1248,16 @@ EntryPoint(int32 argc, const char* const argv[])
 				if (event->window_mouse_click.button == OS_MouseButton_Left)
 					app->is_mouse_dragging = false;
 			}
+
+			if (panel_to_handle_event)
+				PanelProcessEvent(app, panel_to_handle_event, event);
 		}
 
 		if (app->is_mouse_dragging && !set_cursor_pos_from_mouse_already)
 		{
+			Panel* panel_to_handle_event = (app->is_right_panel_selected) ? &app->right_panel : &app->left_panel;
 			OS_MouseState mouse = OS_GetWindowMouseState(app->window);
-			SetCursorPosFromMouse_(app, selected_view, textbuf, mouse.pos[0], mouse.pos[1]);
+			PanelProcessCursorDrag(app, panel_to_handle_event, &mouse);
 		}
 
 		if (should_resize_buffers)
@@ -1319,8 +1288,8 @@ EntryPoint(int32 argc, const char* const argv[])
 
 			Rect left_view_rect, right_view_rect;
 			RectCutSplitH(&screen, &left_view_rect, &right_view_rect);
-			PushTextView_(app, &app->left_view, scratch.arena, left_view_rect, 0, 0xFFFFFFFF, !app->is_right_view_selected ? 0xFF3F3F3F : 0xFF1F1F1F);
-			PushTextView_(app, &app->right_view, scratch.arena, right_view_rect, 0, 0xFFFFFFFF, app->is_right_view_selected ? 0xFF3F3F3F : 0xFF1F1F1F);
+			PushPanel_(app, &app->left_panel, scratch.arena, left_view_rect, !app->is_right_panel_selected);
+			PushPanel_(app, &app->right_panel, scratch.arena, right_view_rect, app->is_right_panel_selected);
 
 			QuadVertex_* last_vertex = ArenaEnd(scratch.arena);
 			intz vertex_count = last_vertex - first_vertex;
@@ -1372,6 +1341,8 @@ EntryPoint(int32 argc, const char* const argv[])
 		TraceFrameEnd();
 	}
 
+	// DeinitConsole(&console);
+
 	R3_FreePipeline(app->r3, &app->quads_pipeline);
 	R3_FreeBuffer(app->r3, &app->quads_vbuf);
 	R3_FreeBuffer(app->r3, &app->quads_ibuf);
@@ -1384,4 +1355,279 @@ EntryPoint(int32 argc, const char* const argv[])
 	OS_VirtualFree(app->arena->memory, app->arena->reserved);
 
 	return 0;
+}
+
+static void
+PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
+{
+	Trace();
+
+	switch (panel->state)
+	{
+		default: Log(LOG_WARN, "panel is in invalid state: %u", (uint32)panel->state); break;
+		case PanelState_TextView:
+		{
+			TextView* view = &panel->text_view;
+			TextBuffer* textbuf = TextBufferFromHandle(app, view->textbuf);
+			if (!textbuf)
+			{
+				Log(LOG_ERROR, "failed to get textbuffer from view to handle panel event");
+				break;
+			}
+
+			if (event->kind == OS_EventKind_WindowKeyPressed)
+			{
+				bool should_scroll_to_cursor = true;
+				switch (event->window_key.key)
+				{
+					default: should_scroll_to_cursor = false; break;
+					case OS_KeyboardKey_Left:
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdLeftSnakeWord(&view->cursor, textbuf, 1);
+						else if (event->window_key.alt)
+							TextCursorCmdLeftPascalWord(&view->cursor, textbuf, 1);
+						else
+							TextCursorCmdLeft(&view->cursor, textbuf, 1);
+					} break;
+					case OS_KeyboardKey_Right:
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdRightSnakeWord(&view->cursor, textbuf, 1);
+						else if (event->window_key.alt)
+							TextCursorCmdRightPascalWord(&view->cursor, textbuf, 1);
+						else
+							TextCursorCmdRight(&view->cursor, textbuf, 1);
+					} break;
+					case OS_KeyboardKey_Up:
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdUpParagraph(&view->cursor, textbuf, 1);
+						else if (event->window_key.alt)
+							TextCursorCmdMoveLineUp(app, &view->cursor, textbuf, 1);
+						else
+							TextCursorCmdUp(&view->cursor, textbuf, 1);
+					} break;
+					case OS_KeyboardKey_Down:
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdDownParagraph(&view->cursor, textbuf, 1);
+						else if (event->window_key.alt)
+							TextCursorCmdMoveLineDown(app, &view->cursor, textbuf, 1);
+						else
+							TextCursorCmdDown(&view->cursor, textbuf, 1);
+					} break;
+					case OS_KeyboardKey_Backspace:
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdDeleteBackwardSnakeWord(app, &view->cursor, textbuf, 1);
+						else if (event->window_key.alt)
+							TextCursorCmdDeleteBackwardPascalWord(app, &view->cursor, textbuf, 1);
+						else
+							TextCursorCmdDeleteBackward(app, &view->cursor, textbuf, 1);
+					} break;
+					case OS_KeyboardKey_End: TextCursorCmdEndOfLine(&view->cursor, textbuf); break;
+					case OS_KeyboardKey_Home: TextCursorCmdStartOfLine(&view->cursor, textbuf); break;
+					case OS_KeyboardKey_Enter:
+					{
+						TextCursorCmdInsert(app, &view->cursor, textbuf, 1, '\n');
+					} break;
+					case OS_KeyboardKey_Tab:
+					{
+						if (event->window_key.shift)
+							TextCursorCmdInsert(app, &view->cursor, textbuf, 1, '\t');
+					} break;
+					case 'D':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdDeleteToMarker(app, &view->cursor, textbuf);
+					} break;
+					case 'C':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdCopy(app, &view->cursor, textbuf);
+					} break;
+					case 'X':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdCut(app, &view->cursor, textbuf);
+					} break;
+					case 'V':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdPaste(app, &view->cursor, textbuf, 1);
+					} break;
+					case ' ':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdPlaceMarker(&view->cursor);
+					} break;
+					case 'Z':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdUndo(app, &view->cursor, textbuf);
+					} break;
+					case 'Y':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdRedo(app, &view->cursor, textbuf);
+					} break;
+					case 'R':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdDeleteLine(app, &view->cursor, textbuf);
+					} break;
+					case 'Q':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdDuplicateLine(app, &view->cursor, textbuf, 1);
+					} break;
+					case OS_KeyboardKey_PageUp:
+					{
+						if (event->window_key.ctrl)
+							view->cursor.offset = 0;
+						else
+							TextCursorCmdUp(&view->cursor, textbuf, SizeInLinesOfTextView_(app, view));
+					} break;
+					case OS_KeyboardKey_PageDown:
+					{
+						if (event->window_key.ctrl)
+							view->cursor.offset = TextBufferSize(textbuf);
+						else
+							TextCursorCmdDown(&view->cursor, textbuf, SizeInLinesOfTextView_(app, view));
+					} break;
+					case 'O':
+					{
+						if (event->window_key.ctrl)
+						{
+							OS_Error err = { .ok = true, };
+							ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
+							ArenaSavepoint scratch2 = ArenaSave(ScratchArena(1, &scratch.arena));
+							OS_FileIterator it = OS_OpenFileIterator(ArenaPrintf(scratch.arena, "%S/*", app->project_path), AllocatorFromArena(scratch.arena), &err);
+							HeapAllocatedString strings = {};
+							intz entry_count = 0;
+
+							if (err.ok)
+							{
+								uint8* strings_start = ArenaEnd(scratch2.arena);
+								while (OS_IterateFiles(&it, &err))
+								{
+									for ArenaTempScope(scratch.arena)
+									{
+										String str = OS_FilePathFromFileIterator(&it, AllocatorFromArena(scratch.arena), &err);
+										if (!err.ok)
+											continue;
+										if (StringEquals(str, Str(".")) ||
+											StringEquals(str, Str("..")) ||
+											StringEquals(str, Str(".git")))
+											continue;
+										OS_FileInfo info = OS_FileInfoFromFileIterator(&it, &err);
+										if (!err.ok)
+											continue;
+										uint8 prefix = (info.directory) ? 'D' : 'F';
+										ArenaPrintf(scratch2.arena, "%c%S%0", prefix, str);
+										++entry_count;
+									}
+									if (!err.ok)
+										break;
+								}
+								uint8* strings_end = ArenaEnd(scratch2.arena);
+
+								intz strings_size = strings_end - strings_start;
+								uint8* strings_mem = AllocatorAlloc(&app->heap, strings_size, 1, NULL);
+								MemoryCopy(strings_mem, strings_start, strings_size);
+								strings = StringMake(strings_size, strings_mem);
+							}
+
+							if (!err.ok)
+								Log(LOG_ERROR, "failed to switch to OpenFileView panel state: (%x) %S", (uint32)err.code, err.what);
+							else
+							{
+								TextBufferHandle filter = NULL;
+								TextBufferFromString(app, Str(""), TextBufferKind_SingleLine, &filter);
+								panel->state = PanelState_OpenFileView;
+								panel->open_file_view = (OpenFileView) {
+									.filter = filter,
+									.all_entries_names = strings,
+									.entry_count = entry_count,
+									.selected_option = 0,
+								};
+							}
+
+							ArenaRestore(scratch2);
+							ArenaRestore(scratch);
+						}
+					} break;
+				}
+
+				if (should_scroll_to_cursor)
+					ScrollTextViewToCursor_(app, view);
+			}
+			else if (event->kind == OS_EventKind_WindowTyping)
+			{
+				uint32 codepoint = event->window_typing.codepoint;
+				if (!(event->window_typing.ctrl && codepoint == ' '))
+				{
+					TextCursorCmdInsert(app, &view->cursor, textbuf, 1, codepoint);
+					ScrollTextViewToCursor_(app, view);
+				}
+			}
+			else if (event->kind == OS_EventKind_WindowMouseWheel)
+			{
+				int32 max_line = TextBufferLineCount(textbuf);
+				view->line -= event->window_mouse_wheel.delta*5;
+				view->line = Clamp(view->line, 1, max_line);
+			}
+			else if (event->kind == OS_EventKind_WindowMouseClick)
+			{
+				if (event->window_mouse_click.button == OS_MouseButton_Left)
+				{
+					SetCursorPosFromMouse_(app, view, textbuf, event->window_mouse_click.mouse_x, event->window_mouse_click.mouse_y);
+					TextCursorCmdPlaceMarker(&view->cursor);
+				}
+			}
+		} break;
+		case PanelState_OpenFileView:
+		{
+			OpenFileView* view = &panel->open_file_view;
+
+			bool is_going_back_to_text_view = false;
+			if (event->kind == OS_EventKind_WindowKeyPressed)
+			{
+				switch (event->window_key.key)
+				{
+					default: break;
+					case OS_KeyboardKey_Escape: is_going_back_to_text_view = true; break;
+				}
+			}
+
+			if (is_going_back_to_text_view)
+			{
+				TextBufferDecRefCount(app, view->filter);
+				AllocatorFree(&app->heap, (void*)view->all_entries_names.data, view->all_entries_names.size, NULL);
+				MemoryZero(view, sizeof(OpenFileView));
+				panel->state = PanelState_TextView;
+			}
+		} break;
+	}
+}
+
+static void
+PanelProcessCursorDrag(App* app, Panel* panel, OS_MouseState const* mouse)
+{
+	Trace();
+
+	switch (panel->state)
+	{
+		default: break;
+		case PanelState_TextView:
+		{
+			TextBuffer* textbuf = TextBufferFromHandle(app, panel->text_view.textbuf);
+			SetCursorPosFromMouse_(app, &panel->text_view, textbuf, mouse->pos[0], mouse->pos[1]);
+		} break;
+		case PanelState_OpenFileView:
+		{
+
+		} break;
+	}
 }

@@ -324,6 +324,25 @@ StringToWide_(Arena* output_arena, String str)
 	return wide;
 }
 
+// static inline wchar_t*
+// StringToWidePath_(Arena* output_arena, String str)
+// {
+// 	Trace();
+// 	SafeAssert(str.size < INT32_MAX);
+// 	static wchar_t const prefix[] = L"\\\\?\\";
+// 	intz prefix_count = ArrayLength(prefix) - 1;
+	
+// 	int32 size = MultiByteToWideChar(CP_UTF8, 0, (char const*)str.data, (int32)str.size, NULL, 0);
+// 	if (size == 0)
+// 		return NULL;
+// 	wchar_t* wide = ArenaPushDirtyAligned(output_arena, (size + prefix_count + 1) * SignedSizeof(wchar_t), alignof(wchar_t));
+// 	MemoryCopy(wide, prefix, sizeof(prefix) - sizeof(prefix[0]));
+// 	MultiByteToWideChar(CP_UTF8, 0, (char const*)str.data, (int32)str.size, wide + prefix_count, size);
+// 	wide[prefix_count + size] = 0;
+	
+// 	return wide;
+// }
+
 static inline String
 WideToString_(Arena* output_arena, LPCWSTR wide)
 {
@@ -335,6 +354,39 @@ WideToString_(Arena* output_arena, LPCWSTR wide)
 	--size;
 	uint8* str = ArenaPushDirtyAligned(output_arena, size, 1);
 	WideCharToMultiByte(CP_UTF8, 0, wide, -1, (char*)str, size, NULL, NULL);
+
+	// NOTE(ljre): MultiByteToWideChar will set last error to ERROR_INSUFFICIENT_BUFFER.
+	//             it's fine in this case since we don't need the null-terminator in our strings.
+	SetLastError(0);
+	
+	return StrMake(size, str);
+}
+
+static inline String
+WidePathToStringSingle_(SingleAllocator alloc, LPCWSTR wide, AllocatorError* out_err)
+{
+	Trace();
+	static wchar_t const prefix[] = L"\\\\?\\";
+	intz prefix_count = ArrayLength(prefix) - 1;
+
+	for (intz i = 0; i < prefix_count; ++i)
+	{
+		if (wide[i] != prefix[i])
+			prefix_count = 0;
+	}
+
+	int32 size = WideCharToMultiByte(CP_UTF8, 0, wide + prefix_count, -1, NULL, 0, NULL, NULL);
+	if (size == 0)
+		return StrNull;
+	--size;
+	uint8* str = AllocatorAlloc(&alloc, size, 1, out_err);
+	if (!str)
+		return StrNull;
+	WideCharToMultiByte(CP_UTF8, 0, wide + prefix_count, -1, (char*)str, size, NULL, NULL);
+
+	// NOTE(ljre): MultiByteToWideChar will set last error to ERROR_INSUFFICIENT_BUFFER.
+	//             it's fine in this case since we don't need the null-terminator in our strings.
+	SetLastError(0);
 	
 	return StrMake(size, str);
 }
@@ -353,7 +405,7 @@ StringToWideSingle_(SingleAllocator alloc, String str, AllocatorError* out_err)
 		return NULL;
 	MultiByteToWideChar(CP_UTF8, 0, (char const*)str.data, (int32)str.size, wide, size);
 	wide[size] = 0;
-	
+
 	return wide;
 }
 
@@ -370,6 +422,10 @@ WideToStringSingle_(SingleAllocator alloc, LPCWSTR wide, AllocatorError* out_err
 	if (!str)
 		return StrNull;
 	WideCharToMultiByte(CP_UTF8, 0, wide, -1, (char*)str, size, NULL, NULL);
+
+	// NOTE(ljre): MultiByteToWideChar will set last error to ERROR_INSUFFICIENT_BUFFER.
+	//             it's fine in this case since we don't need the null-terminator in our strings.
+	SetLastError(0);
 	
 	return StrMake(size, str);
 }
@@ -485,6 +541,22 @@ FillOsErr_(OS_Error* out_err, DWORD code)
 	else
 		SafeAssert(code == 0);
 	return code == 0;
+}
+
+static bool
+FillOsErrAlloc_(OS_Error* out_err, AllocatorError alloc_err)
+{
+	OS_Error err = {
+		.ok = (alloc_err == 0),
+		.is_allocator_err = (alloc_err != 0),
+		.code = (uint32)alloc_err,
+	};
+
+	if (out_err)
+		*out_err = err;
+	else
+		SafeAssert(err.ok);
+	return err.ok;
 }
 
 static STARTUPINFOW
@@ -3397,6 +3469,46 @@ OS_MakeDirectory(String path, OS_Error* out_err)
 	return FillOsErr_(out_err, GetLastError());
 }
 
+API String
+OS_ResolveToAbsolutePath(String path, SingleAllocator allocator, OS_Error* out_err)
+{
+	Trace(); TraceText(path);
+	Arena* scratch_arena = ScratchArena(1, (Arena**)&allocator.instance);
+	String result = {};
+	AllocatorError alloc_err = 0;
+	SetLastError(0);
+
+	for ArenaTempScope(scratch_arena)
+	{
+		LPWSTR wpath = StringToWide_(scratch_arena, path);
+		if (wpath)
+		{
+			DWORD needed_size = GetFullPathNameW(wpath, 0, NULL, NULL);
+			if (needed_size)
+			{
+				LPWSTR wfullpath = ArenaPushArray(scratch_arena, wchar_t, needed_size);
+				DWORD new_needed_size = GetFullPathNameW(wpath, needed_size, wfullpath, NULL);
+				SafeAssert(new_needed_size < needed_size);
+				for (intz i = 0; i < new_needed_size; ++i)
+				{
+					if (wfullpath[i] == '\\')
+						wfullpath[i] = '/';
+				}
+				result = WidePathToStringSingle_(allocator, wfullpath, &alloc_err);
+			}
+		}
+	}
+
+	if (alloc_err)
+	{
+		SafeAssert(out_err && "allocator error");
+		*out_err = (OS_Error) { .ok = false, .is_allocator_err = true, .code = (uint32)alloc_err };
+	}
+	else
+		FillOsErr_(out_err, GetLastError());
+	return result;
+}
+
 API OS_Library
 OS_LoadLibrary(String name, OS_Error* out_err)
 {
@@ -4236,6 +4348,124 @@ OS_SetClipboard(OS_ClipboardContents contents, OS_Window owner_window, OS_Error*
 	}
 
 	return FillOsErr_(out_err, GetLastError());
+}
+
+// ===========================================================================
+// ===========================================================================
+// Directory listing
+API OS_FileIterator
+OS_OpenFileIterator(String directory_path, SingleAllocator allocator, OS_Error* out_err)
+{
+	Trace();
+	HANDLE find_handle = NULL;
+	WIN32_FIND_DATAW* find_data = NULL;
+	AllocatorError alloc_err = 0;
+	if (IsNullAllocator(allocator))
+		allocator = OS_HeapAllocator();
+
+	find_data = AllocatorAlloc(&allocator, sizeof(WIN32_FIND_DATAW), alignof(WIN32_FIND_DATAW), &alloc_err);
+	if (alloc_err)
+	{
+		FillOsErrAlloc_(out_err, alloc_err);
+		return (OS_FileIterator) {};
+	}
+
+	Arena* scratch_arena = ScratchArena(0, NULL);
+	for ArenaTempScope(scratch_arena)
+	{
+		LPWSTR wdirpath = StringToWide_(scratch_arena, directory_path);
+		if (wdirpath)
+			find_handle = FindFirstFileW(wdirpath, find_data);
+	}
+
+	if (!find_handle || find_handle == INVALID_HANDLE_VALUE)
+	{
+		FillOsErr_(out_err, GetLastError());
+		return (OS_FileIterator) {};
+	}
+
+	return (OS_FileIterator) {
+		.allocator = allocator,
+		.iterator_handle = find_handle,
+		.curr = find_data,
+		.is_refreshed = true,
+	};
+}
+
+API bool
+OS_IterateFiles(OS_FileIterator* dirit, OS_Error* out_err)
+{
+	Trace();
+	if (dirit->is_refreshed)
+	{
+		dirit->is_refreshed = false;
+		FillOsErr_(out_err, 0);
+		return true;
+	}
+
+	bool ok = FindNextFileW(dirit->iterator_handle, dirit->curr);
+	DWORD code = GetLastError();
+	if (!ok && code == ERROR_NO_MORE_FILES)
+	{
+		code = 0;
+		SetLastError(0);
+	}
+	
+	FillOsErr_(out_err, code);
+	return ok;
+}
+
+API String
+OS_FilePathFromFileIterator(OS_FileIterator* dirit, SingleAllocator allocator, OS_Error* out_err)
+{
+	Trace();
+	SafeAssert(dirit->curr);
+	WIN32_FIND_DATAW* find_data = dirit->curr;
+	AllocatorError alloc_err = 0;
+
+	bool is_null_terminated = false;
+	for (intz i = 0; i < ArrayLength(find_data->cFileName); ++i)
+	{
+		if (!find_data->cFileName[i])
+		{
+			is_null_terminated = true;
+			break;
+		}
+	}
+	SafeAssert(is_null_terminated);
+
+	String result = WideToStringSingle_(allocator, find_data->cFileName, &alloc_err);
+	FillOsErrAlloc_(out_err, alloc_err);
+	return result;
+}
+
+API OS_FileInfo
+OS_FileInfoFromFileIterator(OS_FileIterator* dirit, OS_Error* out_err)
+{
+	Trace();
+	OS_FileInfo info = {};
+	SafeAssert(dirit->curr);
+	WIN32_FIND_DATAW* find_data = dirit->curr;
+
+	info.exists = true;
+	info.read_only = (find_data->dwFileAttributes & FILE_ATTRIBUTE_READONLY);
+	info.directory = (find_data->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+	info.created_at = FileTimeToPosixTime_(find_data->ftCreationTime);
+	info.modified_at = FileTimeToPosixTime_(find_data->ftLastWriteTime);
+	info.size = (uint64)find_data->nFileSizeHigh << 32 | find_data->nFileSizeLow;
+
+	return info;
+}
+
+API void
+OS_CloseFileIterator(OS_FileIterator* dirit)
+{
+	Trace();
+	if (dirit->curr)
+		AllocatorFree(&dirit->allocator, dirit->curr, sizeof(WIN32_FIND_DATAW), NULL);
+	if (dirit->iterator_handle)
+		FindClose(dirit->iterator_handle);
+	MemoryZero(dirit, sizeof(OS_FileIterator));
 }
 
 //------------------------------------------------------------------------

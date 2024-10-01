@@ -484,6 +484,7 @@ struct OS_FileInfo
 {
 	bool exists;
 	bool read_only;
+	bool directory;
 	uint64 created_at;
 	uint64 modified_at;
 	uint64 size;
@@ -496,6 +497,7 @@ API OS_FileInfo OS_GetFileInfoFromPath(String path, OS_Error* out_err);
 API bool        OS_CopyFile       (String from, String to, OS_Error* out_err);
 API bool        OS_DeleteFile     (String path, OS_Error* out_err);
 API bool        OS_MakeDirectory  (String path, OS_Error* out_err);
+API String      OS_ResolveToAbsolutePath(String path, SingleAllocator allocator, OS_Error* out_err);
 
 struct OS_Library
 { void* ptr; }
@@ -613,5 +615,23 @@ typedef OS_ClipboardContents;
 
 API OS_ClipboardContents OS_GetClipboard(SingleAllocator allocator, OS_ClipboardContentType allowed_types, OS_Window owner_window, OS_Error* out_err);
 API bool OS_SetClipboard(OS_ClipboardContents contents, OS_Window owner_window, OS_Error* out_err);
+
+// ===========================================================================
+// ===========================================================================
+// Directory listing
+struct OS_FileIterator
+{
+	SingleAllocator allocator;
+	void* iterator_handle;
+	void* curr;
+	bool is_refreshed;
+}
+typedef OS_FileIterator;
+
+API OS_FileIterator OS_OpenFileIterator(String search_string, SingleAllocator allocator, OS_Error* out_err);
+API bool            OS_IterateFiles(OS_FileIterator* dirit, OS_Error* out_err);
+API String          OS_FilePathFromFileIterator(OS_FileIterator* dirit, SingleAllocator allocator, OS_Error* out_err);
+API OS_FileInfo     OS_FileInfoFromFileIterator(OS_FileIterator* dirit, OS_Error* out_err);
+API void            OS_CloseFileIterator(OS_FileIterator* dirit);
 
 #endif //API_OS_H

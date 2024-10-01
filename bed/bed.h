@@ -10,6 +10,8 @@
 #	define BED_API
 #endif
 
+typedef struct TextBufferHandle_* TextBufferHandle;
+
 struct Range
 {
 	intz start;
@@ -23,6 +25,8 @@ struct Rect
 	int32 x2, y2;
 }
 typedef Rect;
+
+String typedef HeapAllocatedString;
 
 enum TextBufferEditKind
 {
@@ -55,16 +59,21 @@ typedef TextBufferEdit;
 enum TextBufferKind
 {
 	TextBufferKind_Null = 0,
-	TextBufferKind_NormalText,
-	TextBufferKind_C,
+	TextBufferKind_TextFile,
+	TextBufferKind_CFile,
+	TextBufferKind_Scratch,
 	TextBufferKind_SingleLine,
 }
 typedef TextBufferKind;
 
 struct TextBuffer
 {
-	TextBufferKind kind;
+	// pool stuff
+	uint32 generation;
 	uint32 next_free;
+
+	// buffer
+	TextBufferKind kind;
 	intz ref_count; // multiple textviews can access the same textbuffer
 
 	uint8* utf8_text;
@@ -74,7 +83,6 @@ struct TextBuffer
 
 	intz dirty_changes_start;
 	intz dirty_changes_end;
-
 	intz cf_count;
 	intz cf_cap;
 	CF_TokenKind* cf_kinds;
@@ -89,6 +97,9 @@ struct TextBuffer
 	intz edit_text_buffer_usable_size;
 	intz edit_text_buffer_cap;
 	uint8* edit_text_buffer;
+
+	// for file operations
+	HeapAllocatedString file_absolute_path;
 }
 typedef TextBuffer;
 
@@ -114,14 +125,6 @@ struct GlyphEntry_
 }
 typedef GlyphEntry_;
 
-enum TextViewKind
-{
-	TextViewKind_Null = 0,
-	TextViewKind_File,
-	TextViewKind_Scratch,
-}
-typedef TextViewKind;
-
 struct TextViewLayout
 {
 	Rect all;
@@ -135,15 +138,38 @@ typedef TextViewLayout;
 
 struct TextView
 {
-	TextViewKind kind;
 	TextCursor cursor;
-	intz textbuf_index;
-	String file_path;
+	TextBufferHandle textbuf;
 	TextViewLayout layout;
-
 	int32 line;
 }
 typedef TextView;
+
+struct OpenFileView
+{
+	TextBufferHandle filter;
+	intz selected_option;
+
+	intz entry_count;
+	HeapAllocatedString all_entries_names;
+}
+typedef OpenFileView;
+
+enum PanelState
+{
+	PanelState_TextView = 0,
+	PanelState_OpenFileView,
+}
+typedef PanelState;
+
+struct Panel
+{
+	PanelState state;
+
+	TextView text_view;
+	OpenFileView open_file_view;
+}
+typedef Panel;
 
 struct App
 {
@@ -189,9 +215,12 @@ struct App
 	intz invalid_glyph_index;
 
 	// starter view
-	bool is_right_view_selected;
-	TextView left_view;
-	TextView right_view;
+	bool is_right_panel_selected;
+	Panel left_panel;
+	Panel right_panel;
+
+	// default buffers
+	TextBufferHandle textbuf_scratch;
 
 	// textbuf pool
 	TextBuffer* textbuf_pool;
@@ -208,6 +237,10 @@ struct App
 	uint32 c_number;
 	uint32 c_string;
 	uint32 c_keyword;
+
+	// path operations
+	String project_path;
+	alignas(16) uint8 project_path_buffer[32767+2];
 }
 typedef App;
 
@@ -382,12 +415,12 @@ RangeIsValid(Range range)
 // ===========================================================================
 // ===========================================================================
 // TextBuffer API
-BED_API TextBuffer* TextBufferFromIndex    (App* app, intz index);
-BED_API TextBuffer* TextBufferFromFile     (App* app, String path, TextBufferKind kind, intz* out_index);
-BED_API TextBuffer* TextBufferFromString   (App* app, String str, TextBufferKind kind, intz* out_index);
+BED_API TextBuffer* TextBufferFromHandle   (App* app, TextBufferHandle handle);
+BED_API TextBuffer* TextBufferFromFile     (App* app, String path, TextBufferKind kind, TextBufferHandle* out_handle);
+BED_API TextBuffer* TextBufferFromString   (App* app, String str, TextBufferKind kind, TextBufferHandle* out_handle);
+BED_API TextBuffer* TextBufferIncRefCount  (App* app, TextBufferHandle handle);
+BED_API void        TextBufferDecRefCount  (App* app, TextBufferHandle handle);
 BED_API void        TextBufferRefreshTokens(App* app, TextBuffer* textbuf);
-BED_API TextBuffer* TextBufferAcquire      (App* app, intz index);
-BED_API void        TextBufferRelease      (App* app, intz index);
 
 BED_API void    TextBufferGetStrings       (TextBuffer* textbuf, String* out_left, String* out_right);
 BED_API uint8   TextBufferSample           (TextBuffer* textbuf, intz offset);
@@ -501,6 +534,6 @@ struct CIndentCtx
 }
 typedef CIndentCtx;
 
-BED_API int32 CIndentPushLine(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index);
+BED_API int32 CIndentPushRange(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index);
 
 #endif

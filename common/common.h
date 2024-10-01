@@ -144,7 +144,9 @@ static inline FORCE_INLINE void* MemoryMove(void* dst, const void* src, intz siz
 static inline FORCE_INLINE void* MemorySet(void* restrict dst, uint8 byte, intz size);
 static inline FORCE_INLINE int32 MemoryCompare(const void* left_, const void* right_, intz size);
 
-static inline uint32 StringDecode(String str, intsize* index);
+static inline FORCE_INLINE String StringMake(intz size, void const* buffer);
+static inline FORCE_INLINE String StringMakeRange(void const* start, void const* end);
+static inline bool StringDecode(String str, intz* index, uint32* out_codepoint);
 static inline intz StringEncodedCodepointSize(uint32 codepoint);
 static inline intz StringEncode(uint8* buffer, intz size, uint32 codepoint);
 static inline intz StringDecodedLength(String str);
@@ -450,7 +452,6 @@ ByteSwap64(uint64 x)
 static inline FORCE_INLINE uint16
 EncodeF16(float32 x)
 {
-	Trace();
 	union
 	{
 		float32 f;
@@ -474,7 +475,6 @@ EncodeF16(float32 x)
 static inline FORCE_INLINE float32
 DecodeF16(uint16 x)
 {
-	Trace();
 	uint32 sign = x >> 15;
 	uint32 exponent = (x >> 10) & 0x1f;
 	uint32 mantissa = x & 0x3ff;
@@ -642,22 +642,34 @@ MemoryStrnstr(const char* left, const char* right, intz limit)
 	return NULL;
 }
 
-static inline uint32
-StringDecode(String str, intz* index)
+static inline FORCE_INLINE String
+StringMake(intz size, void const* buffer)
+{
+	return StrMake(size, buffer);
+}
+
+static inline FORCE_INLINE String
+StringMakeRange(void const* start, void const* end)
+{
+	return StrRange(start, end);
+}
+
+static inline bool
+StringDecode(String str, intz* index, uint32* out_codepoint)
 {
 	const uint8* head = str.data + *index;
 	const uint8* const end = str.data + str.size;
 	
 	if (head >= end)
-		return 0;
+		return false;
 	
 	uint8 byte = *head++;
 	if (!byte || byte == 0xff)
-		return 0;
+		return false;
 	
 	int32 size =  BitClz8(~byte);
 	if (Unlikely(size == 1 || size > 4 || head + size - 1 > end))
-		return 0;
+		return false;
 	
 	uint32 result = 0;
 	if (size == 0)
@@ -675,7 +687,8 @@ StringDecode(String str, intz* index)
 	}
 	
 	*index = (intsize)(head - str.data);
-	return result;
+	*out_codepoint = result;
+	return true;
 }
 
 static inline intz
@@ -693,7 +706,6 @@ StringEncodedCodepointSize(uint32 codepoint)
 static inline intz
 StringEncode(uint8* buffer, intz size, uint32 codepoint)
 {
-	Trace();
 	intz needed = StringEncodedCodepointSize(codepoint);
 	if (size < needed)
 		return 0;
@@ -736,9 +748,8 @@ StringDecodedLength(String str)
 	Trace();
 	intz len = 0;
 	
-	intz it = 0;
-	while (StringDecode(str, &it))
-		++len;
+	for (intz i = 0; i < str.size; ++i)
+		len += ((str.data[i] & 0x80) == 0 || (str.data[i] & 0x40) != 0);
 	
 	return len;
 }
@@ -795,7 +806,6 @@ StringStartsWith(String check, String s)
 static inline String
 StringSubstr(String str, intz index, intz size)
 {
-	Trace();
 	if (index >= str.size)
 		return StrMake(0, str.data + str.size);
 	
@@ -822,7 +832,6 @@ StringFromCString(char const* cstr)
 static inline String
 StringSlice(String str, intz begin, intz end)
 {
-	Trace();
 	if (begin < 0)
 		begin = (intz)str.size + begin + 1;
 	if (end < 0)
@@ -839,7 +848,6 @@ StringSlice(String str, intz begin, intz end)
 static inline String
 StringSliceEnd(String str, intz count)
 {
-	Trace();
 	count = ClampMax(count, (intz)str.size);
 	str.data += (intz)str.size - count;
 	str.size = count;
@@ -1038,7 +1046,7 @@ StringPrintfFunc_(char* buf, intz buf_size, const char* restrict fmt, va_list ar
 	SafeAssert(!buf ? buf_size <= 0 : true);
 	
 	char* p = buf;
-	char* p_end = buf + buf_size;
+	char* p_end = buf_size ? buf + buf_size : buf; // NOTE(ljre): avoid "(T*)NULL + 0" UB.
 	
 	while (*fmt)
 	{
@@ -1065,7 +1073,7 @@ StringPrintfFunc_(char* buf, intz buf_size, const char* restrict fmt, va_list ar
 		int32 leading_padding = -1;
 		int32 trailling_padding = -1;
 		
-		if (*fmt >= '0' && *fmt <= '9')
+		if (*fmt >= '1' && *fmt <= '9')
 		{
 			leading_padding = 0;
 			
@@ -1714,7 +1722,6 @@ String_stbsp__real_to_str(char const** start, uint32* len, char out[64], int32* 
 static inline Arena
 ArenaFromMemory(void* memory, intz size)
 {
-	Trace();
 	Assert(((uintptr)memory & (uintptr)~(CONFIG_ARENA_DEFAULT_ALIGNMENT-1)) == (uintptr)memory);
 	
 	Arena result = {
@@ -1729,7 +1736,6 @@ ArenaFromMemory(void* memory, intz size)
 static inline Arena*
 ArenaBootstrap(Arena arena)
 {
-	Trace();
 	Arena* ptr = (Arena*)ArenaPushAligned(&arena, sizeof(Arena), alignof(Arena));
 	*ptr = arena;
 	return ptr;
@@ -1738,7 +1744,6 @@ ArenaBootstrap(Arena arena)
 static inline void*
 ArenaEndAligned(Arena* arena, intz alignment)
 {
-	Trace();
 	Assert(alignment != 0 && IsPowerOf2(alignment));
 	
 	intptr target_offset = AlignUp((intptr)arena->memory + arena->offset, alignment-1) - (intptr)arena->memory;
@@ -1772,7 +1777,6 @@ ArenaPushDirtyAligned(Arena* arena, intz size, intz alignment)
 static inline void
 ArenaPop(Arena* arena, void* ptr)
 {
-	Trace();
 	uint8* p = (uint8*)ptr;
 	SafeAssert(p >= arena->memory && p <= arena->memory + arena->offset);
 	
@@ -2088,24 +2092,16 @@ AllocatorFromArena(Arena* arena)
 	};
 }
 
-static void*
-NullAllocatorProc(void* instance, AllocatorMode mode, intsize size, intsize alignment, void* old_ptr, intsize old_size, AllocatorError* out_err)
-{
-	if (out_err)
-		*out_err = AllocatorError_OutOfMemory;
-	return NULL;
-}
-
 static inline Allocator
 NullAllocator(void)
 {
-	return (Allocator) { NullAllocatorProc };
+	return (Allocator) {};
 }
 
 static inline bool
 IsNullAllocator(Allocator allocator)
 {
-	return allocator.proc == NullAllocatorProc;
+	return !allocator.proc;
 }
 
 static inline void*

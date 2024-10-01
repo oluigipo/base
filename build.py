@@ -350,7 +350,7 @@ def build_cmds(cmds):
     return 0
 
 def build_win64(objs, libs, defines, incdirs, libdirs, asan, ubsan):
-    global project, is_debug, force_rebuild, target, outdir, middir, output_name, avx
+    global project, is_debug, force_rebuild, target, outdir, middir, output_name, avx, tracy
 
     cflags_platform = ['-mlzcnt', '-march=x86-64-v2']
     cflags_debug    = [*CFLAGS_DEBUG, '-g']
@@ -360,6 +360,8 @@ def build_win64(objs, libs, defines, incdirs, libdirs, asan, ubsan):
         cflags_platform.append('-mavx')
     elif avx == 2:
         cflags_platform.append('-mavx2')
+    if tracy:
+        cflags_opt.append('-g')
 
     cflags    = ['-Icommon', '-I.', '-Ithird_party_include', '-I'+middir, '-std=c2x',   *CFLAGS_WARNINGS, *cflags_platform]
     cxxflags  = ['-Icommon', '-I.', '-Ithird_party_include', '-I'+middir, '-std=c++14', *CFLAGS_WARNINGS, *cflags_platform]

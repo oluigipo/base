@@ -2,7 +2,7 @@
 #include <immintrin.h>
 
 static TextBuffer*
-AllocTextBuffer_(App* app, intz* out_index)
+AllocTextBuffer_(App* app, TextBufferHandle* out_handle)
 {
 	Trace();
 	intz index;
@@ -21,7 +21,7 @@ AllocTextBuffer_(App* app, intz* out_index)
 			if (!AllocatorResizeArrayOk(&app->heap, new_cap, sizeof(TextBuffer), alignof(TextBuffer), &app->textbuf_pool, app->textbuf_pool_cap, &err))
 			{
 				Log(LOG_ERROR, "could not resize textbuf pool: %u", (uint32)err);
-				*out_index = 0;
+				*out_handle = 0;
 				return NULL;
 			}
 			app->textbuf_pool_cap = new_cap;
@@ -29,8 +29,32 @@ AllocTextBuffer_(App* app, intz* out_index)
 		index = app->textbuf_pool_count++;
 	}
 
-	*out_index = index+1;
+	TextBuffer* textbuf = &app->textbuf_pool[index];
+	*out_handle = (TextBufferHandle)((uint64)index+1 | (uint64)textbuf->generation << 48);
 	return &app->textbuf_pool[index];
+}
+
+static void
+FreeTextBuffer_(App* app, TextBuffer* textbuf, intz index)
+{
+	Trace();
+	if (textbuf->utf8_text)
+		AllocatorFree(&app->heap, textbuf->utf8_text, textbuf->size, NULL);
+	if (textbuf->cf_kinds)
+		AllocatorFreeArray(&app->heap, sizeof(CF_TokenKind), textbuf->cf_kinds, textbuf->cf_cap, NULL);
+	if (textbuf->cf_ranges)
+		AllocatorFreeArray(&app->heap, sizeof(CF_SourceRange), textbuf->cf_ranges, textbuf->cf_cap, NULL);
+	if (textbuf->edits)
+		AllocatorFreeArray(&app->heap, sizeof(TextBufferEdit), textbuf->edits, textbuf->edits_cap, NULL);
+	if (textbuf->edit_text_buffer)
+		AllocatorFree(&app->heap, textbuf->edit_text_buffer, textbuf->edit_text_buffer_cap, NULL);
+	if (textbuf->file_absolute_path.size)
+		AllocatorFree(&app->heap, (void*)textbuf->file_absolute_path.data, textbuf->file_absolute_path.size, NULL);
+	uint32 generation = (uint16)(textbuf->generation + 1);
+	MemoryZero(textbuf, sizeof(*textbuf));
+	textbuf->next_free = (uint32)app->textbuf_pool_first_free;
+	textbuf->generation = generation;
+	app->textbuf_pool_first_free = index;
 }
 
 static intz
@@ -106,6 +130,7 @@ PushEdit_(App* app, TextBuffer* textbuf, intz offset, intz size, String changed,
 static void
 PushTranposeEdit_(App* app, TextBuffer* textbuf, Range first, Range second, uint64 tick)
 {
+	Trace();
 	AllocatorError err;
 	if (textbuf->edits_count+1 > textbuf->edits_cap)
 	{
@@ -334,15 +359,21 @@ CountLinesInTwoStrings_(String left, String right)
 }
 
 BED_API TextBuffer*
-TextBufferFromIndex(App* app, intz index)
+TextBufferFromHandle(App* app, TextBufferHandle handle)
 {
-	Trace();
+	intz index = (uint64)handle & (1ULL<<48) - 1;
+	uint32 generation = (uint64)handle >> 48;
 	if (index <= 0 || index > app->textbuf_pool_count)
 	{
 		Log(LOG_WARN, "index into text buffer pool is invalid: %Z", index);
 		return NULL;
 	}
 	TextBuffer* textbuf = &app->textbuf_pool[index - 1];
+	if (textbuf->generation != generation)
+	{
+		Log(LOG_WARN, "text buffer reffered by index %Z has different generation than expected: %u != %u", generation, textbuf->generation);
+		return NULL;
+	}
 	if (textbuf->next_free || !textbuf->kind)
 	{
 		Log(LOG_WARN, "text buffer reffered by index %Z is not active", index);
@@ -352,7 +383,7 @@ TextBufferFromIndex(App* app, intz index)
 }
 
 BED_API TextBuffer*
-TextBufferFromFile(App* app, String path, TextBufferKind kind, intz* out_index)
+TextBufferFromFile(App* app, String path, TextBufferKind kind, TextBufferHandle* out_handle)
 {
 	Trace();
 	ArenaSavepoint scratch = ArenaSave(app->arena);
@@ -366,7 +397,7 @@ TextBufferFromFile(App* app, String path, TextBufferKind kind, intz* out_index)
 		return NULL;
 	}
 
-	TextBuffer* textbuf = AllocTextBuffer_(app, out_index);
+	TextBuffer* textbuf = AllocTextBuffer_(app, out_handle);
 	if (!textbuf)
 	{
 		Log(LOG_ERROR, "could not make text buffer when opening path: %S", path);
@@ -380,10 +411,20 @@ TextBufferFromFile(App* app, String path, TextBufferKind kind, intz* out_index)
 	if (alloc_err)
 	{
 		Log(LOG_ERROR, "could not allocate buffer for text buffer when opening path: %S", path);
+		FreeTextBuffer_(app, textbuf, (uint64)*out_handle << 16 >> 16);
 		ArenaRestore(scratch);
 		return NULL;
 	}
 	MemoryCopy(utf8_text, buffer, size);
+
+	String absolute_path = OS_ResolveToAbsolutePath(path, app->heap, &err);
+	if (!err.ok)
+	{
+		Log(LOG_ERROR, "could resolve path to full string when opening path: %S", path);
+		FreeTextBuffer_(app, textbuf, (uint64)*out_handle << 16 >> 16);
+		ArenaRestore(scratch);
+		return NULL;
+	}
 
 	*textbuf = (TextBuffer) {
 		.kind = kind,
@@ -392,15 +433,16 @@ TextBufferFromFile(App* app, String path, TextBufferKind kind, intz* out_index)
 		.size = total_size,
 		.gap_start = size,
 		.gap_end = total_size,
+		.file_absolute_path = absolute_path,
 	};
 	return textbuf;
 }
 
 BED_API TextBuffer*
-TextBufferFromString(App* app, String str, TextBufferKind kind, intz* out_index)
+TextBufferFromString(App* app, String str, TextBufferKind kind, TextBufferHandle* out_handle)
 {
 	Trace();
-	TextBuffer* textbuf = AllocTextBuffer_(app, out_index);
+	TextBuffer* textbuf = AllocTextBuffer_(app, out_handle);
 	if (!textbuf)
 	{
 		Log(LOG_ERROR, "could not make text buffer from string: %S", str);
@@ -409,6 +451,7 @@ TextBufferFromString(App* app, String str, TextBufferKind kind, intz* out_index)
 
 	AllocatorError alloc_err = 0;
 	intz total_size = AlignUp(str.size, 31);
+	total_size = ClampMin(total_size, 4096);
 	uint8* utf8_text = AllocatorAlloc(&app->heap, total_size, 1, &alloc_err);
 	if (alloc_err)
 	{
@@ -429,15 +472,22 @@ TextBufferFromString(App* app, String str, TextBufferKind kind, intz* out_index)
 }
 
 BED_API TextBuffer*
-TextBufferAcquire(App* app, intz index)
+TextBufferIncRefCount(App* app, TextBufferHandle handle)
 {
 	Trace();
+	intz index = (uint64)handle << 16 >> 16;
+	uint32 generation = (uint64)handle >> 48;
 	if (index <= 0 || index > app->textbuf_pool_count)
 	{
 		Log(LOG_WARN, "trying to acquire invalid textbuffer index: %Z", index);
 		return NULL;
 	}
 	TextBuffer* textbuf = &app->textbuf_pool[index - 1];
+	if (textbuf->generation != generation)
+	{
+		Log(LOG_WARN, "text buffer reffered by index %Z has different generation than expected: %u != %u", generation, textbuf->generation);
+		return NULL;
+	}
 	if (textbuf->next_free || !textbuf->kind)
 	{
 		Log(LOG_WARN, "trying to acquire textbuffer that is inactive", index);
@@ -449,15 +499,22 @@ TextBufferAcquire(App* app, intz index)
 }
 
 BED_API void
-TextBufferRelease(App* app, intz index)
+TextBufferDecRefCount(App* app, TextBufferHandle handle)
 {
 	Trace();
+	intz index = (uint64)handle << 16 >> 16;
+	uint32 generation = (uint64)handle >> 48;
 	if (index <= 0 || index > app->textbuf_pool_count)
 	{
 		Log(LOG_WARN, "trying to release invalid textbuffer index: %Z", index);
 		return;
 	}
 	TextBuffer* textbuf = &app->textbuf_pool[index - 1];
+	if (textbuf->generation != generation)
+	{
+		Log(LOG_WARN, "text buffer reffered by index %Z has different generation than expected: %u != %u", generation, textbuf->generation);
+		return;
+	}
 	if (textbuf->next_free || !textbuf->kind)
 	{
 		Log(LOG_WARN, "trying to release textbuffer that is inactive", index);
@@ -465,20 +522,7 @@ TextBufferRelease(App* app, intz index)
 	}
 	
 	if (--textbuf->ref_count == 0)
-	{
-		AllocatorFree(&app->heap, textbuf->utf8_text, textbuf->size, NULL);
-		if (textbuf->cf_kinds)
-			AllocatorFreeArray(&app->heap, sizeof(CF_TokenKind), textbuf->cf_kinds, textbuf->cf_cap, NULL);
-		if (textbuf->cf_ranges)
-			AllocatorFreeArray(&app->heap, sizeof(CF_SourceRange), textbuf->cf_ranges, textbuf->cf_cap, NULL);
-		if (textbuf->edits)
-			AllocatorFreeArray(&app->heap, sizeof(TextBufferEdit), textbuf->edits, textbuf->edits_cap, NULL);
-		if (textbuf->edit_text_buffer)
-			AllocatorFree(&app->heap, textbuf->edit_text_buffer, textbuf->edit_text_buffer_cap, NULL);
-		MemoryZero(textbuf, sizeof(*textbuf));
-		textbuf->next_free = (uint32)app->textbuf_pool_first_free;
-		app->textbuf_pool_first_free = index;
-	}
+		FreeTextBuffer_(app, textbuf, index);
 }
 
 BED_API void
@@ -561,7 +605,6 @@ TextBufferSample(TextBuffer* textbuf, intz offset)
 BED_API intz
 TextBufferSize(TextBuffer* textbuf)
 {
-	Trace();
 	return textbuf->size - (textbuf->gap_end - textbuf->gap_start);
 }
 
@@ -625,16 +668,7 @@ TextBufferLineColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size)
 	}
 
 	result.line = CountLinesInTwoStrings_(left_str, right_str);
-	for (intz it = offset-1; it >= 0; --it)
-	{
-		uint8 sample = TextBufferSample(textbuf, it);
-		if (sample == '\n')
-			break;
-		if (sample == '\t')
-			result.col = RoundToNextTab(result.col-1, tab_size) + 1;
-		else if (IsStartOfCodepoint(sample))
-			++result.col;
-	}
+	result.col = TextBufferColFromOffset(textbuf, offset, tab_size);
 #endif
 
 	return result;
@@ -645,15 +679,18 @@ TextBufferColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size)
 {
 	Trace();
 	int32 result = 1;
-	intz it = offset;
 
-	while (it > 0)
+	intz start_of_line = offset-1;
+	for (; start_of_line >= 0; --start_of_line)
 	{
-		--it;
-		uint8 sample = TextBufferSample(textbuf, it);
+		uint8 sample = TextBufferSample(textbuf, start_of_line);
 		if (sample == '\n')
-			return result;
-		else if (sample == '\t')
+			break;
+	}
+	for (intz it = start_of_line+1; it < offset; ++it)
+	{
+		uint8 sample = TextBufferSample(textbuf, it);
+		if (sample == '\t')
 			result = RoundToNextTab(result-1, tab_size) + 1;
 		else if (IsStartOfCodepoint(sample))
 			++result;
