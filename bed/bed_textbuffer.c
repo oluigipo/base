@@ -54,7 +54,7 @@ FreeTextBuffer_(App* app, TextBuffer* textbuf, intz index)
 	MemoryZero(textbuf, sizeof(*textbuf));
 	textbuf->next_free = (uint32)app->textbuf_pool_first_free;
 	textbuf->generation = generation;
-	app->textbuf_pool_first_free = index;
+	app->textbuf_pool_first_free = index+1;
 }
 
 static intz
@@ -361,22 +361,23 @@ CountLinesInTwoStrings_(String left, String right)
 BED_API TextBuffer*
 TextBufferFromHandle(App* app, TextBufferHandle handle)
 {
-	intz index = (uint64)handle & (1ULL<<48) - 1;
+	intz index = (uint64)handle << 16 >> 16;
 	uint32 generation = (uint64)handle >> 48;
-	if (index <= 0 || index > app->textbuf_pool_count)
+	--index;
+	if (index < 0 || index >= app->textbuf_pool_count)
 	{
-		Log(LOG_WARN, "index into text buffer pool is invalid: %Z", index);
+		Log(LOG_ERROR, "index into text buffer pool is invalid: %Z", index);
 		return NULL;
 	}
-	TextBuffer* textbuf = &app->textbuf_pool[index - 1];
+	TextBuffer* textbuf = &app->textbuf_pool[index];
 	if (textbuf->generation != generation)
 	{
-		Log(LOG_WARN, "text buffer reffered by index %Z has different generation than expected: %u != %u", generation, textbuf->generation);
+		Log(LOG_ERROR, "text buffer reffered by index %Z has different generation than expected: %u != %u", index, generation, textbuf->generation);
 		return NULL;
 	}
 	if (textbuf->next_free || !textbuf->kind)
 	{
-		Log(LOG_WARN, "text buffer reffered by index %Z is not active", index);
+		Log(LOG_ERROR, "text buffer reffered by index %Z is not active", index);
 		return NULL;
 	}
 	return textbuf;
@@ -411,7 +412,7 @@ TextBufferFromFile(App* app, String path, TextBufferKind kind, TextBufferHandle*
 	if (alloc_err)
 	{
 		Log(LOG_ERROR, "could not allocate buffer for text buffer when opening path: %S", path);
-		FreeTextBuffer_(app, textbuf, (uint64)*out_handle << 16 >> 16);
+		FreeTextBuffer_(app, textbuf, ((uint64)*out_handle << 16 >> 16) - 1);
 		ArenaRestore(scratch);
 		return NULL;
 	}
@@ -421,12 +422,13 @@ TextBufferFromFile(App* app, String path, TextBufferKind kind, TextBufferHandle*
 	if (!err.ok)
 	{
 		Log(LOG_ERROR, "could resolve path to full string when opening path: %S", path);
-		FreeTextBuffer_(app, textbuf, (uint64)*out_handle << 16 >> 16);
+		FreeTextBuffer_(app, textbuf, ((uint64)*out_handle << 16 >> 16) - 1);
 		ArenaRestore(scratch);
 		return NULL;
 	}
 
 	*textbuf = (TextBuffer) {
+		.generation = textbuf->generation,
 		.kind = kind,
 		.ref_count = 1,
 		.utf8_text = utf8_text,
@@ -461,6 +463,7 @@ TextBufferFromString(App* app, String str, TextBufferKind kind, TextBufferHandle
 	MemoryCopy(utf8_text, str.data, str.size);
 
 	*textbuf = (TextBuffer) {
+		.generation = textbuf->generation,
 		.kind = kind,
 		.ref_count = 1,
 		.utf8_text = utf8_text,
@@ -477,20 +480,21 @@ TextBufferIncRefCount(App* app, TextBufferHandle handle)
 	Trace();
 	intz index = (uint64)handle << 16 >> 16;
 	uint32 generation = (uint64)handle >> 48;
-	if (index <= 0 || index > app->textbuf_pool_count)
+	--index;
+	if (index < 0 || index >= app->textbuf_pool_count)
 	{
-		Log(LOG_WARN, "trying to acquire invalid textbuffer index: %Z", index);
+		Log(LOG_ERROR, "trying to acquire invalid textbuffer index: %Z", index);
 		return NULL;
 	}
-	TextBuffer* textbuf = &app->textbuf_pool[index - 1];
+	TextBuffer* textbuf = &app->textbuf_pool[index];
 	if (textbuf->generation != generation)
 	{
-		Log(LOG_WARN, "text buffer reffered by index %Z has different generation than expected: %u != %u", generation, textbuf->generation);
+		Log(LOG_ERROR, "text buffer reffered by index %Z has different generation than expected: %u != %u", index, generation, textbuf->generation);
 		return NULL;
 	}
 	if (textbuf->next_free || !textbuf->kind)
 	{
-		Log(LOG_WARN, "trying to acquire textbuffer that is inactive", index);
+		Log(LOG_ERROR, "trying to acquire textbuffer that is inactive", index);
 		return NULL;
 	}
 
@@ -504,20 +508,21 @@ TextBufferDecRefCount(App* app, TextBufferHandle handle)
 	Trace();
 	intz index = (uint64)handle << 16 >> 16;
 	uint32 generation = (uint64)handle >> 48;
-	if (index <= 0 || index > app->textbuf_pool_count)
+	--index;
+	if (index < 0 || index >= app->textbuf_pool_count)
 	{
-		Log(LOG_WARN, "trying to release invalid textbuffer index: %Z", index);
+		Log(LOG_ERROR, "trying to release invalid textbuffer index: %Z", index);
 		return;
 	}
-	TextBuffer* textbuf = &app->textbuf_pool[index - 1];
+	TextBuffer* textbuf = &app->textbuf_pool[index];
 	if (textbuf->generation != generation)
 	{
-		Log(LOG_WARN, "text buffer reffered by index %Z has different generation than expected: %u != %u", generation, textbuf->generation);
+		Log(LOG_ERROR, "text buffer reffered by index %Z has different generation than expected: %u != %u", index, generation, textbuf->generation);
 		return;
 	}
 	if (textbuf->next_free || !textbuf->kind)
 	{
-		Log(LOG_WARN, "trying to release textbuffer that is inactive", index);
+		Log(LOG_ERROR, "trying to release textbuffer that is inactive", index);
 		return;
 	}
 	
@@ -628,37 +633,6 @@ TextBufferLineColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size)
 	String right_str = {};
 	TextBufferGetStrings(textbuf, &left_str, &right_str);
 
-#if 0
-	intz it;
-	uint32 codepoint;
-	it = 0;
-	while (codepoint = StringDecode(left_str, &it), codepoint && it <= offset)
-	{
-		if (codepoint == '\n')
-		{
-			result.col = 1;
-			++result.line;
-		}
-		else if (codepoint == '\t')
-			result.col = RoundToNextTab(result.col-1, tab_size) + 1;
-		else
-			++result.col;
-	}
-
-	it = 0;
-	while (codepoint = StringDecode(right_str, &it), codepoint && it + textbuf->gap_start <= offset)
-	{
-		if (codepoint == '\n')
-		{
-			result.col = 1;
-			++result.line;
-		}
-		else if (codepoint == '\t')
-			result.col = RoundToNextTab(result.col-1, tab_size) + 1;
-		else
-			++result.col;
-	}
-#else
 	if (offset > textbuf->gap_start)
 		right_str = StringSlice(right_str, 0, offset - textbuf->gap_start);
 	else
@@ -669,7 +643,6 @@ TextBufferLineColFromOffset(TextBuffer* textbuf, intz offset, int32 tab_size)
 
 	result.line = CountLinesInTwoStrings_(left_str, right_str);
 	result.col = TextBufferColFromOffset(textbuf, offset, tab_size);
-#endif
 
 	return result;
 }
@@ -1000,6 +973,15 @@ TextBufferRedo(App* app, TextBuffer* textbuf, TextBufferEdit* out_edit)
 	return offset;
 }
 
+BED_API void
+TextBufferReplace(App* app, TextBuffer* textbuf, Range range, String str)
+{
+	Trace();
+	// TODO(ljre): Rewrite this so that Undo does both at once
+	TextBufferDelete(app, textbuf, range.start, RangeSize(range));
+	TextBufferInsert(app, textbuf, range.start, str);
+}
+
 BED_API Buffer
 TextBufferWriteRangeToBuffer(TextBuffer* textbuf, Range range, intz size, uint8 buf[])
 {
@@ -1022,4 +1004,28 @@ TextBufferWriteRangeToBuffer(TextBuffer* textbuf, Range range, intz size, uint8 
 		MemoryCopy(buf, textbuf->utf8_text + range.start + (textbuf->gap_end - textbuf->gap_start), size);
 
 	return BufMake(size, buf);
+}
+
+BED_API bool
+TextBufferIterate(App* app, intz* it_, TextBuffer** out_textbuf, TextBufferHandle* out_handle)
+{
+	Trace();
+	intz it = *it_;
+
+	for (; it < app->textbuf_pool_count; ++it)
+	{
+		TextBuffer* textbuf = &app->textbuf_pool[it];
+		if (textbuf->kind)
+		{
+			*it_ = it + 1;
+			*out_textbuf = textbuf;
+			*out_handle = (void*)((uint64)textbuf->generation << 48 | (uint64)(it+1));
+			return true;
+		}
+	}
+
+	*it_ = it;
+	*out_textbuf = NULL;
+	*out_handle = NULL;
+	return false;
 }

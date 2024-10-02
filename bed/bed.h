@@ -27,6 +27,7 @@ struct Rect
 typedef Rect;
 
 String typedef HeapAllocatedString;
+Buffer typedef HeapAllocatedBuffer;
 
 enum TextBufferEditKind
 {
@@ -145,13 +146,36 @@ struct TextView
 }
 typedef TextView;
 
+struct OpenFileViewLayout
+{
+	Rect all;
+	Rect filter_bar;
+	Rect filter_bar_text;
+	Rect entries;
+}
+typedef OpenFileViewLayout;
+
+struct OpenFileViewEntry
+{
+	OS_FileInfo info;
+	intz name_size;
+	uint8 name[];
+}
+typedef OpenFileViewEntry;
+
 struct OpenFileView
 {
 	TextBufferHandle filter;
+	TextCursor cursor;
 	intz selected_option;
 
+	intz slash_count;
 	intz entry_count;
-	HeapAllocatedString all_entries_names;
+	int32 visible_entries_count;
+	HeapAllocatedBuffer all_entries;
+
+	int32 first_line;
+	OpenFileViewLayout layout;
 }
 typedef OpenFileView;
 
@@ -412,6 +436,18 @@ RangeIsValid(Range range)
 	return range.start <= range.end;
 }
 
+static inline bool
+FuzzyMatch(String filter, String str)
+{
+	Trace();
+	intz filter_i = 0;
+
+	for (intz i = 0; filter_i < filter.size && i < str.size; ++i)
+		filter_i += (filter.data[filter_i] == str.data[i]);
+
+	return (filter_i == filter.size);
+}
+
 // ===========================================================================
 // ===========================================================================
 // TextBuffer API
@@ -421,6 +457,7 @@ BED_API TextBuffer* TextBufferFromString   (App* app, String str, TextBufferKind
 BED_API TextBuffer* TextBufferIncRefCount  (App* app, TextBufferHandle handle);
 BED_API void        TextBufferDecRefCount  (App* app, TextBufferHandle handle);
 BED_API void        TextBufferRefreshTokens(App* app, TextBuffer* textbuf);
+BED_API bool        TextBufferIterate      (App* app, intz* it, TextBuffer** out_textbuf, TextBufferHandle* out_handle);
 
 BED_API void    TextBufferGetStrings       (TextBuffer* textbuf, String* out_left, String* out_right);
 BED_API uint8   TextBufferSample           (TextBuffer* textbuf, intz offset);
@@ -439,6 +476,7 @@ BED_API void    TextBufferDelete           (App* app, TextBuffer* textbuf, intz 
 BED_API void    TextBufferTranspose        (App* app, TextBuffer* textbuf, Range first, Range second);
 BED_API bool    TextBufferUndo             (App* app, TextBuffer* textbuf, TextBufferEdit* out_edit);
 BED_API bool    TextBufferRedo             (App* app, TextBuffer* textbuf, TextBufferEdit* out_edit);
+BED_API void    TextBufferReplace          (App* app, TextBuffer* textbuf, Range range, String str);
 
 // ===========================================================================
 // ===========================================================================

@@ -163,6 +163,12 @@ def main():
     allowed_tags = [target]
     if tracy:
         allowed_tags.append("tracy")
+    if is_debug:
+        allowed_tags.append("debug")
+    if asan:
+        allowed_tags.append("asan")
+    if ubsan:
+        allowed_tags.append("ubsan")
 
     objs = []
     shaders = []

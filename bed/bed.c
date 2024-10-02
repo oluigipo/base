@@ -330,7 +330,7 @@ static int32
 SizeInLinesOfTextView_(App* app, TextView* view)
 {
 	int32 visible_height = view->layout.text_screen.y2 - view->layout.text_screen.y1;
-	int32 visible_line_count = (visible_height + app->glyph_line_height-1) / app->glyph_line_height;
+	int32 visible_line_count = visible_height / app->glyph_line_height;
 	float32 visible_line_count_rem = (visible_height % app->glyph_line_height) / (float32)app->glyph_line_height;
 	int32 line_count = visible_line_count - (visible_line_count_rem < 0.75f);
 	return line_count;
@@ -656,13 +656,16 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 					break;
 			}
 
-			if (view->cursor.offset >= prev_it && view->cursor.offset < it)
+			bool is_last_iteration = (it == TextBufferSize(textbuf));
+			if (view->cursor.offset >= prev_it && view->cursor.offset < it ||
+				is_last_iteration && view->cursor.offset == it)
 			{
 				scope_nesting_at_cursor = this_scope_nesting;
 				consumed_nesting_at_cursor = consumed_tabs;
 				cursor_is_inside_view = true;
 			}
-			if (view->cursor.marker_offset >= prev_it && view->cursor.marker_offset < it)
+			if (view->cursor.marker_offset >= prev_it && view->cursor.marker_offset < it ||
+				is_last_iteration && view->cursor.marker_offset == it)
 			{
 				scope_nesting_at_marker = this_scope_nesting;
 				consumed_nesting_at_marker = consumed_tabs;
@@ -788,6 +791,22 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 }
 
 static void
+UpdateOpenFileViewLayout_(App* app, OpenFileView* view, Rect rect)
+{
+	Rect all = rect;
+	Rect filter_bar = RectCutTop(&rect, app->glyph_line_height + 8);
+	Rect filter_bar_text = RectCutMargin(filter_bar, 4);
+	Rect entries = rect;
+
+	view->layout = (OpenFileViewLayout) {
+		.all = all,
+		.filter_bar = filter_bar,
+		.filter_bar_text = filter_bar_text,
+		.entries = entries,
+	};
+}
+
+static void
 PushPanel_(App* app, Panel* panel, Arena* output_arena, Rect rect, bool is_selected)
 {
 	Trace();
@@ -801,41 +820,125 @@ PushPanel_(App* app, Panel* panel, Arena* output_arena, Rect rect, bool is_selec
 		} break;
 		case PanelState_OpenFileView:
 		{
+			ArenaSavepoint scratch = ArenaSave(ScratchArena(1, &output_arena));
 			OpenFileView* view = &panel->open_file_view;
+			TextBuffer* textbuf = TextBufferFromHandle(app, view->filter);
+			UpdateOpenFileViewLayout_(app, view, rect);
 
+			String left_str, right_str;
+			TextBufferGetStrings(textbuf, &left_str, &right_str);
+			String line = ArenaPrintf(scratch.arena, "%S%S", left_str, right_str);
+			PushText2_(app, output_arena, view->layout.filter_bar_text, line, 0xFFFFFFFF, 0, 1, 0, NULL);
+
+			{
+				LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
+				PushQuad_(output_arena, (float32[4]) {
+					view->layout.filter_bar_text.x1 + (cursor_pos.col - 1) * app->glyph_advance,
+					view->layout.filter_bar_text.y1,
+					app->glyph_advance,
+					app->glyph_height,
+				}, NULL, 1, 0, 0xCF7F7F7F);
+			}
+			{
+				LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
+				PushQuad_(output_arena, (float32[4]) {
+					view->layout.filter_bar_text.x1 + (cursor_pos.col - 1) * app->glyph_advance,
+					view->layout.filter_bar_text.y1,
+					app->glyph_advance,
+					app->glyph_height,
+				}, NULL, 1, 0, 0x7F3F3F3F);
+			}
+
+			intz last_slash_index = -1;
+			for (intz i = 0; i < line.size; ++i)
+			{
+				if (line.data[i] == '/')
+					last_slash_index = i;
+			}
+			if (last_slash_index != -1)
+				line = StringSlice(line, last_slash_index+1, -1);
+
+			view->visible_entries_count = view->entry_count;
+			Rect entries_rect = view->layout.entries;
+			intz entry_index = 0;
+			intz filtered_entry_count = 0;
 			for (intz i = 0; i < 2; ++i)
 			{
-				String entries = view->all_entries_names;
-				for (intz entry_index = 0; entries.size > 0; ++entry_index)
+				Buffer entries = view->all_entries;
+				for (; entries.size > 0;)
 				{
-					String entry = StringFromFixedBuffer(entries);
-					entries = StringSlice(entries, entry.size + 1, -1);
-					SafeAssert(entry.size > 1);
-					uint8 prefix = entry.data[0];
+					if (entries_rect.y1 >= entries_rect.y2)
+					{
+						view->visible_entries_count = entry_index - view->first_line - 1;
+						break;
+					}
 
-					if (prefix == 'D' && i != 0)
+					OpenFileViewEntry* entry = (OpenFileViewEntry*)entries.data;
+					entries = StringSlice(entries, SignedSizeof(OpenFileViewEntry) + AlignUp(entry->name_size, (intz)alignof(OpenFileViewEntry)-1), -1);
+					String entry_name = StringMake(entry->name_size, entry->name);
+
+					if (entry->info.directory && i != 0)
 						continue;
-					else if (prefix == 'F' && i != 1)
+					else if (!entry->info.directory && i != 1)
 						continue;
 
-					entry = StringSlice(entry, 1, -1);
+					if (!FuzzyMatch(line, entry_name))
+						continue;
 
-					Rect line = RectCutTop(&rect, app->glyph_line_height);
-					if (entry_index == view->selected_option)
-						PushRect_(output_arena, line, NULL, 1, 0, 0xFF3F3F3F);
-					Rect icon = RectCutLeft(&line, app->glyph_line_height);
-					RectCutLeft(&line, 4);
+					++filtered_entry_count;
+					if (entry_index < view->first_line)
+					{
+						++entry_index;
+						continue;
+					}
 
-					PushRect_(output_arena, icon, NULL, 1, 0, (prefix == 'D') ? 0xFF0080FF : 0xFFCCCCCC);
-					PushText2_(app, output_arena, line, entry, 0xFFFFFFFF, 0, 1, 0, NULL);
+					Rect line_rect = RectCutTop(&entries_rect, app->glyph_line_height);
+					if (view->selected_option == entry_index)
+						PushRect_(output_arena, line_rect, NULL, 1, 0, 0xFF3F3F3F);
+					Rect icon = RectCutLeft(&line_rect, app->glyph_line_height);
+					RectCutLeft(&line_rect, 4);
+
+					uint32 color = 0xFFCCCCCC;
+					if (entry->info.directory)
+						color = 0xFF0080FF;
+					else if (StringEndsWith(entry_name, Str(".exe")))
+						color = 0xFFCCCC00;
+					else if (
+						StringEndsWith(entry_name, Str(".c")) ||
+						StringEndsWith(entry_name, Str(".h")) ||
+						StringEndsWith(entry_name, Str(".cpp")) ||
+						StringEndsWith(entry_name, Str(".hpp")) ||
+						StringEndsWith(entry_name, Str(".c++")) ||
+						StringEndsWith(entry_name, Str(".h++")) ||
+						StringEndsWith(entry_name, Str(".odin")))
+						color = 0xFFCC00CC;
+					else if (
+						StringEndsWith(entry_name, Str(".py")) ||
+						StringEndsWith(entry_name, Str(".bat")))
+						color = 0xFF00CCCC;
+					else if (
+						StringEndsWith(entry_name, Str(".rdbg")) ||
+						StringEndsWith(entry_name, Str(".ttf")) ||
+						StringEndsWith(entry_name, Str(".obj")) ||
+						StringEndsWith(entry_name, Str(".exp")) ||
+						StringEndsWith(entry_name, Str(".lib")) ||
+						StringEndsWith(entry_name, Str(".pdb")))
+						color = 0xFF444444;
+
+					PushRect_(output_arena, icon, NULL, 1, 0, color);
+					PushText2_(app, output_arena, line_rect, entry_name, 0xFFFFFFFF, 0, 1, 0, NULL);
+					++entry_index;
 				}
 			}
+			view->selected_option = Clamp(view->selected_option, 0, filtered_entry_count-1);
+			ArenaRestore(scratch);
 		} break;
 	}
 }
 
 static void PanelProcessEvent(App* app, Panel* panel, OS_Event const* event);
 static void PanelProcessCursorDrag(App* app, Panel* panel, OS_MouseState const* mouse);
+static void RefreshOpenFileViewEntries(App* app, OpenFileView* view);
 
 API int32
 EntryPoint(int32 argc, const char* const argv[])
@@ -1500,62 +1603,21 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 					{
 						if (event->window_key.ctrl)
 						{
-							OS_Error err = { .ok = true, };
 							ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
-							ArenaSavepoint scratch2 = ArenaSave(ScratchArena(1, &scratch.arena));
-							OS_FileIterator it = OS_OpenFileIterator(ArenaPrintf(scratch.arena, "%S/*", app->project_path), AllocatorFromArena(scratch.arena), &err);
-							HeapAllocatedString strings = {};
-							intz entry_count = 0;
-
-							if (err.ok)
-							{
-								uint8* strings_start = ArenaEnd(scratch2.arena);
-								while (OS_IterateFiles(&it, &err))
-								{
-									for ArenaTempScope(scratch.arena)
-									{
-										String str = OS_FilePathFromFileIterator(&it, AllocatorFromArena(scratch.arena), &err);
-										if (!err.ok)
-											continue;
-										if (StringEquals(str, Str(".")) ||
-											StringEquals(str, Str("..")) ||
-											StringEquals(str, Str(".git")))
-											continue;
-										OS_FileInfo info = OS_FileInfoFromFileIterator(&it, &err);
-										if (!err.ok)
-											continue;
-										uint8 prefix = (info.directory) ? 'D' : 'F';
-										ArenaPrintf(scratch2.arena, "%c%S%0", prefix, str);
-										++entry_count;
-									}
-									if (!err.ok)
-										break;
-								}
-								uint8* strings_end = ArenaEnd(scratch2.arena);
-
-								intz strings_size = strings_end - strings_start;
-								uint8* strings_mem = AllocatorAlloc(&app->heap, strings_size, 1, NULL);
-								MemoryCopy(strings_mem, strings_start, strings_size);
-								strings = StringMake(strings_size, strings_mem);
-							}
-
-							if (!err.ok)
-								Log(LOG_ERROR, "failed to switch to OpenFileView panel state: (%x) %S", (uint32)err.code, err.what);
-							else
-							{
-								TextBufferHandle filter = NULL;
-								TextBufferFromString(app, Str(""), TextBufferKind_SingleLine, &filter);
-								panel->state = PanelState_OpenFileView;
-								panel->open_file_view = (OpenFileView) {
-									.filter = filter,
-									.all_entries_names = strings,
-									.entry_count = entry_count,
-									.selected_option = 0,
-								};
-							}
-
-							ArenaRestore(scratch2);
+							TextBufferHandle filter = NULL;
+							TextBuffer* textbuf = TextBufferFromString(app, ArenaPrintf(scratch.arena, "%S/", app->project_path), TextBufferKind_SingleLine, &filter);
 							ArenaRestore(scratch);
+							panel->state = PanelState_OpenFileView;
+							panel->open_file_view = (OpenFileView) {
+								.filter = filter,
+								.selected_option = 0,
+								.cursor = {
+									.offset = TextBufferSize(textbuf),
+									.marker_offset = TextBufferSize(textbuf),
+								},
+							};
+							RefreshOpenFileViewEntries(app, &panel->open_file_view);
+							should_scroll_to_cursor = false;
 						}
 					} break;
 				}
@@ -1590,6 +1652,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 		case PanelState_OpenFileView:
 		{
 			OpenFileView* view = &panel->open_file_view;
+			TextBuffer* textbuf = TextBufferFromHandle(app, view->filter);
 
 			bool is_going_back_to_text_view = false;
 			if (event->kind == OS_EventKind_WindowKeyPressed)
@@ -1598,15 +1661,235 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 				{
 					default: break;
 					case OS_KeyboardKey_Escape: is_going_back_to_text_view = true; break;
+					case OS_KeyboardKey_Left:
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdLeftSnakeWord(&view->cursor, textbuf, 1);
+						else if (event->window_key.alt)
+							TextCursorCmdLeftPascalWord(&view->cursor, textbuf, 1);
+						else
+							TextCursorCmdLeft(&view->cursor, textbuf, 1);
+					} break;
+					case OS_KeyboardKey_Right:
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdRightSnakeWord(&view->cursor, textbuf, 1);
+						else if (event->window_key.alt)
+							TextCursorCmdRightPascalWord(&view->cursor, textbuf, 1);
+						else
+							TextCursorCmdRight(&view->cursor, textbuf, 1);
+					} break;
+					case OS_KeyboardKey_Up:
+					{
+						view->selected_option = ClampMin(view->selected_option-1, 0);
+					} break;
+					case OS_KeyboardKey_Down:
+					{
+						view->selected_option += 1;
+					} break;
+					case OS_KeyboardKey_Backspace:
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdDeleteBackwardSnakeWord(app, &view->cursor, textbuf, 1);
+						else if (event->window_key.alt)
+							TextCursorCmdDeleteBackwardPascalWord(app, &view->cursor, textbuf, 1);
+						else
+							TextCursorCmdDeleteBackward(app, &view->cursor, textbuf, 1);
+						view->selected_option = 0;
+					} break;
+					case OS_KeyboardKey_End: TextCursorCmdEndOfLine(&view->cursor, textbuf); break;
+					case OS_KeyboardKey_Home: TextCursorCmdStartOfLine(&view->cursor, textbuf); break;
+					case OS_KeyboardKey_Tab:
+					case OS_KeyboardKey_Enter:
+					{
+						ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
+						String base_path = {};
+						String fuzzy_filter = {};
+						{
+							String left, right;
+							TextBufferGetStrings(textbuf, &left, &right);
+							String fullstr = ArenaPrintf(scratch.arena, "%S%S", left, right);
+							intz last_slash_index = -1;
+							for (intz i = 0; i < fullstr.size; ++i)
+							{
+								if (fullstr.data[i] == '/')
+									last_slash_index = i;
+							}
+							if (last_slash_index != -1)
+							{
+								base_path = StringSlice(fullstr, 0, last_slash_index+1);
+								fuzzy_filter = StringSlice(fullstr, last_slash_index+1, -1);
+							}
+							else
+								fuzzy_filter = fullstr;
+						}
+
+						intz entry_index = 0;
+						for (intz i = 0; i < 2; ++i)
+						{
+							Buffer entries = view->all_entries;
+							for (; entries.size > 0;)
+							{
+								OpenFileViewEntry* entry = (OpenFileViewEntry*)entries.data;
+								entries = StringSlice(entries, SignedSizeof(OpenFileViewEntry) + AlignUp(entry->name_size, (intz)alignof(OpenFileViewEntry)-1), -1);
+								String entry_name = StringMake(entry->name_size, entry->name);
+								if (entry->info.directory && i != 0)
+									continue;
+								else if (!entry->info.directory && i != 1)
+									continue;
+								if (!FuzzyMatch(fuzzy_filter, entry_name))
+									continue;
+
+								if (view->selected_option > entry_index && entries.size <= 0 && i == 1)
+									view->selected_option = entry_index;
+								if (view->selected_option == entry_index)
+								{
+									if (event->window_key.key == OS_KeyboardKey_Tab)
+									{
+										String fullpath = ArenaPrintf(scratch.arena, "%S%S", base_path, entry_name);
+										TextBufferReplace(app, textbuf, RangeMake(0, TextBufferSize(textbuf)), fullpath);
+										view->cursor.marker_offset = view->cursor.offset = TextBufferSize(textbuf);
+										// RefreshOpenFileViewEntries(app, view);
+									}
+									else
+									{
+										if (entry->info.directory)
+										{
+											String fullpath = ArenaPrintf(scratch.arena, "%S%S/", base_path, entry_name);
+											TextBufferReplace(app, textbuf, RangeMake(0, TextBufferSize(textbuf)), fullpath);
+											view->cursor.marker_offset = view->cursor.offset = TextBufferSize(textbuf);
+											RefreshOpenFileViewEntries(app, view);
+										}
+										else
+										{
+											String fullpath = ArenaPrintf(scratch.arena, "%S%S", base_path, entry_name);
+											TextBufferHandle new_textbuf = 0;
+											TextBufferFromFile(app, fullpath, TextBufferKind_CFile, &new_textbuf);
+											if (new_textbuf)
+											{
+												if (panel->text_view.textbuf)
+													TextBufferDecRefCount(app, panel->text_view.textbuf);
+												panel->text_view.textbuf = new_textbuf;
+												panel->text_view.line = 1;
+												panel->text_view.cursor = (TextCursor) {};
+											}
+											is_going_back_to_text_view = true;
+										}
+									}
+									goto lbl_out_of_the_loop;
+								}
+								++entry_index;
+							}
+						}
+						lbl_out_of_the_loop:;
+						view->selected_option = 0;
+
+						ArenaRestore(scratch);
+					} break;
+					case 'D':
+					{
+						if (event->window_key.ctrl)
+						{
+							TextCursorCmdDeleteToMarker(app, &view->cursor, textbuf);
+							view->selected_option = 0;
+						}
+					} break;
+					case 'C':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdCopy(app, &view->cursor, textbuf);
+					} break;
+					case 'X':
+					{
+						if (event->window_key.ctrl)
+						{
+							TextCursorCmdCut(app, &view->cursor, textbuf);
+							view->selected_option = 0;
+						}
+					} break;
+					case 'V':
+					{
+						if (event->window_key.ctrl)
+						{
+							TextCursorCmdPaste(app, &view->cursor, textbuf, 1);
+							view->selected_option = 0;
+						}
+					} break;
+					case ' ':
+					{
+						if (event->window_key.ctrl)
+							TextCursorCmdPlaceMarker(&view->cursor);
+					} break;
+					case 'Z':
+					{
+						if (event->window_key.ctrl)
+						{
+							TextCursorCmdUndo(app, &view->cursor, textbuf);
+							view->selected_option = 0;
+						}
+					} break;
+					case 'Y':
+					{
+						if (event->window_key.ctrl)
+						{
+							TextCursorCmdRedo(app, &view->cursor, textbuf);
+							view->selected_option = 0;
+						}
+					} break;
+					case 'R':
+					{
+
+					} break;
+					case 'Q':
+					{
+						
+					} break;
+					case OS_KeyboardKey_PageUp:
+					{
+
+					} break;
+					case OS_KeyboardKey_PageDown:
+					{
+
+					} break;
+				}
+			}
+			else if (event->kind == OS_EventKind_WindowTyping)
+			{
+				uint32 codepoint = event->window_typing.codepoint;
+				if (!(event->window_typing.ctrl && codepoint == ' '))
+				{
+					TextCursorCmdInsert(app, &view->cursor, textbuf, 1, codepoint);
+					view->selected_option = 0;
 				}
 			}
 
 			if (is_going_back_to_text_view)
 			{
 				TextBufferDecRefCount(app, view->filter);
-				AllocatorFree(&app->heap, (void*)view->all_entries_names.data, view->all_entries_names.size, NULL);
+				AllocatorFree(&app->heap, (void*)view->all_entries.data, view->all_entries.size, NULL);
 				MemoryZero(view, sizeof(OpenFileView));
 				panel->state = PanelState_TextView;
+				break;
+			}
+
+			if (view->selected_option < view->first_line)
+				view->first_line = view->selected_option;
+			else if (view->selected_option >= view->first_line + view->visible_entries_count)
+				view->first_line = view->selected_option - view->visible_entries_count;
+
+			Arena* scratch_arena = ScratchArena(0, NULL);
+			for ArenaTempScope(scratch_arena)
+			{
+				String left, right;
+				TextBufferGetStrings(textbuf, &left, &right);
+				String filter = ArenaPrintf(scratch_arena, "%S%S", left, right);
+				intz slash_count = 0;
+				for (intz i = 0; i < filter.size; ++i)
+					slash_count += (filter.data[i] == '/');
+
+				if (slash_count != view->slash_count)
+					RefreshOpenFileViewEntries(app, view);
 			}
 		} break;
 	}
@@ -1630,4 +1913,85 @@ PanelProcessCursorDrag(App* app, Panel* panel, OS_MouseState const* mouse)
 
 		} break;
 	}
+}
+
+static void
+RefreshOpenFileViewEntries(App* app, OpenFileView* view)
+{
+	OS_Error err = { .ok = true, };
+	ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
+	ArenaSavepoint scratch2 = ArenaSave(ScratchArena(1, &scratch.arena));
+	TextBuffer* textbuf = TextBufferFromHandle(app, view->filter);
+
+	String path = {};
+	intz slash_count = 0;
+	{
+		String left, right;
+		TextBufferGetStrings(textbuf, &left, &right);
+		path = ArenaPrintf(scratch.arena, "%S%S", left, right);
+
+		intz last_slash_index = -1;
+		for (intz i = 0; i < path.size; ++i)
+		{
+			if (path.data[i] == '/')
+			{
+				last_slash_index = i;
+				++slash_count;
+			}
+		}
+		if (last_slash_index)
+			path = StringSlice(path, 0, last_slash_index);
+	}
+
+	OS_FileIterator it = OS_OpenFileIterator(ArenaPrintf(scratch.arena, "%S/*", path), AllocatorFromArena(scratch.arena), &err);
+	HeapAllocatedBuffer all_entries = {};
+	intz entry_count = 0;
+
+	if (err.ok)
+	{
+		uint8* entries_start = ArenaEndAligned(scratch2.arena, alignof(OpenFileViewEntry));
+		while (OS_IterateFiles(&it, &err))
+		{
+			for ArenaTempScope(scratch.arena)
+			{
+				String str = OS_FilePathFromFileIterator(&it, AllocatorFromArena(scratch.arena), &err);
+				if (!err.ok)
+					continue;
+				if (StringEquals(str, Str(".")) ||
+					StringEquals(str, Str("..")) ||
+					StringEquals(str, Str(".git")))
+					continue;
+				OS_FileInfo info = OS_FileInfoFromFileIterator(&it, &err);
+				OpenFileViewEntry* new_entry = ArenaPushAligned(scratch2.arena, SignedSizeof(OpenFileViewEntry) + str.size, alignof(OpenFileViewEntry));
+				SafeAssert(new_entry);
+				new_entry->info = info;
+				new_entry->name_size = str.size;
+				MemoryCopy(new_entry->name, str.data, str.size);
+				++entry_count;
+			}
+			if (!err.ok)
+				break;
+		}
+		uint8* entries_end = ArenaEnd(scratch2.arena);
+
+		intz buffer_size = entries_end - entries_start;
+		uint8* buffer_mem = AllocatorAlloc(&app->heap, buffer_size, 1, NULL);
+		MemoryCopy(buffer_mem, entries_start, buffer_size);
+		all_entries = BufMake(buffer_size, buffer_mem);
+	}
+
+	if (!err.ok)
+		Log(LOG_ERROR, "failed to update OpenFileView entries: (%x) %S", (uint32)err.code, err.what);
+	else
+	{
+		if (view->all_entries.data)
+			AllocatorFree(&app->heap, (void*)view->all_entries.data, view->all_entries.size, NULL);
+		view->all_entries = all_entries;
+		view->entry_count = entry_count;
+		view->slash_count = slash_count;
+	}
+
+	OS_CloseFileIterator(&it);
+	ArenaRestore(scratch2);
+	ArenaRestore(scratch);
 }

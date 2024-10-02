@@ -2586,6 +2586,9 @@ OS_DefaultLoggerProc(ThreadContextLogger* logger, int32 level, String str)
 		prefix = Str("[DEBUG] ");
 
 	OS_LogErr("%S%S\n", prefix, str);
+
+	if (level >= LOG_ERROR && IsDebuggerPresent())
+		Debugbreak();
 }
 
 API ThreadContextLogger

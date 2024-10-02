@@ -125,7 +125,7 @@ TextCursorCmdInsert(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amou
 		StringEncode(insert_buffer + i * encoded_size, size, codepoint);
 
 	TextBufferInsert(app, textbuf, cursor->offset, StrMake(size, insert_buffer));
-	if (cursor->offset < cursor->marker_offset)
+	if (cursor->marker_offset >= cursor->offset)
 		cursor->marker_offset += size;
 	cursor->offset += size;
 }
@@ -134,7 +134,7 @@ BED_API void
 TextCursorCmdInsertString(App* app, TextCursor* cursor, TextBuffer* textbuf, String str)
 {
 	TextBufferInsert(app, textbuf, cursor->offset, str);
-	if (cursor->offset < cursor->marker_offset)
+	if (cursor->marker_offset >= cursor->offset)
 		cursor->marker_offset += str.size;
 	cursor->offset += str.size;
 }
@@ -155,7 +155,7 @@ TextCursorCmdDeleteBackward(App* app, TextCursor* cursor, TextBuffer* textbuf, i
 	intz size = cursor->offset - it;
 
 	TextBufferDelete(app, textbuf, it, size);
-	if (cursor->offset < cursor->marker_offset)
+	if (cursor->marker_offset >= cursor->offset)
 		cursor->marker_offset -= size;
 	cursor->offset = it;
 }
@@ -442,7 +442,7 @@ TextCursorCmdDeleteBackwardSnakeWord(App* app, TextCursor* cursor, TextBuffer* t
 			break;
 		intz start = FindSimpleBoundaryBackward_(textbuf, cursor->offset, SimpleBoundarySnakeWordProc_);
 		TextBufferDelete(app, textbuf, start, cursor->offset - start);
-		if (cursor->marker_offset > cursor->offset)
+		if (cursor->marker_offset >= cursor->offset)
 			cursor->marker_offset -= (cursor->offset - start);
 		cursor->offset -= (cursor->offset - start);
 	}
@@ -458,7 +458,7 @@ TextCursorCmdDeleteBackwardPascalWord(App* app, TextCursor* cursor, TextBuffer* 
 			break;
 		intz start = FindSimpleBoundaryBackward_(textbuf, cursor->offset, SimpleBoundaryPascalWordProc_);
 		TextBufferDelete(app, textbuf, start, cursor->offset - start);
-		if (cursor->marker_offset > cursor->offset)
+		if (cursor->marker_offset >= cursor->offset)
 			cursor->marker_offset -= (cursor->offset - start);
 		cursor->offset -= (cursor->offset - start);
 	}
@@ -506,7 +506,7 @@ TextCursorCmdPaste(App* app, TextCursor* cursor, TextBuffer* textbuf, intz amoun
 	for (intz i = 0; i < amount; ++i)
 	{
 		TextBufferInsert(app, textbuf, cursor->offset, clip.contents);
-		if (cursor->marker_offset > cursor->offset)
+		if (cursor->marker_offset >= cursor->offset)
 			cursor->marker_offset += clip.contents.size;
 		cursor->offset += clip.contents.size;
 	}

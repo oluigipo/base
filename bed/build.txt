@@ -1,8 +1,8 @@
-fxc bed/shader_quad.hlsl vs_4_0 Vertex
-fxc bed/shader_quad.hlsl ps_4_0 Pixel
+@win64 fxc bed/shader_quad.hlsl vs_4_0 Vertex
+@win64 fxc bed/shader_quad.hlsl ps_4_0 Pixel
 
-define CONFIG_WINDOWS_SUBSYSTEM
-subsystem windows
+@win64 define CONFIG_WINDOWS_SUBSYSTEM
+@win64 subsystem windows
 avx 2
 
 @tracy define CONFIG_ENABLE_TRACY
@@ -10,8 +10,8 @@ avx 2
 @tracy incdir "C:\b\ext\tracy\public\tracy"
 
 c bed/bed.c
-c os/os_win32.c
-c render3/render3_d3d11.c
 c cfront/cfront_lexing.c
+@win64 c os/os_win32.c
+@win64 c render3/render3_d3d11.c
 
 output bed
