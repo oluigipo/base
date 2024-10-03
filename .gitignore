@@ -3,6 +3,7 @@
 
 # Public tools
 !/bed/
+!/cfront/
 !/common/
 !/common_odin/
 !/gamepad_db_gen/

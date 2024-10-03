@@ -127,6 +127,14 @@ struct GlyphEntry_
 }
 typedef GlyphEntry_;
 
+enum PanelState
+{
+	PanelState_TextView = 0,
+	PanelState_OpenFileView,
+	PanelState_CommandView,
+}
+typedef PanelState;
+
 struct TextViewLayout
 {
 	Rect all;
@@ -147,14 +155,14 @@ struct TextView
 }
 typedef TextView;
 
-struct OpenFileViewLayout
+struct SimpleViewLayout
 {
 	Rect all;
 	Rect filter_bar;
 	Rect filter_bar_text;
 	Rect entries;
 }
-typedef OpenFileViewLayout;
+typedef SimpleViewLayout;
 
 struct OpenFileViewEntry
 {
@@ -176,7 +184,7 @@ struct OpenFileView
 	HeapAllocatedBuffer all_entries;
 
 	int32 first_line;
-	OpenFileViewLayout layout;
+	SimpleViewLayout layout;
 }
 typedef OpenFileView;
 
@@ -185,16 +193,10 @@ struct CommandView
 	TextBufferHandle filter;
 	TextCursor cursor;
 	intz selected_option;
+	PanelState prev_panel_state;
+	SimpleViewLayout layout;
 }
 typedef CommandView;
-
-enum PanelState
-{
-	PanelState_TextView = 0,
-	PanelState_OpenFileView,
-	PanelState_CommandView,
-}
-typedef PanelState;
 
 struct Panel
 {
@@ -202,6 +204,7 @@ struct Panel
 
 	TextView text_view;
 	OpenFileView open_file_view;
+	CommandView command_view;
 }
 typedef Panel;
 
@@ -526,6 +529,69 @@ BED_API void TextCursorCmdDuplicateLine           (App* app, TextCursor* cursor,
 
 // ===========================================================================
 // ===========================================================================
+// Commands
+enum CommandKind
+{
+	CommandKind_Null = 0,
+
+	// Panel commands
+	CommandKind_OpenFile,                 //
+	CommandKind_NewFile,                  //
+
+	// Cursor commands
+	CommandKind_CursorDeleteBackward,           // amount
+	CommandKind_CursorLeft,                     // amount
+	CommandKind_CursorRight,                    // amount
+	CommandKind_CursorUp,                       // amount
+	CommandKind_CursorDown,                     // amount
+	CommandKind_CursorEndOfLine,                //
+	CommandKind_CursorStartOfLine,              //
+	CommandKind_CursorPlaceMarker,              //
+	CommandKind_CursorDeleteToMarker,           //
+	CommandKind_CursorRightSnakeWord,           // amount
+	CommandKind_CursorLeftSnakeWord,            // amount
+	CommandKind_CursorDeleteBackwardSnakeWord,  // amount
+	CommandKind_CursorRightPascalWord,          // amount
+	CommandKind_CursorLeftPascalWord,           // amount
+	CommandKind_CursorDeleteBackwardPascalWord, // amount
+	CommandKind_CursorCopy,                     //
+	CommandKind_CursorCut,                      //
+	CommandKind_CursorPaste,                    // amount
+	CommandKind_CursorUpParagraph,              // amount
+	CommandKind_CursorDownParagraph,            // amount
+	CommandKind_CursorSet,                      // linecol
+	CommandKind_CursorSetMarker,                // linecol
+	CommandKind_CursorUndo,                     // 
+	CommandKind_CursorRedo,                     // 
+	CommandKind_CursorDeleteLine,               //
+	CommandKind_CursorMoveLineUp,               // amount
+	CommandKind_CursorMoveLineDown,             // amount
+	CommandKind_CursorDuplicateLine,            // amount
+
+	CommandKind__Count,
+}
+typedef CommandKind;
+
+struct Command
+{
+	CommandKind kind;
+
+	LineCol linecol;
+	intz amount;
+	String string;
+	HeapAllocatedString heap_allocated_string;
+}
+typedef Command;
+
+// ===========================================================================
+// ===========================================================================
+// Panel API
+BED_API void PanelProcessEvent         (App* app, Panel* panel, OS_Event const* event);
+BED_API void PanelProcessCursorDrag    (App* app, Panel* panel, OS_MouseState const* mouse);
+BED_API void PanelExecuteCommands      (App* app, Panel* panel, intz command_count, Command const commands[]);
+
+// ===========================================================================
+// ===========================================================================
 // Automatic C/C++ Indentation API
 struct CIndentCtx
 {
@@ -537,60 +603,5 @@ struct CIndentCtx
 typedef CIndentCtx;
 
 BED_API int32 CIndentPushRange(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index);
-
-// ===========================================================================
-// ===========================================================================
-// Commands
-enum CommandKind
-{
-	CommandKind_Null = 0,
-
-	// Panel commands
-	CommandKind_OpenFile,                 //
-	CommandKind_NewFile,                  //
-
-	// Cursor commands
-	CommandKind_Insert,                   // amount, codepoint
-	CommandKind_InsertString,             // string
-	CommandKind_DeleteBackward,           // amount
-	CommandKind_Left,                     // amount
-	CommandKind_Right,                    // amount
-	CommandKind_Up,                       // amount
-	CommandKind_Down,                     // amount
-	CommandKind_EndOfLine,                //
-	CommandKind_StartOfLine,              //
-	CommandKind_PlaceMarker,              //
-	CommandKind_DeleteToMarker,           //
-	CommandKind_RightSnakeWord,           // amount
-	CommandKind_LeftSnakeWord,            // amount
-	CommandKind_DeleteBackwardSnakeWord,  // amount
-	CommandKind_RightPascalWord,          // amount
-	CommandKind_LeftPascalWord,           // amount
-	CommandKind_DeleteBackwardPascalWord, // amount
-	CommandKind_Copy,                     //
-	CommandKind_Cut,                      //
-	CommandKind_Paste,                    // amount
-	CommandKind_UpParagraph,              // amount
-	CommandKind_DownParagraph,            // amount
-	CommandKind_Set,                      // linecol
-	CommandKind_SetMarker,                // linecol
-	CommandKind_Undo,                     // 
-	CommandKind_Redo,                     // 
-	CommandKind_DeleteLine,               //
-	CommandKind_MoveLineUp,               // amount
-	CommandKind_MoveLineDown,             // amount
-	CommandKind_DuplicateLine,            // amount
-}
-typedef CommandKind;
-
-struct Command
-{
-	CommandKind kind;
-
-	LineCol linecol;
-	intz amount;
-	String string;
-}
-typedef Command;
 
 #endif

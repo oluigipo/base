@@ -2110,6 +2110,30 @@ AllocatorAlloc(Allocator* allocator, intsize size, intsize alignment, AllocatorE
 	return allocator->proc(allocator->instance, AllocatorMode_Alloc, size, alignment, NULL, 0, out_err);
 }
 
+static inline String
+AllocatorCloneString(Allocator* allocator, String str, AllocatorError* out_err)
+{
+	uint8* ptr = allocator->proc(allocator->instance, AllocatorMode_Alloc, str.size, 1, NULL, 0, out_err);
+	if (ptr)
+	{
+		MemoryCopy(ptr, str.data, str.size);
+		return StringMake(str.size, ptr);
+	}
+	return StrNull;
+}
+
+static inline String
+AllocatorCloneBuffer(Allocator* allocator, intz alignment, Buffer buf, AllocatorError* out_err)
+{
+	uint8* ptr = allocator->proc(allocator->instance, AllocatorMode_Alloc, buf.size, alignment, NULL, 0, out_err);
+	if (ptr)
+	{
+		MemoryCopy(ptr, buf.data, buf.size);
+		return BufMake(buf.size, ptr);
+	}
+	return StrNull;
+}
+
 static inline void*
 AllocatorResize(Allocator* allocator, intsize size, intsize alignment, void* old_ptr, intsize old_size, AllocatorError* out_err)
 {
@@ -2132,6 +2156,18 @@ static inline void
 AllocatorFree(Allocator* allocator, void* old_ptr, intsize old_size, AllocatorError* out_err)
 {
 	allocator->proc(allocator->instance, AllocatorMode_Free, 0, 0, old_ptr, old_size, out_err);
+}
+
+static inline void
+AllocatorFreeString(Allocator* allocator, String str, AllocatorError* out_err)
+{
+	allocator->proc(allocator->instance, AllocatorMode_Free, 0, 0, (void*)str.data, str.size, out_err);
+}
+
+static inline void
+AllocatorFreeBuffer(Allocator* allocator, Buffer buf, AllocatorError* out_err)
+{
+	allocator->proc(allocator->instance, AllocatorMode_Free, 0, 0, (void*)buf.data, buf.size, out_err);
 }
 
 static inline void
