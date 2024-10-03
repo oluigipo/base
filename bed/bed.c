@@ -586,7 +586,7 @@ UpdateTextViewLayout_(App* app, TextView* view, Rect rect, int32 line_count)
 }
 
 static void
-PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex, uint32 color, uint32 status_bar_color)
+PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex, uint32 status_bar_color)
 {
 	Trace();
 	TextBuffer* textbuf = TextBufferFromHandle(app, view->textbuf);
@@ -739,6 +739,13 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 
 			ArenaRestore(scratch);
 		}
+
+		if (line == 1)
+		{
+			// NOTE(ljre): If the textbuffer is empty, just draw the cursor and marker
+			cursor_is_inside_view = true;
+			marker_is_inside_view = true;
+		}
 	}
 
 	if (cursor_is_inside_view)
@@ -749,7 +756,7 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 			layout->text_screen.y1 + (cursor_pos.line - first_line) * app->glyph_line_height,
 			app->glyph_advance,
 			app->glyph_height,
-		}, NULL, 1, 0, 0xCF7F7F7F);
+		}, NULL, 1, 0, app->c_cursor);
 	}
 	if (marker_is_inside_view)
 	{
@@ -759,7 +766,7 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 			layout->text_screen.y1 + (marker_pos.line - first_line) * app->glyph_line_height,
 			app->glyph_advance,
 			app->glyph_height,
-		}, NULL, 1, 0, 0x7F3F3F3F);
+		}, NULL, 1, 0, app->c_cursor_marker);
 	}
 
 	PushRect_(arena, layout->line_bar, NULL, 1, 0, 0xFF2F2F2F);
@@ -775,7 +782,7 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 	Rect status_bar_text = layout->status_bar_text;
 	status_bar_text.y1 += 2;
 	String view_name = {};
-	if (textbuf->kind == TextBufferKind_CFile)
+	if (textbuf->kind == TextBufferKind_CFile || textbuf->kind == TextBufferKind_TextFile)
 	{
 		view_name = textbuf->file_absolute_path;
 		if (StringStartsWith(view_name, app->project_path))
@@ -816,7 +823,7 @@ PushPanel_(App* app, Panel* panel, Arena* output_arena, Rect rect, bool is_selec
 		case PanelState_TextView:
 		{
 			TextView* view = &panel->text_view;
-			PushTextView_(app, view, output_arena, rect, 0, 0xFFFFFFFF, is_selected ? 0xFF3F3F3F : 0xFF1F1F1F);
+			PushTextView_(app, view, output_arena, rect, 0, is_selected ? 0xFF3F3F3F : 0xFF1F1F1F);
 		} break;
 		case PanelState_OpenFileView:
 		{
@@ -829,25 +836,6 @@ PushPanel_(App* app, Panel* panel, Arena* output_arena, Rect rect, bool is_selec
 			TextBufferGetStrings(textbuf, &left_str, &right_str);
 			String line = ArenaPrintf(scratch.arena, "%S%S", left_str, right_str);
 			PushText2_(app, output_arena, view->layout.filter_bar_text, line, 0xFFFFFFFF, 0, 1, 0, NULL);
-
-			{
-				LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
-				PushQuad_(output_arena, (float32[4]) {
-					view->layout.filter_bar_text.x1 + (cursor_pos.col - 1) * app->glyph_advance,
-					view->layout.filter_bar_text.y1,
-					app->glyph_advance,
-					app->glyph_height,
-				}, NULL, 1, 0, 0xCF7F7F7F);
-			}
-			{
-				LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
-				PushQuad_(output_arena, (float32[4]) {
-					view->layout.filter_bar_text.x1 + (cursor_pos.col - 1) * app->glyph_advance,
-					view->layout.filter_bar_text.y1,
-					app->glyph_advance,
-					app->glyph_height,
-				}, NULL, 1, 0, 0x7F3F3F3F);
-			}
 
 			intz last_slash_index = -1;
 			for (intz i = 0; i < line.size; ++i)
@@ -931,6 +919,26 @@ PushPanel_(App* app, Panel* panel, Arena* output_arena, Rect rect, bool is_selec
 				}
 			}
 			view->selected_option = Clamp(view->selected_option, 0, filtered_entry_count-1);
+
+			{
+				LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
+				PushQuad_(output_arena, (float32[4]) {
+					view->layout.filter_bar_text.x1 + (cursor_pos.col - 1) * app->glyph_advance,
+					view->layout.filter_bar_text.y1,
+					app->glyph_advance,
+					app->glyph_height,
+				}, NULL, 1, 0, app->c_cursor);
+			}
+			{
+				LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
+				PushQuad_(output_arena, (float32[4]) {
+					view->layout.filter_bar_text.x1 + (cursor_pos.col - 1) * app->glyph_advance,
+					view->layout.filter_bar_text.y1,
+					app->glyph_advance,
+					app->glyph_height,
+				}, NULL, 1, 0, app->c_cursor_marker);
+			}
+
 			ArenaRestore(scratch);
 		} break;
 	}
@@ -959,6 +967,8 @@ EntryPoint(int32 argc, const char* const argv[])
 		.c_number = 0xFF65B1FF,
 		.c_string = 0xFF76E2E2,
 		.c_keyword = 0xFFF34CFF,
+		.c_cursor_marker = 0x7F3F3F3F,
+		.c_cursor = 0xCF7F7F7F,
 	});
 
 	{
@@ -1311,7 +1321,9 @@ EntryPoint(int32 argc, const char* const argv[])
 					default: break;
 					case OS_KeyboardKey_Comma:
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 						{
 							app->is_right_panel_selected ^= 1;
 							panel_to_handle_event = NULL;
@@ -1486,7 +1498,9 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 					default: should_scroll_to_cursor = false; break;
 					case OS_KeyboardKey_Left:
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdLeftSnakeWord(&view->cursor, textbuf, 1);
 						else if (event->window_key.alt)
 							TextCursorCmdLeftPascalWord(&view->cursor, textbuf, 1);
@@ -1495,7 +1509,9 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 					} break;
 					case OS_KeyboardKey_Right:
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdRightSnakeWord(&view->cursor, textbuf, 1);
 						else if (event->window_key.alt)
 							TextCursorCmdRightPascalWord(&view->cursor, textbuf, 1);
@@ -1504,7 +1520,9 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 					} break;
 					case OS_KeyboardKey_Up:
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdUpParagraph(&view->cursor, textbuf, 1);
 						else if (event->window_key.alt)
 							TextCursorCmdMoveLineUp(app, &view->cursor, textbuf, 1);
@@ -1513,7 +1531,9 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 					} break;
 					case OS_KeyboardKey_Down:
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdDownParagraph(&view->cursor, textbuf, 1);
 						else if (event->window_key.alt)
 							TextCursorCmdMoveLineDown(app, &view->cursor, textbuf, 1);
@@ -1522,7 +1542,9 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 					} break;
 					case OS_KeyboardKey_Backspace:
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdDeleteBackwardSnakeWord(app, &view->cursor, textbuf, 1);
 						else if (event->window_key.alt)
 							TextCursorCmdDeleteBackwardPascalWord(app, &view->cursor, textbuf, 1);
@@ -1542,66 +1564,90 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 					} break;
 					case 'D':
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdDeleteToMarker(app, &view->cursor, textbuf);
 					} break;
 					case 'C':
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdCopy(app, &view->cursor, textbuf);
 					} break;
 					case 'X':
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdCut(app, &view->cursor, textbuf);
 					} break;
 					case 'V':
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdPaste(app, &view->cursor, textbuf, 1);
 					} break;
 					case ' ':
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdPlaceMarker(&view->cursor);
 					} break;
 					case 'Z':
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdUndo(app, &view->cursor, textbuf);
 					} break;
 					case 'Y':
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdRedo(app, &view->cursor, textbuf);
 					} break;
 					case 'R':
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdDeleteLine(app, &view->cursor, textbuf);
 					} break;
 					case 'Q':
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							TextCursorCmdDuplicateLine(app, &view->cursor, textbuf, 1);
 					} break;
 					case OS_KeyboardKey_PageUp:
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							view->cursor.offset = 0;
 						else
 							TextCursorCmdUp(&view->cursor, textbuf, SizeInLinesOfTextView_(app, view));
 					} break;
 					case OS_KeyboardKey_PageDown:
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 							view->cursor.offset = TextBufferSize(textbuf);
 						else
 							TextCursorCmdDown(&view->cursor, textbuf, SizeInLinesOfTextView_(app, view));
 					} break;
 					case 'O':
 					{
-						if (event->window_key.ctrl)
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
 						{
 							ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
 							TextBufferHandle filter = NULL;

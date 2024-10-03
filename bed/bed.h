@@ -75,6 +75,7 @@ struct TextBuffer
 
 	// buffer
 	TextBufferKind kind;
+	bool is_crlf; // default is LF
 	intz ref_count; // multiple textviews can access the same textbuffer
 
 	uint8* utf8_text;
@@ -179,10 +180,19 @@ struct OpenFileView
 }
 typedef OpenFileView;
 
+struct CommandView
+{
+	TextBufferHandle filter;
+	TextCursor cursor;
+	intz selected_option;
+}
+typedef CommandView;
+
 enum PanelState
 {
 	PanelState_TextView = 0,
 	PanelState_OpenFileView,
+	PanelState_CommandView,
 }
 typedef PanelState;
 
@@ -261,6 +271,8 @@ struct App
 	uint32 c_number;
 	uint32 c_string;
 	uint32 c_keyword;
+	uint32 c_cursor_marker;
+	uint32 c_cursor;
 
 	// path operations
 	String project_path;
@@ -481,54 +493,6 @@ BED_API void    TextBufferReplace          (App* app, TextBuffer* textbuf, Range
 // ===========================================================================
 // ===========================================================================
 // TextCursor API
-enum TextCursorCmdKind
-{
-	TextCursorCmdKind_Null = 0,
-	TextCursorCmdKind_Insert,                   // amount, codepoint
-	TextCursorCmdKind_InsertString,             // string
-	TextCursorCmdKind_DeleteBackward,           // amount
-	TextCursorCmdKind_Left,                     // amount
-	TextCursorCmdKind_Right,                    // amount
-	TextCursorCmdKind_Up,                       // amount
-	TextCursorCmdKind_Down,                     // amount
-	TextCursorCmdKind_EndOfLine,                //
-	TextCursorCmdKind_StartOfLine,              //
-	TextCursorCmdKind_PlaceMarker,              //
-	TextCursorCmdKind_DeleteToMarker,           //
-	TextCursorCmdKind_RightSnakeWord,           // amount
-	TextCursorCmdKind_LeftSnakeWord,            // amount
-	TextCursorCmdKind_DeleteBackwardSnakeWord,  // amount
-	TextCursorCmdKind_RightPascalWord,          // amount
-	TextCursorCmdKind_LeftPascalWord,           // amount
-	TextCursorCmdKind_DeleteBackwardPascalWord, // amount
-	TextCursorCmdKind_Copy,                     //
-	TextCursorCmdKind_Cut,                      //
-	TextCursorCmdKind_Paste,                    // amount
-	TextCursorCmdKind_UpParagraph,              // amount
-	TextCursorCmdKind_DownParagraph,            // amount
-	TextCursorCmdKind_Set,                      // linecol
-	TextCursorCmdKind_SetMarker,                // linecol
-	TextCursorCmdKind_Undo,                     // 
-	TextCursorCmdKind_Redo,                     // 
-	TextCursorCmdKind_DeleteLine,               //
-	TextCursorCmdKind_MoveLineUp,               // amount
-	TextCursorCmdKind_MoveLineDown,             // amount
-	TextCursorCmdKind_DuplicateLine,            // amount
-}
-typedef TextCursorCmdKind;
-
-struct TextCursorCmd
-{
-	TextCursorCmdKind kind;
-	uint32 codepoint;
-	LineCol linecol;
-	intz amount;
-	String string;
-}
-typedef TextCursorCmd;
-
-BED_API void TextCursorPlayCommands(App* app, TextCursor* cursor, TextBuffer* textbuf, intz command_count, TextCursorCmd const commands[]);
-
 BED_API void TextCursorCmdInsert                  (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount, uint32 codepoint);
 BED_API void TextCursorCmdInsertString            (App* app, TextCursor* cursor, TextBuffer* textbuf, String str);
 BED_API void TextCursorCmdDeleteBackward          (App* app, TextCursor* cursor, TextBuffer* textbuf, intz amount);
@@ -573,5 +537,60 @@ struct CIndentCtx
 typedef CIndentCtx;
 
 BED_API int32 CIndentPushRange(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index);
+
+// ===========================================================================
+// ===========================================================================
+// Commands
+enum CommandKind
+{
+	CommandKind_Null = 0,
+
+	// Panel commands
+	CommandKind_OpenFile,                 //
+	CommandKind_NewFile,                  //
+
+	// Cursor commands
+	CommandKind_Insert,                   // amount, codepoint
+	CommandKind_InsertString,             // string
+	CommandKind_DeleteBackward,           // amount
+	CommandKind_Left,                     // amount
+	CommandKind_Right,                    // amount
+	CommandKind_Up,                       // amount
+	CommandKind_Down,                     // amount
+	CommandKind_EndOfLine,                //
+	CommandKind_StartOfLine,              //
+	CommandKind_PlaceMarker,              //
+	CommandKind_DeleteToMarker,           //
+	CommandKind_RightSnakeWord,           // amount
+	CommandKind_LeftSnakeWord,            // amount
+	CommandKind_DeleteBackwardSnakeWord,  // amount
+	CommandKind_RightPascalWord,          // amount
+	CommandKind_LeftPascalWord,           // amount
+	CommandKind_DeleteBackwardPascalWord, // amount
+	CommandKind_Copy,                     //
+	CommandKind_Cut,                      //
+	CommandKind_Paste,                    // amount
+	CommandKind_UpParagraph,              // amount
+	CommandKind_DownParagraph,            // amount
+	CommandKind_Set,                      // linecol
+	CommandKind_SetMarker,                // linecol
+	CommandKind_Undo,                     // 
+	CommandKind_Redo,                     // 
+	CommandKind_DeleteLine,               //
+	CommandKind_MoveLineUp,               // amount
+	CommandKind_MoveLineDown,             // amount
+	CommandKind_DuplicateLine,            // amount
+}
+typedef CommandKind;
+
+struct Command
+{
+	CommandKind kind;
+
+	LineCol linecol;
+	intz amount;
+	String string;
+}
+typedef Command;
 
 #endif
