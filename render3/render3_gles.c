@@ -37,6 +37,7 @@ struct R3_Context
 	VertexAttrib_ curr_attribs[16];
 };
 
+#ifdef CONFIG_DEBUG
 static void APIENTRY
 OglDebugMessageCallback_(GLenum source, GLenum type, GLuint id, GLenum severity,
 	GLsizei length, const GLchar* message, const void* user_param)
@@ -46,11 +47,12 @@ OglDebugMessageCallback_(GLenum source, GLenum type, GLuint id, GLenum severity,
 	if (type == GL_DEBUG_TYPE_ERROR)
 		type_str = "Error";
 	
-	OS_LogErr("[WARN] render3: OpenGL %s:\n\tType: 0x%x\n\tID: %u\n\tSeverity: 0x%x\n\tMessage: %.*s\n", type_str, type, id, severity, (int)length, message);
+	Log(LOG_WARN, "render3: OpenGL %s:\n\tType: 0x%x\n\tID: %u\n\tSeverity: 0x%x\n\tMessage: %.*s", type_str, type, id, severity, (int)length, message);
 
 	if (type == GL_DEBUG_TYPE_ERROR && Assert_IsDebuggerPresent_())
 		Debugbreak();
 }
+#endif
 
 static GLenum
 OglFormatToGLEnum_(R3_Format format, GLenum* out_unsized_format, GLenum* out_datatype)
@@ -728,6 +730,24 @@ R3_UpdateTexture(R3_Context* ctx, R3_Texture* texture, void const* memory, uint3
 	ctx->api.glBindTexture(GL_TEXTURE_2D, texture->gl_id);
 	ctx->api.glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, texture->width, texture->height, unsized_format, type, memory);
 	ctx->api.glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+API void
+R3_CopyBuffer(R3_Context* ctx, R3_Buffer* src, uint32 src_offset, R3_Buffer* dst, uint32 dst_offset, uint32 size)
+{
+	Trace();
+	ctx->api.glBindBuffer(GL_COPY_READ_BUFFER, src->gl_id);
+	ctx->api.glBindBuffer(GL_COPY_WRITE_BUFFER, dst->gl_id);
+	ctx->api.glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, src_offset, dst_offset, size);
+	ctx->api.glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+	ctx->api.glBindBuffer(GL_COPY_READ_BUFFER, 0);
+}
+
+API void
+R3_CopyTexture2D(R3_Context* ctx, R3_Texture* src, uint32 src_x, uint32 src_y, R3_Texture* dst, uint32 dst_x, uint32 dst_y, uint32 width, uint32 height)
+{
+	Trace();
+	ctx->api.glCopyImageSubData(src->gl_id, GL_TEXTURE_2D, 0, src_x, src_y, 0, dst->gl_id, GL_TEXTURE_2D, 0, dst_x, dst_y, 0, width, height, 1);
 }
 
 API void

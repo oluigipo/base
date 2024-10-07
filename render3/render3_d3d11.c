@@ -902,6 +902,30 @@ R3_UpdateTexture(R3_Context* ctx, R3_Texture* texture, void const* memory, uint3
 }
 
 API void
+R3_CopyBuffer(R3_Context* ctx, R3_Buffer* src, uint32 src_offset, R3_Buffer* dst, uint32 dst_offset, uint32 size)
+{
+	Trace();
+
+	ID3D11DeviceContext_CopySubresourceRegion(ctx->api.context, (ID3D11Resource*)dst->d3d11_buffer, 0, dst_offset, 0, 0, (ID3D11Resource*)src->d3d11_buffer, 0, (&(D3D11_BOX) {
+		.left = src_offset,
+		.right = src_offset + size,
+	}));
+}
+
+API void
+R3_CopyTexture2D(R3_Context* ctx, R3_Texture* src, uint32 src_x, uint32 src_y, R3_Texture* dst, uint32 dst_x, uint32 dst_y, uint32 width, uint32 height)
+{
+	Trace();
+
+	ID3D11DeviceContext_CopySubresourceRegion(ctx->api.context, (ID3D11Resource*)dst->d3d11_tex2d, 0, dst_x, dst_y, 0, (ID3D11Resource*)src->d3d11_tex2d, 0, (&(D3D11_BOX) {
+		.left = src_x,
+		.top = src_y,
+		.right = src_x + width,
+		.bottom = src_y + height,
+	}));
+}
+
+API void
 R3_SetViewports(R3_Context* ctx, intsize count, R3_Viewport viewports[])
 {
 	Trace();

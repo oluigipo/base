@@ -153,7 +153,7 @@ RefreshOpenFileViewEntries_(App* app, OpenFileView* view)
 }
 
 static intz
-CountOfAvailableOptionsInCommandsView_(App* app, CommandView* view)
+CountOfAvailableOptionsInGenericListView_(App* app, GenericListView* view, PanelState kind)
 {
 	Trace();
 	TextBuffer* textbuf = TextBufferFromHandle(app, view->filter);
@@ -168,8 +168,34 @@ CountOfAvailableOptionsInCommandsView_(App* app, CommandView* view)
 	}
 
 	intz result = 0;
-	for (intz i = 1; i < CommandKind__Count; ++i)
-		result += (FuzzyMatch(filter_text, g_commands_names[i]));
+	if (kind == PanelState_CommandView)
+	{
+		for (intz i = 1; i < CommandKind__Count; ++i)
+			result += (FuzzyMatch(filter_text, g_commands_names[i]));
+	}
+	else
+	{
+		for (intz i = app->openbuffers_count-1; i >= 0; --i)
+		{
+			TextBufferHandle handle = app->openbuffers[i];
+			SafeAssert(handle);
+			TextBuffer* file_textbuf = TextBufferFromHandle(app, handle);
+			SafeAssert(file_textbuf);
+			String path = file_textbuf->file_absolute_path;
+			if (path.size)
+			{
+				if (StringStartsWith(path, app->project_path))
+				{
+					path = StringSlice(path, app->project_path.size, -1);
+					if (path.size > 0 && path.data[0] == '/')
+						path = StringSlice(path, 1, -1);
+				}
+			}
+			else
+				path = file_textbuf->name;
+			result += (FuzzyMatch(filter_text, path));
+		}
+	}
 
 	ArenaRestore(scratch);
 	return result;
@@ -288,7 +314,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 						else if (event->window_key.alt)
 						{
 							TextBufferHandle filter = NULL;
-							TextBufferFromString(app, Str(""), TextBufferKind_SingleLine, &filter);
+							TextBufferFromString(app, Str(""), StrNull, TextBufferKind_SingleLine, &filter);
 							SafeAssert(filter);
 							panel->command_view = (CommandView) {
 								.filter = filter,
@@ -367,7 +393,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 						{
 							ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
 							TextBufferHandle filter = NULL;
-							TextBuffer* textbuf = TextBufferFromString(app, ArenaPrintf(scratch.arena, "%S/", app->project_path), TextBufferKind_SingleLine, &filter);
+							TextBuffer* textbuf = TextBufferFromString(app, ArenaPrintf(scratch.arena, "%S/", app->project_path), StrNull, TextBufferKind_SingleLine, &filter);
 							ArenaRestore(scratch);
 							panel->state = PanelState_OpenFileView;
 							panel->open_file_view = (OpenFileView) {
@@ -381,6 +407,31 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 							RefreshOpenFileViewEntries_(app, &panel->open_file_view);
 							should_scroll_to_cursor = false;
 						}
+					} break;
+					case 'I':
+					{
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
+						{
+							TextBufferHandle filter = NULL;
+							TextBufferFromString(app, Str(""), StrNull, TextBufferKind_SingleLine, &filter);
+							SafeAssert(filter);
+							panel->already_open_file_view = (AlreadyOpenFileView) {
+								.filter = filter,
+								.cursor = {},
+								.prev_panel_state = panel->state,
+								.selected_option = 0,
+							};
+							panel->state = PanelState_AlreadyOpenFileView;
+						}
+					} break;
+					case 'S':
+					{
+						if (event->window_key.ctrl && event->window_key.alt)
+						{}
+						else if (event->window_key.ctrl)
+							TextBufferSaveToDisk(app, textbuf);
 					} break;
 				}
 
@@ -531,7 +582,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 										{
 											String fullpath = ArenaPrintf(scratch.arena, "%S%S", base_path, entry_name);
 											TextBufferHandle new_textbuf = 0;
-											TextBufferFromFile(app, fullpath, TextBufferKind_CFile, &new_textbuf);
+											AppCreateFileTextBuffer(app, fullpath, &new_textbuf);
 											if (new_textbuf)
 											{
 												if (panel->text_view.textbuf)
@@ -582,7 +633,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 						else if (event->window_key.alt)
 						{
 							TextBufferHandle filter = NULL;
-							TextBufferFromString(app, Str(""), TextBufferKind_SingleLine, &filter);
+							TextBufferFromString(app, Str(""), StrNull, TextBufferKind_SingleLine, &filter);
 							SafeAssert(filter);
 							panel->command_view = (CommandView) {
 								.filter = filter,
@@ -686,9 +737,13 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 					RefreshOpenFileViewEntries_(app, view);
 			}
 		} break;
-		case PanelState_CommandView:
+		// case PanelState_CommandView:
+		// case PanelState_AlreadyOpenFileView:
 		{
-			CommandView* view = &panel->command_view;
+			GenericListView* view;
+			if (0) case PanelState_CommandView: view = &panel->command_view;
+			if (0) case PanelState_AlreadyOpenFileView: view = &panel->already_open_file_view;
+
 			TextBuffer* textbuf = TextBufferFromHandle(app, view->filter);
 			SafeAssert(textbuf);
 			bool is_going_back_to_prev_state = false;
@@ -727,7 +782,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 					} break;
 					case OS_KeyboardKey_Down:
 					{
-						intz available_count = CountOfAvailableOptionsInCommandsView_(app, view);
+						intz available_count = CountOfAvailableOptionsInGenericListView_(app, view, panel->state);
 						view->selected_option = ClampMax(view->selected_option+1, available_count - 1);
 					} break;
 					case OS_KeyboardKey_Backspace:
@@ -755,26 +810,73 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 							filter_str = ArenaPrintf(scratch.arena, "%S%S", left, right);
 						}
 
-						CommandKind command = 0;
-						intz running_index = 0;
-						for (intz i = 1; i < CommandKind__Count; ++i)
+						if (panel->state == PanelState_CommandView)
 						{
-							if (FuzzyMatch(filter_str, g_commands_names[i]))
+							CommandKind command = 0;
+							intz running_index = 0;
+							for (intz i = 1; i < CommandKind__Count; ++i)
 							{
-								if (running_index == view->selected_option)
+								if (FuzzyMatch(filter_str, g_commands_names[i]))
 								{
-									command = i;
+									if (running_index == view->selected_option)
+									{
+										command = i;
+										break;
+									}
+									++running_index;
+								}
+							}
+
+							if (command)
+							{
+								Log(LOG_INFO, "pretend i'm executing this command: %S", g_commands_names[command]);
+								is_going_back_to_prev_state = true;
+							}
+						}
+						else if (panel->state == PanelState_AlreadyOpenFileView)
+						{
+							intz running_index = 0;
+							for (intz i = app->openbuffers_count-1; i >= 0; --i)
+							{
+								TextBufferHandle handle = app->openbuffers[i];
+								SafeAssert(handle);
+								TextBuffer* file_textbuf = TextBufferFromHandle(app, handle);
+								SafeAssert(file_textbuf);
+								String path = file_textbuf->file_absolute_path;
+								if (path.size)
+								{
+									if (StringStartsWith(path, app->project_path))
+									{
+										path = StringSlice(path, app->project_path.size, -1);
+										if (path.size > 0 && path.data[0] == '/')
+											path = StringSlice(path, 1, -1);
+									}
+								}
+								else
+									path = file_textbuf->name;
+								if (!FuzzyMatch(filter_str, path))
+									continue;
+								intz this_index = running_index++;
+
+								if (this_index == view->selected_option)
+								{
+									// put new opened file at the top of the list
+									app->openbuffers[i] = app->openbuffers[app->openbuffers_count-1];
+									app->openbuffers[app->openbuffers_count-1] = handle;
+
+									TextView* text_view = &panel->text_view;
+									if (text_view->textbuf)
+										TextBufferDecRefCount(app, text_view->textbuf);
+									TextBufferIncRefCount(app, handle);
+									text_view->textbuf = handle;
+									text_view->cursor = (TextCursor) {};
+									text_view->line = 1;
+									is_going_back_to_prev_state = true;
 									break;
 								}
-								++running_index;
 							}
 						}
 
-						if (command)
-						{
-							Log(LOG_INFO, "pretend i'm executing this command: %S", g_commands_names[command]);
-							is_going_back_to_prev_state = true;
-						}
 						ArenaRestore(scratch);
 					} break;
 					case 'D':
@@ -806,7 +908,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 						else if (event->window_key.alt)
 						{
 							TextBufferHandle filter = NULL;
-							TextBufferFromString(app, Str(""), TextBufferKind_SingleLine, &filter);
+							TextBufferFromString(app, Str(""), StrNull, TextBufferKind_SingleLine, &filter);
 							SafeAssert(filter);
 							panel->command_view = (CommandView) {
 								.filter = filter,

@@ -146,6 +146,8 @@ static inline FORCE_INLINE int32 MemoryCompare(const void* left_, const void* ri
 
 static inline FORCE_INLINE String StringMake(intz size, void const* buffer);
 static inline FORCE_INLINE String StringMakeRange(void const* start, void const* end);
+static inline FORCE_INLINE Buffer BufferMake(intz size, void const* buffer);
+static inline FORCE_INLINE Buffer BufferMakeRange(void const* start, void const* end);
 static inline bool StringDecode(String str, intz* index, uint32* out_codepoint);
 static inline intz StringEncodedCodepointSize(uint32 codepoint);
 static inline intz StringEncode(uint8* buffer, intz size, uint32 codepoint);
@@ -652,6 +654,18 @@ static inline FORCE_INLINE String
 StringMakeRange(void const* start, void const* end)
 {
 	return StrRange(start, end);
+}
+
+static inline FORCE_INLINE Buffer
+BufferMake(intz size, void const* buffer)
+{
+	return BufMake(size, buffer);
+}
+
+static inline FORCE_INLINE Buffer
+BufferMakeRange(void const* start, void const* end)
+{
+	return BufRange(start, end);
 }
 
 static inline bool

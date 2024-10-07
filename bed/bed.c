@@ -327,6 +327,125 @@ CIndentPushRange(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenK
 	return this_scope_nesting;
 }
 
+BED_API TextBuffer*
+AppCreateFileTextBuffer(App* app, String path, TextBufferHandle* out_handle)
+{
+	// TODO(ljre): Delete this and move it to textbuffer
+	Trace();
+
+	static String const cfile_exts[] = {
+		StrInit(".c"),
+		StrInit(".C"),
+		StrInit(".cpp"),
+		StrInit(".cxx"),
+		StrInit(".c++"),
+		StrInit(".cc"),
+		StrInit(".h"),
+		StrInit(".hpp"),
+		StrInit(".hxx"),
+		StrInit(".h++"),
+		StrInit(".H"),
+	};
+
+	TextBufferKind kind = TextBufferKind_TextFile;
+	for (intz i = 0; i < ArrayLength(cfile_exts); ++i)
+	{
+		if (StringEndsWith(path, cfile_exts[i]))
+		{
+			kind = TextBufferKind_CFile;
+			break;
+		}
+	}
+
+	TextBufferHandle handle = 0;
+	TextBuffer* textbuf = TextBufferFromFile(app, path, kind, &handle);
+	if (textbuf)
+	{
+		if (app->openbuffers_count+1 > app->openbuffers_cap)
+		{
+			intz desired_cap = app->openbuffers_cap + (app->openbuffers_cap>>1) + 1;
+			desired_cap = Max(desired_cap, app->openbuffers_count+1);
+			AllocatorError err = 0;
+			if (!AllocatorResizeArrayOk(&app->heap, desired_cap, sizeof(TextBufferHandle), alignof(TextBufferHandle), &app->openbuffers, app->openbuffers_cap, &err))
+			{
+				Log(LOG_ERROR, "failed to resize open files array when opening file \"%S\": %u", path, (uint32)err);
+				TextBufferDecRefCount(app, handle);
+				*out_handle = NULL;
+				return NULL;
+			}
+			app->openbuffers_cap = desired_cap;
+		}
+
+		TextBufferIncRefCount(app, handle);
+		app->openbuffers[app->openbuffers_count++] = handle;
+	}
+
+	*out_handle = handle;
+	return textbuf;
+}
+
+BED_API TextBuffer*
+AppCreateNamedTextBuffer(App* app, String initial_contents, String name, TextBufferHandle* out_handle)
+{
+	Trace();
+
+	TextBufferHandle handle = 0;
+	TextBuffer* textbuf = TextBufferFromString(app, initial_contents, name, TextBufferKind_Scratch, &handle);
+	if (textbuf)
+	{
+		if (app->openbuffers_count+1 > app->openbuffers_cap)
+		{
+			intz desired_cap = app->openbuffers_cap + (app->openbuffers_cap>>1) + 1;
+			desired_cap = Max(desired_cap, app->openbuffers_count+1);
+			AllocatorError err = 0;
+			if (!AllocatorResizeArrayOk(&app->heap, desired_cap, sizeof(TextBufferHandle), alignof(TextBufferHandle), &app->openbuffers, app->openbuffers_cap, &err))
+			{
+				Log(LOG_ERROR, "failed to resize open files array when creating named buffer \"%S\": %u", name, (uint32)err);
+				TextBufferDecRefCount(app, handle);
+				*out_handle = NULL;
+				return NULL;
+			}
+			app->openbuffers_cap = desired_cap;
+		}
+
+		TextBufferIncRefCount(app, handle);
+		app->openbuffers[app->openbuffers_count++] = handle;
+	}
+
+	*out_handle = handle;
+	return textbuf;
+}
+
+BED_API bool
+AppDestroyTextBuffer(App* app, TextBufferHandle handle)
+{
+	Trace();
+	TextBuffer* textbuf = TextBufferFromHandle(app, handle);
+	if (!textbuf)
+	{
+		Log(LOG_ERROR, "cannot close file because handle is invalid: 0x%X", (uint64)handle);
+		return false;
+	}
+	if (textbuf->ref_count != 1)
+	{
+		Log(LOG_ERROR, "cannot close file when more than one reference exists: %S", textbuf->file_absolute_path);
+		return false;
+	}
+
+	for (intz i = 0; i < app->openbuffers_count; ++i)
+	{
+		if (app->openbuffers[i] == handle)
+		{
+			app->openbuffers[i] = app->openbuffers[--app->openbuffers_count];
+			SafeAssert(TextBufferDecRefCount(app, handle) == 0);
+			return true;
+		}
+	}
+
+	Log(LOG_ERROR, "failed to close file because handle was not found in open files list: %S", textbuf->file_absolute_path);
+	return false;
+}
+
 struct QuadVertex_
 {
 	float32 pos[2];
@@ -748,7 +867,7 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 	Rect status_bar_text = layout->status_bar_text;
 	status_bar_text.y1 += 2;
 	String view_name = {};
-	if (textbuf->kind == TextBufferKind_CFile || textbuf->kind == TextBufferKind_TextFile)
+	if (textbuf->file_absolute_path.size)
 	{
 		view_name = textbuf->file_absolute_path;
 		if (StringStartsWith(view_name, app->project_path))
@@ -758,8 +877,8 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 				view_name = StringSlice(view_name, 1, -1);
 		}
 	}
-	else if (textbuf->kind == TextBufferKind_Scratch)
-		view_name = Str("*scratch*");
+	else if (textbuf->name.size)
+		view_name = textbuf->name;
 	PushText2_(app, arena, status_bar_text, view_name, 0xFFFFFFFF, 0, 1, 0, NULL);
 }
 
@@ -777,6 +896,36 @@ UpdateSimpleViewLayout_(App* app, Rect rect)
 		.filter_bar_text = filter_bar_text,
 		.entries = entries,
 	};
+}
+
+static uint32
+ColorFromFileName_(String filename, uint32 default_color)
+{
+	uint32 color = default_color;
+	if (StringEndsWith(filename, Str(".exe")))
+		color = 0xFFCCCC00;
+	else if (
+		StringEndsWith(filename, Str(".c")) ||
+		StringEndsWith(filename, Str(".h")) ||
+		StringEndsWith(filename, Str(".cpp")) ||
+		StringEndsWith(filename, Str(".hpp")) ||
+		StringEndsWith(filename, Str(".c++")) ||
+		StringEndsWith(filename, Str(".h++")) ||
+		StringEndsWith(filename, Str(".odin")))
+		color = 0xFFCC00CC;
+	else if (
+		StringEndsWith(filename, Str(".py")) ||
+		StringEndsWith(filename, Str(".bat")))
+		color = 0xFF00CCCC;
+	else if (
+		StringEndsWith(filename, Str(".rdbg")) ||
+		StringEndsWith(filename, Str(".ttf")) ||
+		StringEndsWith(filename, Str(".obj")) ||
+		StringEndsWith(filename, Str(".exp")) ||
+		StringEndsWith(filename, Str(".lib")) ||
+		StringEndsWith(filename, Str(".pdb")))
+		color = 0xFF444444;
+	return color;
 }
 
 static void
@@ -855,29 +1004,8 @@ PushPanel_(App* app, Panel* panel, Arena* output_arena, Rect rect, bool is_selec
 					uint32 color = 0xFFCCCCCC;
 					if (entry->info.directory)
 						color = 0xFF0080FF;
-					else if (StringEndsWith(entry_name, Str(".exe")))
-						color = 0xFFCCCC00;
-					else if (
-						StringEndsWith(entry_name, Str(".c")) ||
-						StringEndsWith(entry_name, Str(".h")) ||
-						StringEndsWith(entry_name, Str(".cpp")) ||
-						StringEndsWith(entry_name, Str(".hpp")) ||
-						StringEndsWith(entry_name, Str(".c++")) ||
-						StringEndsWith(entry_name, Str(".h++")) ||
-						StringEndsWith(entry_name, Str(".odin")))
-						color = 0xFFCC00CC;
-					else if (
-						StringEndsWith(entry_name, Str(".py")) ||
-						StringEndsWith(entry_name, Str(".bat")))
-						color = 0xFF00CCCC;
-					else if (
-						StringEndsWith(entry_name, Str(".rdbg")) ||
-						StringEndsWith(entry_name, Str(".ttf")) ||
-						StringEndsWith(entry_name, Str(".obj")) ||
-						StringEndsWith(entry_name, Str(".exp")) ||
-						StringEndsWith(entry_name, Str(".lib")) ||
-						StringEndsWith(entry_name, Str(".pdb")))
-						color = 0xFF444444;
+					else
+						color = ColorFromFileName_(entry_name, color);
 
 					PushRect_(output_arena, icon, NULL, 1, 0, color);
 					PushText2_(app, output_arena, line_rect, entry_name, 0xFFFFFFFF, 0, 1, 0, NULL);
@@ -954,6 +1082,58 @@ PushPanel_(App* app, Panel* panel, Arena* output_arena, Rect rect, bool is_selec
 					app->glyph_advance,
 					app->glyph_height,
 				}, NULL, 1, 0, app->c_cursor_marker);
+			}
+
+			ArenaRestore(scratch);
+		} break;
+		case PanelState_AlreadyOpenFileView:
+		{
+			ArenaSavepoint scratch = ArenaSave(ScratchArena(1, &output_arena));
+			AlreadyOpenFileView* view = &panel->already_open_file_view;
+			TextBuffer* textbuf = TextBufferFromHandle(app, view->filter);
+			view->layout = UpdateSimpleViewLayout_(app, rect);
+			String filter_str = {};
+			{
+				String left, right;
+				TextBufferGetStrings(textbuf, &left, &right);
+				filter_str = ArenaPrintf(scratch.arena, "%S%S", left, right);
+			}
+			PushText2_(app, output_arena, view->layout.filter_bar_text, filter_str, 0xFFFFFFFF, 0, 1, 0, NULL);
+
+			Rect entries_rect = view->layout.entries;
+			intz running_index = 0;
+			for (intz i = app->openbuffers_count-1; i >= 0; --i)
+			{
+				TextBufferHandle file_textbuf_handle = app->openbuffers[i];
+				SafeAssert(file_textbuf_handle);
+				TextBuffer* file_textbuf = TextBufferFromHandle(app, file_textbuf_handle);
+				SafeAssert(file_textbuf);
+				String path = file_textbuf->file_absolute_path;
+				if (path.size)
+				{
+					if (StringStartsWith(path, app->project_path))
+					{
+						path = StringSlice(path, app->project_path.size, -1);
+						if (path.size > 0 && path.data[0] == '/')
+							path = StringSlice(path, 1, -1);
+					}
+				}
+				else
+					path = file_textbuf->name;
+				if (!FuzzyMatch(filter_str, path))
+					continue;
+				intz this_index = running_index++;
+				if (view->first_option < this_index)
+					continue;
+
+				Rect line_rect = RectCutTop(&entries_rect, app->glyph_line_height);
+				if (this_index == view->selected_option)
+					PushRect_(output_arena, line_rect, NULL, 1, 0, 0xFF3F3F3F);
+				Rect icon = RectCutLeft(&line_rect, app->glyph_line_height);
+				RectCutLeft(&line_rect, 4);
+
+				PushRect_(output_arena, icon, NULL, 1, 0, ColorFromFileName_(path, 0xFFCCCCCC));
+				PushText2_(app, output_arena, line_rect, path, 0xFFFFFFFF, 0, 1, 0, NULL);
 			}
 
 			ArenaRestore(scratch);
@@ -1284,7 +1464,7 @@ EntryPoint(int32 argc, const char* const argv[])
 			},
 		};
 		String file = StrInit("os/os_win32.c");
-		TextBufferFromFile(app, file, TextBufferKind_CFile, &app->left_panel.text_view.textbuf);
+		AppCreateFileTextBuffer(app, file, &app->left_panel.text_view.textbuf);
 
 		app->right_panel = (Panel) {
 			.state = PanelState_TextView,
@@ -1293,7 +1473,7 @@ EntryPoint(int32 argc, const char* const argv[])
 				.line = 1,
 			},
 		};
-		TextBufferFromString(app, Str("Hello, World!\nπ"), TextBufferKind_Scratch, &app->right_panel.text_view.textbuf);
+		AppCreateNamedTextBuffer(app, Str("Hello, World!\nπ"), Str("*scratch*"), &app->right_panel.text_view.textbuf);
 	}
 
 	// console test
@@ -1409,7 +1589,6 @@ EntryPoint(int32 argc, const char* const argv[])
 		R3_UpdateBuffer(app->r3, &app->quads_ubuf, &uniform, sizeof(uniform));
 
 		Rect screen = { 0, 0, app->window_width, app->window_height };
-
 		intz quad_count = 0;
 		{
 			QuadVertex_* first_vertex = ArenaEndAligned(scratch.arena, alignof(QuadVertex_));

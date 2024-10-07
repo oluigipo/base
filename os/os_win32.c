@@ -1874,10 +1874,10 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 		
 		case WM_ACTIVATE:
 		{
-			os_event.kind = (wparam != WA_INACTIVE) ? OS_EventKind_WindowGotFocus : OS_EventKind_WindowLostFocus;
+			os_event.kind = (LOWORD(wparam) != WA_INACTIVE) ? OS_EventKind_WindowGotFocus : OS_EventKind_WindowLostFocus;
 			if (window_data->mouse_lock == OS_MouseLockKind_LockInWindowRegion)
 			{
-				if (wparam != WA_INACTIVE)
+				if (LOWORD(wparam) != WA_INACTIVE)
 				{
 					union
 					{
@@ -1966,6 +1966,7 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 		
 		case WM_SYSKEYDOWN:
 		{
+			// NOTE(ljre): If this event was not triggered by pressing an Alt key, ignore it
 			if (lparam & 1<<28)
 			{
 				result = DefWindowProcW(hwnd, message, wparam, lparam);
@@ -1998,7 +1999,8 @@ WindowProc_(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 
 		case WM_SYSCOMMAND:
 		{
-			if (wparam != SC_KEYMENU || (lparam >> 16) <= 0)
+			// NOTE(ljre): avoids ringing a bell on Alt+KEY
+			if (wparam != SC_KEYMENU || (lparam >> 16) > 0)
 				result = DefWindowProcW(hwnd, message, wparam, lparam);
 		} break;
 
@@ -3450,6 +3452,27 @@ OS_DeleteFile(String path, OS_Error* out_err)
 		LPWSTR wpath = StringToWide_(scratch_arena, path);
 		if (wpath)
 			DeleteFileW(wpath);
+	}
+	
+	return FillOsErr_(out_err, GetLastError());
+}
+
+API bool
+OS_ReplaceFile(String from, String to, OS_Error* out_err)
+{
+	Trace(); TraceText(to);
+	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
+	SetLastError(0);
+	
+	for ArenaTempScope(scratch_arena)
+	{
+		LPWSTR wfrom = StringToWide_(scratch_arena, from);
+		if (wfrom)
+		{
+			LPWSTR wto = StringToWide_(scratch_arena, to);
+			if (wto)
+				ReplaceFileW(wto, wfrom, NULL, REPLACEFILE_IGNORE_MERGE_ERRORS, NULL, NULL);
+		}
 	}
 	
 	return FillOsErr_(out_err, GetLastError());

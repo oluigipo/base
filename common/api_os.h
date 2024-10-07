@@ -496,6 +496,7 @@ API bool        OS_WriteEntireFile(String path, void const* data, intz size, OS_
 API OS_FileInfo OS_GetFileInfoFromPath(String path, OS_Error* out_err);
 API bool        OS_CopyFile       (String from, String to, OS_Error* out_err);
 API bool        OS_DeleteFile     (String path, OS_Error* out_err);
+API bool        OS_ReplaceFile    (String from, String to, OS_Error* out_err);
 API bool        OS_MakeDirectory  (String path, OS_Error* out_err);
 API String      OS_ResolveToAbsolutePath(String path, SingleAllocator allocator, OS_Error* out_err);
 

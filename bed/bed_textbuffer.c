@@ -48,8 +48,10 @@ FreeTextBuffer_(App* app, TextBuffer* textbuf, intz index)
 		AllocatorFreeArray(&app->heap, sizeof(TextBufferEdit), textbuf->edits, textbuf->edits_cap, NULL);
 	if (textbuf->edit_text_buffer)
 		AllocatorFree(&app->heap, textbuf->edit_text_buffer, textbuf->edit_text_buffer_cap, NULL);
-	if (textbuf->file_absolute_path.size)
-		AllocatorFree(&app->heap, (void*)textbuf->file_absolute_path.data, textbuf->file_absolute_path.size, NULL);
+	if (textbuf->file_absolute_path.data)
+		AllocatorFreeString(&app->heap, textbuf->file_absolute_path, NULL);
+	if (textbuf->name.data)
+		AllocatorFreeString(&app->heap, textbuf->name, NULL);
 	uint32 generation = (uint16)(textbuf->generation + 1);
 	MemoryZero(textbuf, sizeof(*textbuf));
 	textbuf->next_free = (uint32)app->textbuf_pool_first_free;
@@ -387,53 +389,94 @@ BED_API TextBuffer*
 TextBufferFromFile(App* app, String path, TextBufferKind kind, TextBufferHandle* out_handle)
 {
 	Trace();
-	ArenaSavepoint scratch = ArenaSave(app->arena);
-	void* buffer;
-	intz size;
 	OS_Error err = {};
 
-	if (!OS_ReadEntireFile(path, scratch.arena, &buffer, &size, &err))
+	String absolute_path = OS_ResolveToAbsolutePath(path, app->heap, &err);
+	if (!err.ok)
 	{
-		Log(LOG_ERROR, "could not open file from path!\n\tPath: %S\nError code: %u\nError string: %S", path, err.code, err.what);
+		Log(LOG_ERROR, "could resolve path to full string when opening path: %S", path);
+		return NULL;
+	}
+
+	for (intz i = 0; i < app->textbuf_pool_count; ++i)
+	{
+		TextBuffer* i_textbuf = &app->textbuf_pool[i];
+		if (i_textbuf->ref_count && StringEquals(absolute_path, i_textbuf->file_absolute_path))
+		{
+			// NOTE(ljre): Text buffer is already open, so just return the existing one.
+			Log(LOG_INFO, "reusing file text buffer: %S", absolute_path);
+			AllocatorFreeString(&app->heap, absolute_path, NULL);
+			TextBufferHandle handle = (void*)((uint64)i_textbuf->generation << 48 | (uint64)i+1);
+			*out_handle = handle;
+			return TextBufferIncRefCount(app, handle);
+		}
+	}
+
+	OS_File file = OS_OpenFile(absolute_path, OS_OpenFileFlags_Read | OS_OpenFileFlags_FailIfDoesntExist, &err);
+	if (!err.ok)
+	{
+		Log(LOG_ERROR, "could not open file from path!\n\tPath: %S\nError code: %u\nError string: %S", absolute_path, err.code, err.what);
+		AllocatorFreeString(&app->heap, absolute_path, NULL);
+		return NULL;
+	}
+
+	OS_FileInfo fileinfo = OS_GetFileInfo(file, &err);
+	if (!err.ok)
+	{
+		Log(LOG_ERROR, "failed to get file info when opening path: %S", absolute_path);
+		AllocatorFreeString(&app->heap, absolute_path, NULL);
+		return NULL;
+	}
+
+	if (fileinfo.size > INTZ_MAX/2)
+	{
+		Log(LOG_ERROR, "file is too big to fit on RAM (size is 0x%X): %S", fileinfo.size, absolute_path);
+		OS_CloseFile(file);
+		AllocatorFreeString(&app->heap, absolute_path, NULL);
 		return NULL;
 	}
 
 	TextBuffer* textbuf = AllocTextBuffer_(app, out_handle);
 	if (!textbuf)
 	{
-		Log(LOG_ERROR, "could not make text buffer when opening path: %S", path);
-		ArenaRestore(scratch);
+		Log(LOG_ERROR, "could not make text buffer when opening path: %S", absolute_path);
+		OS_CloseFile(file);
+		AllocatorFreeString(&app->heap, absolute_path, NULL);
 		return NULL;
 	}
 
 	AllocatorError alloc_err = 0;
-	intz total_size = AlignUp(size, 31) + 4096;
+	intz file_size = (intz)fileinfo.size;
+	intz total_size = AlignUp(file_size, 31) + 4096;
 	uint8* utf8_text = AllocatorAlloc(&app->heap, total_size, 1, &alloc_err);
 	if (alloc_err)
 	{
-		Log(LOG_ERROR, "could not allocate buffer for text buffer when opening path: %S", path);
+		Log(LOG_ERROR, "could not allocate buffer for text buffer when opening path: %S", absolute_path);
 		FreeTextBuffer_(app, textbuf, ((uint64)*out_handle << 16 >> 16) - 1);
-		ArenaRestore(scratch);
+		OS_CloseFile(file);
+		AllocatorFreeString(&app->heap, absolute_path, NULL);
 		return NULL;
 	}
-	MemoryCopy(utf8_text, buffer, size);
-
-	String absolute_path = OS_ResolveToAbsolutePath(path, app->heap, &err);
+	
+	OS_ReadFile(file, file_size, utf8_text, &err);
 	if (!err.ok)
 	{
-		Log(LOG_ERROR, "could resolve path to full string when opening path: %S", path);
+		Log(LOG_ERROR, "could read file for text buffer when opening path: %S", absolute_path);
+		AllocatorFree(&app->heap, utf8_text, total_size, NULL);
 		FreeTextBuffer_(app, textbuf, ((uint64)*out_handle << 16 >> 16) - 1);
-		ArenaRestore(scratch);
+		OS_CloseFile(file);
+		AllocatorFreeString(&app->heap, absolute_path, NULL);
 		return NULL;
 	}
 
+	OS_CloseFile(file);
 	*textbuf = (TextBuffer) {
 		.generation = textbuf->generation,
 		.kind = kind,
 		.ref_count = 1,
 		.utf8_text = utf8_text,
 		.size = total_size,
-		.gap_start = size,
+		.gap_start = file_size,
 		.gap_end = total_size,
 		.file_absolute_path = absolute_path,
 	};
@@ -441,26 +484,53 @@ TextBufferFromFile(App* app, String path, TextBufferKind kind, TextBufferHandle*
 }
 
 BED_API TextBuffer*
-TextBufferFromString(App* app, String str, TextBufferKind kind, TextBufferHandle* out_handle)
+TextBufferFromString(App* app, String initial_contents, String name, TextBufferKind kind, TextBufferHandle* out_handle)
 {
 	Trace();
+	if (name.size)
+	{
+		for (intz i = 0; i < app->textbuf_pool_count; ++i)
+		{
+			TextBuffer* i_textbuf = &app->textbuf_pool[i];
+			if (i_textbuf->ref_count && StringEquals(name, i_textbuf->name))
+			{
+				// NOTE(ljre): Text buffer is already open, so just return the existing one.
+				Log(LOG_INFO, "reusing named text buffer: %S", name);
+				TextBufferHandle handle = (void*)((uint64)i_textbuf->generation << 48 | (uint64)i+1);
+				*out_handle = handle;
+				return TextBufferIncRefCount(app, handle);
+			}
+		}
+	}
+
 	TextBuffer* textbuf = AllocTextBuffer_(app, out_handle);
 	if (!textbuf)
 	{
-		Log(LOG_ERROR, "could not make text buffer from string: %S", str);
+		Log(LOG_ERROR, "could not make text buffer from string: %S", name);
 		return NULL;
 	}
 
 	AllocatorError alloc_err = 0;
-	intz total_size = AlignUp(str.size, 31);
+	intz total_size = AlignUp(initial_contents.size, 31);
 	total_size = ClampMin(total_size, 4096);
 	uint8* utf8_text = AllocatorAlloc(&app->heap, total_size, 1, &alloc_err);
 	if (alloc_err)
 	{
-		Log(LOG_ERROR, "could not allocate buffer for text buffer from string: %S", str);
+		Log(LOG_ERROR, "could not allocate buffer for text buffer from string: %S", name);
+		FreeTextBuffer_(app, textbuf, textbuf - app->textbuf_pool);
 		return NULL;
 	}
-	MemoryCopy(utf8_text, str.data, str.size);
+	MemoryCopy(utf8_text, initial_contents.data, initial_contents.size);
+
+	if (name.size)
+		name = AllocatorCloneString(&app->heap, name, &alloc_err);
+	if (alloc_err)
+	{
+		Log(LOG_ERROR, "could not allocate buffer for text buffer name from string: %S", name);
+		AllocatorFree(&app->heap, utf8_text, total_size, NULL);
+		FreeTextBuffer_(app, textbuf, textbuf - app->textbuf_pool);
+		return NULL;
+	}
 
 	*textbuf = (TextBuffer) {
 		.generation = textbuf->generation,
@@ -468,8 +538,9 @@ TextBufferFromString(App* app, String str, TextBufferKind kind, TextBufferHandle
 		.ref_count = 1,
 		.utf8_text = utf8_text,
 		.size = total_size,
-		.gap_start = str.size,
+		.gap_start = initial_contents.size,
 		.gap_end = total_size,
+		.name = name,
 	};
 	return textbuf;
 }
@@ -502,7 +573,7 @@ TextBufferIncRefCount(App* app, TextBufferHandle handle)
 	return textbuf;
 }
 
-BED_API void
+BED_API intz
 TextBufferDecRefCount(App* app, TextBufferHandle handle)
 {
 	Trace();
@@ -512,22 +583,24 @@ TextBufferDecRefCount(App* app, TextBufferHandle handle)
 	if (index < 0 || index >= app->textbuf_pool_count)
 	{
 		Log(LOG_ERROR, "trying to release invalid textbuffer index: %Z", index);
-		return;
+		return -1;
 	}
 	TextBuffer* textbuf = &app->textbuf_pool[index];
 	if (textbuf->generation != generation)
 	{
 		Log(LOG_ERROR, "text buffer reffered by index %Z has different generation than expected: %u != %u", index, generation, textbuf->generation);
-		return;
+		return -1;
 	}
 	if (textbuf->next_free || !textbuf->kind)
 	{
 		Log(LOG_ERROR, "trying to release textbuffer that is inactive", index);
-		return;
+		return -1;
 	}
 	
-	if (--textbuf->ref_count == 0)
+	intz result = --textbuf->ref_count;
+	if (result == 0)
 		FreeTextBuffer_(app, textbuf, index);
+	return result;
 }
 
 BED_API void
@@ -1027,5 +1100,88 @@ TextBufferIterate(App* app, intz* it_, TextBuffer** out_textbuf, TextBufferHandl
 	*it_ = it;
 	*out_textbuf = NULL;
 	*out_handle = NULL;
+	return false;
+}
+
+BED_API bool
+TextBufferSaveToDisk(App* app, TextBuffer* textbuf)
+{
+	Trace();
+	Log(LOG_INFO, "saving: %S", textbuf->file_absolute_path);
+	// TODO(ljre): Proper formatting of code when saving!!!!!
+
+	String left, right;
+	TextBufferGetStrings(textbuf, &left, &right);
+	String path = textbuf->file_absolute_path;
+	if (!path.size)
+	{
+		Log(LOG_WARN, "tried to save text buffer with no file associated");
+		return false;
+	}
+
+	ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
+	String tempfname = ArenaPrintf(scratch.arena, "%S~", path);
+	OS_Error err = {};
+	OS_File tempfile = OS_OpenFile(tempfname, OS_OpenFileFlags_Write, &err);
+	if (!err.ok)
+	{
+		Log(LOG_ERROR, "failed to create temp file \"%S\" when trying to save \"%S\": (0x%x) %S", tempfname, path, err.code, err.what);
+		goto lbl_error;
+	}
+
+	OS_WriteFile(tempfile, left.size, left.data, &err);
+	if (!err.ok)
+	{
+		Log(LOG_ERROR, "failed to write to temp file \"%S\" when trying to save \"%S\": (0x%x) %S", tempfname, path, err.code, err.what);
+		goto lbl_error;
+	}
+	OS_WriteFile(tempfile, right.size, right.data, &err);
+	if (!err.ok)
+	{
+		Log(LOG_ERROR, "failed to write to temp file \"%S\" when trying to save \"%S\": (0x%x) %S", tempfname, path, err.code, err.what);
+		goto lbl_error;
+	}
+	OS_CloseFile(tempfile);
+	tempfile = (OS_File) {};
+	tempfname = StrNull;
+
+	OS_ReplaceFile(tempfname, path, &err);
+	if (!err.ok)
+	{
+		Log(LOG_ERROR, "failed to replace file with temp file \"%S\" when trying to save \"%S\": (0x%x) %S", tempfname, path, err.code, err.what);
+		goto lbl_error;
+	}
+
+	// NOTE(ljre): no need to delete the temp file
+	// OS_DeleteFile(tempfname, &err);
+	// if (!err.ok)
+	// {
+	// 	Log(LOG_ERROR, "failed to delete temp file \"%S\" when trying to save \"%S\": (0x%x) %S", tempfname, path, err.code, err.what);
+	// 	tempfname = StrNull;
+	// 	goto lbl_error;
+	// }
+
+	return true;
+
+lbl_error:
+	if (tempfile.ptr)
+		OS_CloseFile(tempfile);
+	if (tempfname.size)
+	{
+		OS_DeleteFile(tempfname, &err);
+		if (!err.ok)
+			Log(LOG_ERROR, "failed to delete temp file \"%S\" when trying to save \"%S\": (0x%x) %S", tempfname, path, err.code, err.what);
+	}
+	ArenaRestore(scratch);
+	return false;
+}
+
+BED_API bool
+TextBufferReloadFromDisk(App* app, TextBuffer* textbuf)
+{
+	Trace();
+
+	Log(LOG_WARN, "TODO: TextBufferReloadFromDisk (called with \"%S\")", textbuf->file_absolute_path);
+
 	return false;
 }

@@ -102,6 +102,7 @@ struct TextBuffer
 
 	// for file operations
 	HeapAllocatedString file_absolute_path;
+	HeapAllocatedString name;
 }
 typedef TextBuffer;
 
@@ -132,6 +133,7 @@ enum PanelState
 	PanelState_TextView = 0,
 	PanelState_OpenFileView,
 	PanelState_CommandView,
+	PanelState_AlreadyOpenFileView,
 }
 typedef PanelState;
 
@@ -188,15 +190,19 @@ struct OpenFileView
 }
 typedef OpenFileView;
 
-struct CommandView
+struct GenericListView
 {
 	TextBufferHandle filter;
 	TextCursor cursor;
 	intz selected_option;
+	intz first_option;
 	PanelState prev_panel_state;
 	SimpleViewLayout layout;
 }
-typedef CommandView;
+typedef GenericListView;
+
+GenericListView typedef CommandView;
+GenericListView typedef AlreadyOpenFileView;
 
 struct Panel
 {
@@ -205,8 +211,30 @@ struct Panel
 	TextView text_view;
 	OpenFileView open_file_view;
 	CommandView command_view;
+	AlreadyOpenFileView already_open_file_view;
 }
 typedef Panel;
+
+struct GlyphAtlas
+{
+	struct
+	{
+		struct ID2D1Factory1* d2d_factory;
+		struct ID2D1RenderTarget* d2d_rt;
+		struct ID2D1SolidColorBrush* d2d_brush;
+		struct IDWriteFactory* dw_factory;
+		struct IDWriteFontFile* dw_font_file;
+		struct IDWriteFontFace* dw_font_face;
+		struct IDWriteFontFace1* dw_font_face1;
+		R3_Texture d2d_rt_texture;
+	} d2d;
+
+	int32 bbox_width;
+	int32 bbox_height;
+	int32 advance;
+	int32 line_height;
+}
+typedef GlyphAtlas;
 
 struct App
 {
@@ -264,6 +292,11 @@ struct App
 	intz textbuf_pool_cap;
 	intz textbuf_pool_count;
 	intz textbuf_pool_first_free;
+
+	// open buffers list
+	TextBufferHandle* openbuffers;
+	intz openbuffers_count;
+	intz openbuffers_cap;
 
 	// colors
 	uint32 c_background;
@@ -465,12 +498,19 @@ FuzzyMatch(String filter, String str)
 
 // ===========================================================================
 // ===========================================================================
+// App API
+BED_API TextBuffer* AppCreateFileTextBuffer(App* app, String path, TextBufferHandle* out_handle);
+BED_API TextBuffer* AppCreateNamedTextBuffer(App* app, String initial_contents, String name, TextBufferHandle* out_handle);
+BED_API bool        AppDestroyTextBuffer(App* app, TextBufferHandle handle);
+
+// ===========================================================================
+// ===========================================================================
 // TextBuffer API
 BED_API TextBuffer* TextBufferFromHandle   (App* app, TextBufferHandle handle);
 BED_API TextBuffer* TextBufferFromFile     (App* app, String path, TextBufferKind kind, TextBufferHandle* out_handle);
-BED_API TextBuffer* TextBufferFromString   (App* app, String str, TextBufferKind kind, TextBufferHandle* out_handle);
+BED_API TextBuffer* TextBufferFromString   (App* app, String initial_contents, String name, TextBufferKind kind, TextBufferHandle* out_handle);
 BED_API TextBuffer* TextBufferIncRefCount  (App* app, TextBufferHandle handle);
-BED_API void        TextBufferDecRefCount  (App* app, TextBufferHandle handle);
+BED_API intz        TextBufferDecRefCount  (App* app, TextBufferHandle handle);
 BED_API void        TextBufferRefreshTokens(App* app, TextBuffer* textbuf);
 BED_API bool        TextBufferIterate      (App* app, intz* it, TextBuffer** out_textbuf, TextBufferHandle* out_handle);
 
@@ -492,6 +532,9 @@ BED_API void    TextBufferTranspose        (App* app, TextBuffer* textbuf, Range
 BED_API bool    TextBufferUndo             (App* app, TextBuffer* textbuf, TextBufferEdit* out_edit);
 BED_API bool    TextBufferRedo             (App* app, TextBuffer* textbuf, TextBufferEdit* out_edit);
 BED_API void    TextBufferReplace          (App* app, TextBuffer* textbuf, Range range, String str);
+
+BED_API bool    TextBufferSaveToDisk       (App* app, TextBuffer* textbuf);
+BED_API bool    TextBufferReloadFromDisk   (App* app, TextBuffer* textbuf);
 
 // ===========================================================================
 // ===========================================================================
