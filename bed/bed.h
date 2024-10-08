@@ -654,4 +654,13 @@ typedef CIndentCtx;
 
 BED_API int32 CIndentPushRange(CIndentCtx* cindent, Range line_range, intz cf_count, CF_TokenKind const cf_kinds[], CF_SourceRange const cf_ranges[], intz start_cf_index);
 
+// ===========================================================================
+// ===========================================================================
+// Console emulator API
+struct Console typedef Console;
+
+BED_API bool ConsoleInit(App* app, Console* con);
+BED_API void ConsoleDeinit(App* app, Console* con);
+BED_API void ConsoleProcessEvent(App* app, Console* con, OS_Event const* event);
+
 #endif

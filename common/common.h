@@ -796,6 +796,8 @@ static inline bool
 StringEndsWith(String check, String s)
 {
 	Trace();
+	if (!check.size)
+		return (s.size == 0);
 	if (s.size > check.size)
 		return false;
 	
@@ -820,18 +822,15 @@ StringStartsWith(String check, String s)
 static inline String
 StringSubstr(String str, intz index, intz size)
 {
-	if (index >= str.size)
-		return StrMake(0, str.data + str.size);
-	
+	if (!str.size)
+		return str; // NOTE(ljre): adding a 0 offset to a null pointer is UB
+	index = Clamp(index, 0, str.size);
 	str.data += index;
 	str.size -= index;
-	
+
 	if (size < 0)
 		size = str.size + size + 1;
-	if (size < 0)
-		str.size = 0;
-	else if (size < str.size)
-		str.size = size;
+	str.size = Clamp(size, 0, str.size);
 	
 	return str;
 }
@@ -846,6 +845,8 @@ StringFromCString(char const* cstr)
 static inline String
 StringSlice(String str, intz begin, intz end)
 {
+	if (!str.size)
+		return str; // NOTE(ljre): adding a 0 offset to a null pointer is UB
 	if (begin < 0)
 		begin = (intz)str.size + begin + 1;
 	if (end < 0)
@@ -862,6 +863,8 @@ StringSlice(String str, intz begin, intz end)
 static inline String
 StringSliceEnd(String str, intz count)
 {
+	if (!str.size)
+		return str; // NOTE(ljre): adding a 0 offset to a null pointer is UB
 	count = ClampMax(count, (intz)str.size);
 	str.data += (intz)str.size - count;
 	str.size = count;
