@@ -484,6 +484,14 @@ RangeIsValid(Range range)
 	return range.start <= range.end;
 }
 
+static inline Range
+RangeClamp(Range range, Range by)
+{
+	range.start = ClampMin(range.start, by.start);
+	range.end = ClampMax(range.end, by.end);
+	return range;
+}
+
 static inline bool
 FuzzyMatch(String filter, String str)
 {
@@ -500,19 +508,16 @@ FuzzyMatch(String filter, String str)
 // ===========================================================================
 // App API
 BED_API TextBuffer* AppCreateFileTextBuffer(App* app, String path, TextBufferHandle* out_handle);
-BED_API TextBuffer* AppCreateNamedTextBuffer(App* app, String initial_contents, String name, TextBufferHandle* out_handle);
-BED_API bool        AppDestroyTextBuffer(App* app, TextBufferHandle handle);
+BED_API TextBuffer* AppCreateNamedTextBuffer(App* app, String initial_contents, String name, TextBufferKind kind, TextBufferHandle* out_handle);
+BED_API TextBuffer* AppGetTextBuffer(App* app, TextBufferHandle handle);
+BED_API TextBuffer* AppIncTextBufferRef(App* app, TextBufferHandle handle);
+BED_API intz        AppDecTextBufferRef(App* app, TextBufferHandle handle);
+BED_API intz        AppReleaseTextBuffer(App* app, TextBufferHandle handle);
 
 // ===========================================================================
 // ===========================================================================
 // TextBuffer API
-BED_API TextBuffer* TextBufferFromHandle   (App* app, TextBufferHandle handle);
-BED_API TextBuffer* TextBufferFromFile     (App* app, String path, TextBufferKind kind, TextBufferHandle* out_handle);
-BED_API TextBuffer* TextBufferFromString   (App* app, String initial_contents, String name, TextBufferKind kind, TextBufferHandle* out_handle);
-BED_API TextBuffer* TextBufferIncRefCount  (App* app, TextBufferHandle handle);
-BED_API intz        TextBufferDecRefCount  (App* app, TextBufferHandle handle);
 BED_API void        TextBufferRefreshTokens(App* app, TextBuffer* textbuf);
-BED_API bool        TextBufferIterate      (App* app, intz* it, TextBuffer** out_textbuf, TextBufferHandle* out_handle);
 
 BED_API void    TextBufferGetStrings       (TextBuffer* textbuf, String* out_left, String* out_right);
 BED_API uint8   TextBufferSample           (TextBuffer* textbuf, intz offset);
@@ -525,6 +530,8 @@ BED_API String  TextBufferStringFromRange  (TextBuffer* textbuf, intz offset, in
 BED_API bool    TextBufferLineIterator     (TextBuffer* textbuf, intz* it, String* left_str, String* right_str);
 BED_API intz    TextBufferOffsetFromLineCol(TextBuffer* textbuf, LineCol pos, int32 tab_size);
 BED_API Buffer  TextBufferWriteRangeToBuffer(TextBuffer* textbuf, Range range, intz size, uint8 buf[]);
+BED_API String  TextBufferWriteToArena     (TextBuffer* textbuf, Arena* output_arena);
+BED_API Range   TextBufferFullRange        (TextBuffer* textbuf);
 
 BED_API void    TextBufferInsert           (App* app, TextBuffer* textbuf, intz offset, String str);
 BED_API void    TextBufferDelete           (App* app, TextBuffer* textbuf, intz offset, intz size);

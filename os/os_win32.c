@@ -3280,6 +3280,7 @@ API bool
 OS_ReadEntireFile(String path, Arena* output_arena, void** out_data, intz* out_size, OS_Error* out_err)
 {
 	Trace(); TraceText(path);
+	SetLastError(0);
 	Arena* scratch_arena = OS_ScratchArena(&output_arena, 1);
 	HANDLE handle = INVALID_HANDLE_VALUE;
 	
@@ -3345,6 +3346,7 @@ API bool
 OS_WriteEntireFile(String path, void const* data, intz size, OS_Error* out_err)
 {
 	Trace(); TraceText(path);
+	SetLastError(0);
 	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	HANDLE handle = INVALID_HANDLE_VALUE;
 	
@@ -3386,10 +3388,10 @@ API OS_FileInfo
 OS_GetFileInfoFromPath(String path, OS_Error* out_err)
 {
 	Trace(); TraceText(path);
+	SetLastError(0);
 	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	HANDLE handle = INVALID_HANDLE_VALUE;
 	OS_FileInfo result = { 0 };
-	SetLastError(0);
 	
 	for ArenaTempScope(scratch_arena)
 	{
@@ -3423,8 +3425,8 @@ API bool
 OS_CopyFile(String from, String to, OS_Error* out_err)
 {
 	Trace(); TraceText(to);
-	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	SetLastError(0);
+	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	
 	for ArenaTempScope(scratch_arena)
 	{
@@ -3444,8 +3446,8 @@ API bool
 OS_DeleteFile(String path, OS_Error* out_err)
 {
 	Trace(); TraceText(path);
-	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	SetLastError(0);
+	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	
 	for ArenaTempScope(scratch_arena)
 	{
@@ -3461,8 +3463,8 @@ API bool
 OS_ReplaceFile(String from, String to, OS_Error* out_err)
 {
 	Trace(); TraceText(to);
-	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	SetLastError(0);
+	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	
 	for ArenaTempScope(scratch_arena)
 	{
@@ -3482,8 +3484,8 @@ API bool
 OS_MakeDirectory(String path, OS_Error* out_err)
 {
 	Trace(); TraceText(path);
-	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	SetLastError(0);
+	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	
 	for ArenaTempScope(scratch_arena)
 	{
@@ -3499,10 +3501,10 @@ API String
 OS_ResolveToAbsolutePath(String path, SingleAllocator allocator, OS_Error* out_err)
 {
 	Trace(); TraceText(path);
+	SetLastError(0);
 	Arena* scratch_arena = ScratchArena(1, (Arena**)&allocator.instance);
 	String result = {};
 	AllocatorError alloc_err = 0;
-	SetLastError(0);
 
 	for ArenaTempScope(scratch_arena)
 	{
@@ -3539,6 +3541,7 @@ API OS_Library
 OS_LoadLibrary(String name, OS_Error* out_err)
 {
 	Trace(); TraceText(name);
+	SetLastError(0);
 	HMODULE module;
 	
 	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
@@ -3573,6 +3576,7 @@ API OS_File
 OS_OpenFile(String path, OS_OpenFileFlags flags, OS_Error* out_err)
 {
 	Trace(); TraceText(path);
+	SetLastError(0);
 	HANDLE handle = NULL;
 	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	DWORD desired_access = 0;
@@ -3634,6 +3638,7 @@ API OS_FileInfo
 OS_GetFileInfo(OS_File file, OS_Error* out_err)
 {
 	Trace();
+	SetLastError(0);
 	HANDLE handle = file.ptr;
 	OS_FileInfo result = { 0 };
 	
@@ -3656,19 +3661,22 @@ API intsize
 OS_WriteFile(OS_File file, intsize size, void const* buffer, OS_Error* out_err)
 {
 	Trace();
+	SetLastError(0);
 	HANDLE handle = file.ptr;
 	intsize written = 0;
 	
 	while (written < size)
 	{
 		DWORD api_written = 0;
-		DWORD api_size = (DWORD)Min(UINT32_MAX, size);
+		DWORD api_size = (DWORD)Min(UINT32_MAX, size - written);
 		void const* mem = (uint8 const*)buffer + written;
 		
 		if (!WriteFile(handle, mem, api_size, &api_written, NULL))
 			break;
 		
 		written += (intsize)api_written;
+		if (api_written == 0)
+			break;
 	}
 
 	FillOsErr_(out_err, GetLastError());
@@ -3679,19 +3687,22 @@ API intsize
 OS_ReadFile(OS_File file, intsize size, void* buffer, OS_Error* out_err)
 {
 	Trace();
+	SetLastError(0);
 	HANDLE handle = file.ptr;
 	intsize read = 0;
 	
 	while (read < size)
 	{
 		DWORD api_read = 0;
-		DWORD api_size = (DWORD)Min(UINT32_MAX, size);
+		DWORD api_size = (DWORD)Min(UINT32_MAX, size - read);
 		void* mem = (uint8*)buffer + read;
 		
 		if (!ReadFile(handle, mem, api_size, &api_read, NULL))
 			break;
 		
 		read += (intsize)api_read;
+		if (api_read == 0)
+			break;
 	}
 	
 	FillOsErr_(out_err, GetLastError());
@@ -3702,6 +3713,7 @@ API int64
 OS_TellFile(OS_File file, OS_Error* out_err)
 {
 	Trace();
+	SetLastError(0);
 	HANDLE handle = file.ptr;
 	int64 result = -1;
 	LARGE_INTEGER offset;
@@ -3717,6 +3729,7 @@ API void
 OS_SeekFile(OS_File file, int64 offset, bool relative, OS_Error* out_err)
 {
 	Trace();
+	SetLastError(0);
 	HANDLE handle = file.ptr;
 	LARGE_INTEGER seek_pos = { .QuadPart = offset };
 	DWORD move_method = FILE_BEGIN;
@@ -3728,7 +3741,6 @@ OS_SeekFile(OS_File file, int64 offset, bool relative, OS_Error* out_err)
 		move_method = FILE_END;
 	}
 	
-	SetLastError(0);
 	SetFilePointerEx(handle, seek_pos, NULL, move_method);
 	FillOsErr_(out_err, GetLastError());
 }
@@ -3737,6 +3749,7 @@ API intsize
 OS_WriteFileAt(OS_File file, int64 offset, intsize size, void const* buffer, OS_Error* out_err)
 {
 	Trace();
+	SetLastError(0);
 	HANDLE handle = file.ptr;
 	intsize written = 0;
 	
@@ -3771,6 +3784,7 @@ API intsize
 OS_ReadFileAt(OS_File file, int64 offset, intsize size, void* buffer, OS_Error* out_err)
 {
 	Trace();
+	SetLastError(0);
 	HANDLE handle = file.ptr;
 	intsize read = 0;
 	
@@ -3858,6 +3872,7 @@ API OS_FileMapping
 OS_MapFileForReading(OS_File file, void const** out_buffer, intz* out_size, OS_Error* out_err)
 {
 	Trace();
+	SetLastError(0);
 	OS_FileMapping result = { 0 };
 	HANDLE file_handle = file.ptr;
 	HANDLE mapping;
@@ -3926,6 +3941,7 @@ API int32
 OS_Exec(String cmd, OS_Error* out_err)
 {
 	Trace(); TraceText(cmd);
+	SetLastError(0);
 	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	int32 r = INT32_MIN;
 	
@@ -3970,6 +3986,7 @@ API OS_ChildProcess
 OS_ExecAsync(String cmd, OS_ChildProcessDesc const* child_desc, OS_Error* out_err)
 {
 	Trace(); TraceText(cmd);
+	SetLastError(0);
 	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	HANDLE handle = NULL;
 	
@@ -4002,6 +4019,7 @@ API OS_ChildProcess
 OS_CreateChildProcess(String executable, String args, OS_ChildProcessDesc const* child_desc, OS_Error* out_err)
 {
 	Trace(); TraceText(executable);
+	SetLastError(0);
 	Arena* scratch_arena = OS_ScratchArena(NULL, 0);
 	HANDLE handle = NULL;
 	
@@ -4037,6 +4055,7 @@ API void
 OS_WaitChildProcess(OS_ChildProcess child, OS_Error* out_err)
 {
 	Trace();
+	SetLastError(0);
 	HANDLE handle = child.ptr;
 	DWORD result = WaitForSingleObject(handle, INFINITE);
 	if (result == WAIT_OBJECT_0)
@@ -4049,6 +4068,7 @@ API bool
 OS_GetReturnCodeChildProcess(OS_ChildProcess child, int32* out_code, OS_Error* out_err)
 {
 	Trace();
+	SetLastError(0);
 	HANDLE handle = child.ptr;
 	bool result = false;
 	
@@ -4069,6 +4089,7 @@ API void
 OS_KillChildProcess(OS_ChildProcess child, OS_Error* out_err)
 {
 	Trace();
+	SetLastError(0);
 	HANDLE handle = child.ptr;
 	BOOL ok = TerminateProcess(handle, (UINT)INT32_MIN);
 	
@@ -5149,6 +5170,9 @@ HeapAllocatorProc_(void* instance, AllocatorMode mode, intsize size, intsize ali
 			error = AllocatorError_ModeNotImplemented;
 		} break;
 	}
+
+	// NOTE(ljre): sometimes, `_aligned_realloc` might SetLastError to ERROR_NOT_ENOUGH_MEMORY...
+	SetLastError(0);
 
 	if (out_err)
 		*out_err = error;

@@ -54,7 +54,7 @@ static void
 ScrollTextViewToCursor_(App* app, TextView* view)
 {
 	Trace();
-	TextBuffer* textbuf = TextBufferFromHandle(app, view->textbuf);
+	TextBuffer* textbuf = AppGetTextBuffer(app, view->textbuf);
 	LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
 	int32 line_count = SizeInLinesOfTextView_(app, view);
 
@@ -81,15 +81,12 @@ RefreshOpenFileViewEntries_(App* app, OpenFileView* view)
 	OS_Error err = { .ok = true, };
 	ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
 	ArenaSavepoint scratch2 = ArenaSave(ScratchArena(1, &scratch.arena));
-	TextBuffer* textbuf = TextBufferFromHandle(app, view->filter);
+	TextBuffer* textbuf = AppGetTextBuffer(app, view->filter);
 
 	String path = {};
 	intz slash_count = 0;
 	{
-		String left, right;
-		TextBufferGetStrings(textbuf, &left, &right);
-		path = ArenaPrintf(scratch.arena, "%S%S", left, right);
-
+		path = TextBufferWriteToArena(textbuf, scratch.arena);
 		intz last_slash_index = -1;
 		for (intz i = 0; i < path.size; ++i)
 		{
@@ -156,16 +153,11 @@ static intz
 CountOfAvailableOptionsInGenericListView_(App* app, GenericListView* view, PanelState kind)
 {
 	Trace();
-	TextBuffer* textbuf = TextBufferFromHandle(app, view->filter);
+	TextBuffer* textbuf = AppGetTextBuffer(app, view->filter);
 	SafeAssert(textbuf);
 
 	ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
-	String filter_text = {};
-	{
-		String left, right;
-		TextBufferGetStrings(textbuf, &left, &right);
-		filter_text = ArenaPrintf(scratch.arena, "%S%S", left, right);
-	}
+	String filter_text = TextBufferWriteToArena(textbuf, scratch.arena);
 
 	intz result = 0;
 	if (kind == PanelState_CommandView)
@@ -179,7 +171,7 @@ CountOfAvailableOptionsInGenericListView_(App* app, GenericListView* view, Panel
 		{
 			TextBufferHandle handle = app->openbuffers[i];
 			SafeAssert(handle);
-			TextBuffer* file_textbuf = TextBufferFromHandle(app, handle);
+			TextBuffer* file_textbuf = AppGetTextBuffer(app, handle);
 			SafeAssert(file_textbuf);
 			String path = file_textbuf->file_absolute_path;
 			if (path.size)
@@ -212,7 +204,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 		case PanelState_TextView:
 		{
 			TextView* view = &panel->text_view;
-			TextBuffer* textbuf = TextBufferFromHandle(app, view->textbuf);
+			TextBuffer* textbuf = AppGetTextBuffer(app, view->textbuf);
 			if (!textbuf)
 			{
 				Log(LOG_ERROR, "failed to get textbuffer from view to handle panel event");
@@ -314,7 +306,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 						else if (event->window_key.alt)
 						{
 							TextBufferHandle filter = NULL;
-							TextBufferFromString(app, Str(""), StrNull, TextBufferKind_SingleLine, &filter);
+							AppCreateNamedTextBuffer(app, Str(""), StrNull, TextBufferKind_SingleLine, &filter);
 							SafeAssert(filter);
 							panel->command_view = (CommandView) {
 								.filter = filter,
@@ -393,7 +385,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 						{
 							ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
 							TextBufferHandle filter = NULL;
-							TextBuffer* textbuf = TextBufferFromString(app, ArenaPrintf(scratch.arena, "%S/", app->project_path), StrNull, TextBufferKind_SingleLine, &filter);
+							TextBuffer* textbuf = AppCreateNamedTextBuffer(app, ArenaPrintf(scratch.arena, "%S/", app->project_path), StrNull, TextBufferKind_SingleLine, &filter);
 							ArenaRestore(scratch);
 							panel->state = PanelState_OpenFileView;
 							panel->open_file_view = (OpenFileView) {
@@ -415,7 +407,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 						else if (event->window_key.ctrl)
 						{
 							TextBufferHandle filter = NULL;
-							TextBufferFromString(app, Str(""), StrNull, TextBufferKind_SingleLine, &filter);
+							AppCreateNamedTextBuffer(app, Str(""), StrNull, TextBufferKind_SingleLine, &filter);
 							SafeAssert(filter);
 							panel->already_open_file_view = (AlreadyOpenFileView) {
 								.filter = filter,
@@ -465,7 +457,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 		case PanelState_OpenFileView:
 		{
 			OpenFileView* view = &panel->open_file_view;
-			TextBuffer* textbuf = TextBufferFromHandle(app, view->filter);
+			TextBuffer* textbuf = AppGetTextBuffer(app, view->filter);
 
 			bool is_going_back_to_text_view = false;
 			if (event->kind == OS_EventKind_WindowKeyPressed)
@@ -525,9 +517,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 						String base_path = {};
 						String fuzzy_filter = {};
 						{
-							String left, right;
-							TextBufferGetStrings(textbuf, &left, &right);
-							String fullstr = ArenaPrintf(scratch.arena, "%S%S", left, right);
+							String fullstr = TextBufferWriteToArena(textbuf, scratch.arena);
 							intz last_slash_index = -1;
 							for (intz i = 0; i < fullstr.size; ++i)
 							{
@@ -586,7 +576,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 											if (new_textbuf)
 											{
 												if (panel->text_view.textbuf)
-													TextBufferDecRefCount(app, panel->text_view.textbuf);
+													AppDecTextBufferRef(app, panel->text_view.textbuf);
 												panel->text_view.textbuf = new_textbuf;
 												panel->text_view.line = 1;
 												panel->text_view.cursor = (TextCursor) {};
@@ -633,7 +623,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 						else if (event->window_key.alt)
 						{
 							TextBufferHandle filter = NULL;
-							TextBufferFromString(app, Str(""), StrNull, TextBufferKind_SingleLine, &filter);
+							AppCreateNamedTextBuffer(app, Str(""), StrNull, TextBufferKind_SingleLine, &filter);
 							SafeAssert(filter);
 							panel->command_view = (CommandView) {
 								.filter = filter,
@@ -711,7 +701,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 
 			if (is_going_back_to_text_view)
 			{
-				TextBufferDecRefCount(app, view->filter);
+				AppReleaseTextBuffer(app, view->filter);
 				AllocatorFreeBuffer(&app->heap, view->all_entries, NULL);
 				MemoryZero(view, sizeof(OpenFileView));
 				panel->state = PanelState_TextView;
@@ -726,9 +716,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 			Arena* scratch_arena = ScratchArena(0, NULL);
 			for ArenaTempScope(scratch_arena)
 			{
-				String left, right;
-				TextBufferGetStrings(textbuf, &left, &right);
-				String filter = ArenaPrintf(scratch_arena, "%S%S", left, right);
+				String filter = TextBufferWriteToArena(textbuf, scratch_arena);
 				intz slash_count = 0;
 				for (intz i = 0; i < filter.size; ++i)
 					slash_count += (filter.data[i] == '/');
@@ -744,7 +732,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 			if (0) case PanelState_CommandView: view = &panel->command_view;
 			if (0) case PanelState_AlreadyOpenFileView: view = &panel->already_open_file_view;
 
-			TextBuffer* textbuf = TextBufferFromHandle(app, view->filter);
+			TextBuffer* textbuf = AppGetTextBuffer(app, view->filter);
 			SafeAssert(textbuf);
 			bool is_going_back_to_prev_state = false;
 
@@ -803,12 +791,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 					case OS_KeyboardKey_Enter:
 					{
 						ArenaSavepoint scratch = ArenaSave(ScratchArena(0, NULL));
-						String filter_str = {};
-						{
-							String left, right;
-							TextBufferGetStrings(textbuf, &left, &right);
-							filter_str = ArenaPrintf(scratch.arena, "%S%S", left, right);
-						}
+						String filter_str = TextBufferWriteToArena(textbuf, scratch.arena);
 
 						if (panel->state == PanelState_CommandView)
 						{
@@ -840,7 +823,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 							{
 								TextBufferHandle handle = app->openbuffers[i];
 								SafeAssert(handle);
-								TextBuffer* file_textbuf = TextBufferFromHandle(app, handle);
+								TextBuffer* file_textbuf = AppGetTextBuffer(app, handle);
 								SafeAssert(file_textbuf);
 								String path = file_textbuf->file_absolute_path;
 								if (path.size)
@@ -866,8 +849,8 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 
 									TextView* text_view = &panel->text_view;
 									if (text_view->textbuf)
-										TextBufferDecRefCount(app, text_view->textbuf);
-									TextBufferIncRefCount(app, handle);
+										AppDecTextBufferRef(app, text_view->textbuf);
+									AppIncTextBufferRef(app, handle);
 									text_view->textbuf = handle;
 									text_view->cursor = (TextCursor) {};
 									text_view->line = 1;
@@ -908,7 +891,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 						else if (event->window_key.alt)
 						{
 							TextBufferHandle filter = NULL;
-							TextBufferFromString(app, Str(""), StrNull, TextBufferKind_SingleLine, &filter);
+							AppCreateNamedTextBuffer(app, Str(""), StrNull, TextBufferKind_SingleLine, &filter);
 							SafeAssert(filter);
 							panel->command_view = (CommandView) {
 								.filter = filter,
@@ -986,7 +969,7 @@ PanelProcessEvent(App* app, Panel* panel, OS_Event const* event)
 
 			if (is_going_back_to_prev_state)
 			{
-				TextBufferDecRefCount(app, view->filter);
+				AppReleaseTextBuffer(app, view->filter);
 				panel->state = view->prev_panel_state;
 				MemoryZero(view, sizeof(*view));
 				break;
@@ -1005,7 +988,7 @@ PanelProcessCursorDrag(App* app, Panel* panel, OS_MouseState const* mouse)
 		default: break;
 		case PanelState_TextView:
 		{
-			TextBuffer* textbuf = TextBufferFromHandle(app, panel->text_view.textbuf);
+			TextBuffer* textbuf = AppGetTextBuffer(app, panel->text_view.textbuf);
 			SetCursorPosFromMouse_(app, &panel->text_view, textbuf, mouse->pos[0], mouse->pos[1]);
 		} break;
 		case PanelState_OpenFileView:

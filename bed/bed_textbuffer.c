@@ -1,64 +1,6 @@
 #include "bed.h"
 #include <immintrin.h>
 
-static TextBuffer*
-AllocTextBuffer_(App* app, TextBufferHandle* out_handle)
-{
-	Trace();
-	intz index;
-
-	if (app->textbuf_pool_first_free)
-	{
-		index = app->textbuf_pool_first_free - 1;
-		app->textbuf_pool_first_free = app->textbuf_pool[index].next_free;
-	}
-	else
-	{
-		if (app->textbuf_pool_count+1 >= app->textbuf_pool_cap)
-		{
-			intz new_cap = app->textbuf_pool_cap + (app->textbuf_pool_cap >> 1) + 1;
-			AllocatorError err;
-			if (!AllocatorResizeArrayOk(&app->heap, new_cap, sizeof(TextBuffer), alignof(TextBuffer), &app->textbuf_pool, app->textbuf_pool_cap, &err))
-			{
-				Log(LOG_ERROR, "could not resize textbuf pool: %u", (uint32)err);
-				*out_handle = 0;
-				return NULL;
-			}
-			app->textbuf_pool_cap = new_cap;
-		}
-		index = app->textbuf_pool_count++;
-	}
-
-	TextBuffer* textbuf = &app->textbuf_pool[index];
-	*out_handle = (TextBufferHandle)((uint64)index+1 | (uint64)textbuf->generation << 48);
-	return &app->textbuf_pool[index];
-}
-
-static void
-FreeTextBuffer_(App* app, TextBuffer* textbuf, intz index)
-{
-	Trace();
-	if (textbuf->utf8_text)
-		AllocatorFree(&app->heap, textbuf->utf8_text, textbuf->size, NULL);
-	if (textbuf->cf_kinds)
-		AllocatorFreeArray(&app->heap, sizeof(CF_TokenKind), textbuf->cf_kinds, textbuf->cf_cap, NULL);
-	if (textbuf->cf_ranges)
-		AllocatorFreeArray(&app->heap, sizeof(CF_SourceRange), textbuf->cf_ranges, textbuf->cf_cap, NULL);
-	if (textbuf->edits)
-		AllocatorFreeArray(&app->heap, sizeof(TextBufferEdit), textbuf->edits, textbuf->edits_cap, NULL);
-	if (textbuf->edit_text_buffer)
-		AllocatorFree(&app->heap, textbuf->edit_text_buffer, textbuf->edit_text_buffer_cap, NULL);
-	if (textbuf->file_absolute_path.data)
-		AllocatorFreeString(&app->heap, textbuf->file_absolute_path, NULL);
-	if (textbuf->name.data)
-		AllocatorFreeString(&app->heap, textbuf->name, NULL);
-	uint32 generation = (uint16)(textbuf->generation + 1);
-	MemoryZero(textbuf, sizeof(*textbuf));
-	textbuf->next_free = (uint32)app->textbuf_pool_first_free;
-	textbuf->generation = generation;
-	app->textbuf_pool_first_free = index+1;
-}
-
 static intz
 PushEditText_(App* app, TextBuffer* textbuf, intz deleted_size)
 {
@@ -357,249 +299,6 @@ CountLinesInTwoStrings_(String left, String right)
 	result += _mm256_extract_epi32(acc, 3);
 #endif
 
-	return result;
-}
-
-BED_API TextBuffer*
-TextBufferFromHandle(App* app, TextBufferHandle handle)
-{
-	intz index = (uint64)handle << 16 >> 16;
-	uint32 generation = (uint64)handle >> 48;
-	--index;
-	if (index < 0 || index >= app->textbuf_pool_count)
-	{
-		Log(LOG_ERROR, "index into text buffer pool is invalid: %Z", index);
-		return NULL;
-	}
-	TextBuffer* textbuf = &app->textbuf_pool[index];
-	if (textbuf->generation != generation)
-	{
-		Log(LOG_ERROR, "text buffer reffered by index %Z has different generation than expected: %u != %u", index, generation, textbuf->generation);
-		return NULL;
-	}
-	if (textbuf->next_free || !textbuf->kind)
-	{
-		Log(LOG_ERROR, "text buffer reffered by index %Z is not active", index);
-		return NULL;
-	}
-	return textbuf;
-}
-
-BED_API TextBuffer*
-TextBufferFromFile(App* app, String path, TextBufferKind kind, TextBufferHandle* out_handle)
-{
-	Trace();
-	OS_Error err = {};
-
-	String absolute_path = OS_ResolveToAbsolutePath(path, app->heap, &err);
-	if (!err.ok)
-	{
-		Log(LOG_ERROR, "could resolve path to full string when opening path: %S", path);
-		return NULL;
-	}
-
-	for (intz i = 0; i < app->textbuf_pool_count; ++i)
-	{
-		TextBuffer* i_textbuf = &app->textbuf_pool[i];
-		if (i_textbuf->ref_count && StringEquals(absolute_path, i_textbuf->file_absolute_path))
-		{
-			// NOTE(ljre): Text buffer is already open, so just return the existing one.
-			Log(LOG_INFO, "reusing file text buffer: %S", absolute_path);
-			AllocatorFreeString(&app->heap, absolute_path, NULL);
-			TextBufferHandle handle = (void*)((uint64)i_textbuf->generation << 48 | (uint64)i+1);
-			*out_handle = handle;
-			return TextBufferIncRefCount(app, handle);
-		}
-	}
-
-	OS_File file = OS_OpenFile(absolute_path, OS_OpenFileFlags_Read | OS_OpenFileFlags_FailIfDoesntExist, &err);
-	if (!err.ok)
-	{
-		Log(LOG_ERROR, "could not open file from path!\n\tPath: %S\nError code: %u\nError string: %S", absolute_path, err.code, err.what);
-		AllocatorFreeString(&app->heap, absolute_path, NULL);
-		return NULL;
-	}
-
-	OS_FileInfo fileinfo = OS_GetFileInfo(file, &err);
-	if (!err.ok)
-	{
-		Log(LOG_ERROR, "failed to get file info when opening path: %S", absolute_path);
-		AllocatorFreeString(&app->heap, absolute_path, NULL);
-		return NULL;
-	}
-
-	if (fileinfo.size > INTZ_MAX/2)
-	{
-		Log(LOG_ERROR, "file is too big to fit on RAM (size is 0x%X): %S", fileinfo.size, absolute_path);
-		OS_CloseFile(file);
-		AllocatorFreeString(&app->heap, absolute_path, NULL);
-		return NULL;
-	}
-
-	TextBuffer* textbuf = AllocTextBuffer_(app, out_handle);
-	if (!textbuf)
-	{
-		Log(LOG_ERROR, "could not make text buffer when opening path: %S", absolute_path);
-		OS_CloseFile(file);
-		AllocatorFreeString(&app->heap, absolute_path, NULL);
-		return NULL;
-	}
-
-	AllocatorError alloc_err = 0;
-	intz file_size = (intz)fileinfo.size;
-	intz total_size = AlignUp(file_size, 31) + 4096;
-	uint8* utf8_text = AllocatorAlloc(&app->heap, total_size, 1, &alloc_err);
-	if (alloc_err)
-	{
-		Log(LOG_ERROR, "could not allocate buffer for text buffer when opening path: %S", absolute_path);
-		FreeTextBuffer_(app, textbuf, ((uint64)*out_handle << 16 >> 16) - 1);
-		OS_CloseFile(file);
-		AllocatorFreeString(&app->heap, absolute_path, NULL);
-		return NULL;
-	}
-	
-	OS_ReadFile(file, file_size, utf8_text, &err);
-	if (!err.ok)
-	{
-		Log(LOG_ERROR, "could read file for text buffer when opening path: %S", absolute_path);
-		AllocatorFree(&app->heap, utf8_text, total_size, NULL);
-		FreeTextBuffer_(app, textbuf, ((uint64)*out_handle << 16 >> 16) - 1);
-		OS_CloseFile(file);
-		AllocatorFreeString(&app->heap, absolute_path, NULL);
-		return NULL;
-	}
-
-	OS_CloseFile(file);
-	*textbuf = (TextBuffer) {
-		.generation = textbuf->generation,
-		.kind = kind,
-		.ref_count = 1,
-		.utf8_text = utf8_text,
-		.size = total_size,
-		.gap_start = file_size,
-		.gap_end = total_size,
-		.file_absolute_path = absolute_path,
-	};
-	return textbuf;
-}
-
-BED_API TextBuffer*
-TextBufferFromString(App* app, String initial_contents, String name, TextBufferKind kind, TextBufferHandle* out_handle)
-{
-	Trace();
-	if (name.size)
-	{
-		for (intz i = 0; i < app->textbuf_pool_count; ++i)
-		{
-			TextBuffer* i_textbuf = &app->textbuf_pool[i];
-			if (i_textbuf->ref_count && StringEquals(name, i_textbuf->name))
-			{
-				// NOTE(ljre): Text buffer is already open, so just return the existing one.
-				Log(LOG_INFO, "reusing named text buffer: %S", name);
-				TextBufferHandle handle = (void*)((uint64)i_textbuf->generation << 48 | (uint64)i+1);
-				*out_handle = handle;
-				return TextBufferIncRefCount(app, handle);
-			}
-		}
-	}
-
-	TextBuffer* textbuf = AllocTextBuffer_(app, out_handle);
-	if (!textbuf)
-	{
-		Log(LOG_ERROR, "could not make text buffer from string: %S", name);
-		return NULL;
-	}
-
-	AllocatorError alloc_err = 0;
-	intz total_size = AlignUp(initial_contents.size, 31);
-	total_size = ClampMin(total_size, 4096);
-	uint8* utf8_text = AllocatorAlloc(&app->heap, total_size, 1, &alloc_err);
-	if (alloc_err)
-	{
-		Log(LOG_ERROR, "could not allocate buffer for text buffer from string: %S", name);
-		FreeTextBuffer_(app, textbuf, textbuf - app->textbuf_pool);
-		return NULL;
-	}
-	MemoryCopy(utf8_text, initial_contents.data, initial_contents.size);
-
-	if (name.size)
-		name = AllocatorCloneString(&app->heap, name, &alloc_err);
-	if (alloc_err)
-	{
-		Log(LOG_ERROR, "could not allocate buffer for text buffer name from string: %S", name);
-		AllocatorFree(&app->heap, utf8_text, total_size, NULL);
-		FreeTextBuffer_(app, textbuf, textbuf - app->textbuf_pool);
-		return NULL;
-	}
-
-	*textbuf = (TextBuffer) {
-		.generation = textbuf->generation,
-		.kind = kind,
-		.ref_count = 1,
-		.utf8_text = utf8_text,
-		.size = total_size,
-		.gap_start = initial_contents.size,
-		.gap_end = total_size,
-		.name = name,
-	};
-	return textbuf;
-}
-
-BED_API TextBuffer*
-TextBufferIncRefCount(App* app, TextBufferHandle handle)
-{
-	Trace();
-	intz index = (uint64)handle << 16 >> 16;
-	uint32 generation = (uint64)handle >> 48;
-	--index;
-	if (index < 0 || index >= app->textbuf_pool_count)
-	{
-		Log(LOG_ERROR, "trying to acquire invalid textbuffer index: %Z", index);
-		return NULL;
-	}
-	TextBuffer* textbuf = &app->textbuf_pool[index];
-	if (textbuf->generation != generation)
-	{
-		Log(LOG_ERROR, "text buffer reffered by index %Z has different generation than expected: %u != %u", index, generation, textbuf->generation);
-		return NULL;
-	}
-	if (textbuf->next_free || !textbuf->kind)
-	{
-		Log(LOG_ERROR, "trying to acquire textbuffer that is inactive", index);
-		return NULL;
-	}
-
-	++textbuf->ref_count;
-	return textbuf;
-}
-
-BED_API intz
-TextBufferDecRefCount(App* app, TextBufferHandle handle)
-{
-	Trace();
-	intz index = (uint64)handle << 16 >> 16;
-	uint32 generation = (uint64)handle >> 48;
-	--index;
-	if (index < 0 || index >= app->textbuf_pool_count)
-	{
-		Log(LOG_ERROR, "trying to release invalid textbuffer index: %Z", index);
-		return -1;
-	}
-	TextBuffer* textbuf = &app->textbuf_pool[index];
-	if (textbuf->generation != generation)
-	{
-		Log(LOG_ERROR, "text buffer reffered by index %Z has different generation than expected: %u != %u", index, generation, textbuf->generation);
-		return -1;
-	}
-	if (textbuf->next_free || !textbuf->kind)
-	{
-		Log(LOG_ERROR, "trying to release textbuffer that is inactive", index);
-		return -1;
-	}
-	
-	intz result = --textbuf->ref_count;
-	if (result == 0)
-		FreeTextBuffer_(app, textbuf, index);
 	return result;
 }
 
@@ -1080,30 +779,6 @@ TextBufferWriteRangeToBuffer(TextBuffer* textbuf, Range range, intz size, uint8 
 }
 
 BED_API bool
-TextBufferIterate(App* app, intz* it_, TextBuffer** out_textbuf, TextBufferHandle* out_handle)
-{
-	Trace();
-	intz it = *it_;
-
-	for (; it < app->textbuf_pool_count; ++it)
-	{
-		TextBuffer* textbuf = &app->textbuf_pool[it];
-		if (textbuf->kind)
-		{
-			*it_ = it + 1;
-			*out_textbuf = textbuf;
-			*out_handle = (void*)((uint64)textbuf->generation << 48 | (uint64)(it+1));
-			return true;
-		}
-	}
-
-	*it_ = it;
-	*out_textbuf = NULL;
-	*out_handle = NULL;
-	return false;
-}
-
-BED_API bool
 TextBufferSaveToDisk(App* app, TextBuffer* textbuf)
 {
 	Trace();
@@ -1184,4 +859,27 @@ TextBufferReloadFromDisk(App* app, TextBuffer* textbuf)
 	Log(LOG_WARN, "TODO: TextBufferReloadFromDisk (called with \"%S\")", textbuf->file_absolute_path);
 
 	return false;
+}
+
+BED_API String
+TextBufferWriteToArena(TextBuffer* textbuf, Arena* output_arena)
+{
+	Trace();
+	intz size = TextBufferSize(textbuf);
+	uint8* mem = ArenaPushDirtyAligned(output_arena, size, 1);
+	if (mem)
+	{
+		String left, right;
+		TextBufferGetStrings(textbuf, &left, &right);
+		MemoryCopy(mem, left.data, left.size);
+		MemoryCopy(mem+left.size, right.data, right.size);
+		return StringMake(size, mem);
+	}
+	return StrNull;
+}
+
+BED_API Range
+TextBufferFullRange(TextBuffer* textbuf)
+{
+	return RangeMakeSized(0, TextBufferSize(textbuf));
 }
