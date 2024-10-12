@@ -9,6 +9,7 @@
 !/gamepad_db_gen/
 !/header2odin/
 !/hlsl2glsl/
+!/json/
 !/meshtool/
 !/os/
 !/render3/

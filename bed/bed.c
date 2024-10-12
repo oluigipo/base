@@ -1035,7 +1035,7 @@ EntryPoint(int32 argc, const char* const argv[])
 			uint32 desired_codepoints[] = {
 				0x21, 0x7E, // ASCII
 				0xA1, 0xFF, // Latin-1
-				0xFFFD, 0xFFFD,
+				0xFFFD, 0xFFFD, // invalid char glyph
 				0x3C0, 0x3C0, // π
 			};
 			static_assert(ArrayLength(desired_codepoints) % 2 == 0);
@@ -1181,7 +1181,6 @@ EntryPoint(int32 argc, const char* const argv[])
 	}
 
 	// make default views
-	for ArenaTempScope(app->arena)
 	{
 		app->left_panel = (Panel) {
 			.state = PanelState_TextView,

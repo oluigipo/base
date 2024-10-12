@@ -6,7 +6,7 @@ dxc-spirv render4/test_shader.hlsl ps_6_0 Pixel -fspv-target-env=vulkan1.3
 
 c render4/test.c
 # c render4/render4_impl_vulkan.c
-cxx render4/render4_impl_d3d12.c++
+cxx render4/render4_impl_d3d12.cpp
 c os/os_win32.c
 cxx os/os_win32.cpp
 
