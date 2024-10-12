@@ -284,15 +284,15 @@ PushToken_(LexingCtx_* ctx, TokenToAppend_ const* tok)
 	Trace();
 	if (ctx->token_count+1 > ctx->token_allocated_count)
 	{
-		intsize current_size = ctx->token_allocated_count;
-		intsize amount_to_alloc = (ctx->token_allocated_count >> 1) + 1;
-		intsize desired_new_count = amount_to_alloc + ctx->token_allocated_count;
+		intz current_size = ctx->token_allocated_count;
+		intz desired_new_count = ctx->token_allocated_count + (ctx->token_allocated_count >> 1) + 1;
+		desired_new_count = Max(desired_new_count, 8);
 		if (!ctx->err && ctx->kind_allocator.proc)
-			AllocatorResizeOk(&ctx->kind_allocator, desired_new_count*SignedSizeof(CF_TokenKind), alignof(CF_TokenKind), &ctx->token_kinds, current_size*SignedSizeof(CF_TokenKind), &ctx->err);
+			AllocatorResizeArrayOk(&ctx->kind_allocator, desired_new_count, sizeof(CF_TokenKind), alignof(CF_TokenKind), &ctx->token_kinds, current_size, &ctx->err);
 		if (!ctx->err && ctx->source_range_allocator.proc)
-			AllocatorResizeOk(&ctx->source_range_allocator, desired_new_count*SignedSizeof(CF_SourceRange), alignof(CF_SourceRange), &ctx->source_ranges, current_size*SignedSizeof(CF_SourceRange), &ctx->err);
+			AllocatorResizeArrayOk(&ctx->source_range_allocator, desired_new_count, sizeof(CF_SourceRange), alignof(CF_SourceRange), &ctx->source_ranges, current_size, &ctx->err);
 		if (!ctx->err && ctx->loc_allocator.proc)
-			AllocatorResizeOk(&ctx->loc_allocator, desired_new_count*SignedSizeof(CF_Loc), alignof(CF_Loc), &ctx->locs, current_size*SignedSizeof(CF_Loc), &ctx->err);
+			AllocatorResizeArrayOk(&ctx->loc_allocator, desired_new_count, sizeof(CF_Loc), alignof(CF_Loc), &ctx->locs, current_size, &ctx->err);
 		if (ctx->err)
 			return;
 		ctx->token_allocated_count = desired_new_count;

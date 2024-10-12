@@ -383,6 +383,26 @@ RectCutSplitH(Rect* from, Rect* out_left, Rect* out_right)
 	*out_right = (Rect) { f.x1 + width/2, f.y1, f.x2, f.y2 };
 }
 
+static inline Rect
+RectClip(Rect rect, Rect clip)
+{
+	rect.x1 = Clamp(rect.x1, clip.x1, clip.x2);
+	rect.y1 = Clamp(rect.y1, clip.y1, clip.y2);
+	rect.x2 = Clamp(rect.x2, clip.x1, clip.x2);
+	rect.y2 = Clamp(rect.y2, clip.y1, clip.y2);
+	return rect;
+}
+
+static inline Rect
+RectMakeSized(int32 x, int32 y, int32 width, int32 height)
+{
+	SafeAssert(width >= 0 && height >= 0);
+	return (Rect) {
+		x, y,
+		x + width, y + height,
+	};
+}
+
 // ===========================================================================
 // ===========================================================================
 // Utils

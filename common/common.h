@@ -63,19 +63,23 @@ EXTERN_C __declspec(dllimport) int __stdcall IsDebuggerPresent(void);
 
 #ifndef __cplusplus
 #	define Buf(x) (Buffer) BufInit(x)
+#	define BUFNULL (Buffer) { 0 }
 #	define BufNull (Buffer) { 0 }
 #	define BufMake(size, data) (Buffer) { (const uint8*)(data), (intz)(size) }
 #	define BufRange(begin, end) (Buffer) BufInitRange(begin, end)
 #	define Str(x) (String) StrInit(x)
+#	define STRNULL (String) { 0 }
 #	define StrNull (String) { 0 }
 #	define StrMake(size,data) (String) { (const uint8*)(data), (intz)(size) }
 #	define StrRange(begin, end) (String) StrInitRange(begin, end)
 #else //__cplusplus
 #	define Buf(x) Buffer BufInit(x)
+#	define BUFNULL Buffer {}
 #	define BufNull Buffer {}
 #	define BufMake(size, data) Buffer { (const uint8*)(data), (intz)(size) }
 #	define BufRange(begin, end) Buffer BufInitRange(begin, end)
 #	define Str(x) String StrInit(x)
+#	define STRNULL String {}
 #	define StrNull String {}
 #	define StrMake(size, data) String { (const uint8*)(data), (intz)(size) }
 #	define StrRange(begin, end) String StrInitRange(begin, end)

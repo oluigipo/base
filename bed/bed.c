@@ -574,23 +574,25 @@ PushTextView_(App* app, TextView* view, Arena* arena, Rect rect, int16 texindex,
 
 	if (cursor_is_inside_view)
 	{
-		LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
-		PushQuad_(arena, (float32[4]) {
-			layout->text_screen.x1 + (cursor_pos.col - 1 + (scope_nesting_at_cursor - consumed_nesting_at_cursor) * app->tab_size) * app->glyph_advance,
-			layout->text_screen.y1 + (cursor_pos.line - first_line) * app->glyph_line_height,
+		LineCol pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
+		Rect rect = RectMakeSized(
+			layout->text_screen.x1 + (pos.col - 1 + (scope_nesting_at_cursor - consumed_nesting_at_cursor) * app->tab_size) * app->glyph_advance,
+			layout->text_screen.y1 + (pos.line - first_line) * app->glyph_line_height,
 			app->glyph_advance,
-			app->glyph_height,
-		}, NULL, 1, 0, app->c_cursor);
+			app->glyph_height
+		);
+		PushRect_(arena, RectClip(rect, layout->text_screen), NULL, 1, 0, app->c_cursor);
 	}
 	if (marker_is_inside_view)
 	{
-		LineCol marker_pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
-		PushQuad_(arena, (float32[4]) {
-			layout->text_screen.x1 + (marker_pos.col - 1 + (scope_nesting_at_marker - consumed_nesting_at_marker) * app->tab_size) * app->glyph_advance,
-			layout->text_screen.y1 + (marker_pos.line - first_line) * app->glyph_line_height,
+		LineCol pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
+		Rect rect = RectMakeSized(
+			layout->text_screen.x1 + (pos.col - 1 + (scope_nesting_at_marker - consumed_nesting_at_marker) * app->tab_size) * app->glyph_advance,
+			layout->text_screen.y1 + (pos.line - first_line) * app->glyph_line_height,
 			app->glyph_advance,
-			app->glyph_height,
-		}, NULL, 1, 0, app->c_cursor_marker);
+			app->glyph_height
+		);
+		PushRect_(arena, RectClip(rect, layout->text_screen), NULL, 1, 0, app->c_cursor_marker);
 	}
 
 	PushRect_(arena, layout->line_bar, NULL, 1, 0, 0xFF2F2F2F);
@@ -752,22 +754,24 @@ PushPanel_(App* app, Panel* panel, Arena* output_arena, Rect rect, bool is_selec
 			view->selected_option = Clamp(view->selected_option, 0, filtered_entry_count-1);
 
 			{
-				LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
-				PushQuad_(output_arena, (float32[4]) {
-					view->layout.filter_bar_text.x1 + (cursor_pos.col - 1) * app->glyph_advance,
+				LineCol pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
+				Rect rect = RectMakeSized(
+					view->layout.filter_bar_text.x1 + (pos.col - 1) * app->glyph_advance,
 					view->layout.filter_bar_text.y1,
 					app->glyph_advance,
-					app->glyph_height,
-				}, NULL, 1, 0, app->c_cursor);
+					app->glyph_height
+				);
+				PushRect_(output_arena, RectClip(rect, view->layout.filter_bar_text), NULL, 1, 0, app->c_cursor);
 			}
 			{
-				LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
-				PushQuad_(output_arena, (float32[4]) {
-					view->layout.filter_bar_text.x1 + (cursor_pos.col - 1) * app->glyph_advance,
+				LineCol pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
+				Rect rect = RectMakeSized(
+					view->layout.filter_bar_text.x1 + (pos.col - 1) * app->glyph_advance,
 					view->layout.filter_bar_text.y1,
 					app->glyph_advance,
-					app->glyph_height,
-				}, NULL, 1, 0, app->c_cursor_marker);
+					app->glyph_height
+				);
+				PushRect_(output_arena, RectClip(rect, view->layout.filter_bar_text), NULL, 1, 0, app->c_cursor_marker);
 			}
 
 			ArenaRestore(scratch);
@@ -796,25 +800,28 @@ PushPanel_(App* app, Panel* panel, Arena* output_arena, Rect rect, bool is_selec
 					PushRect_(output_arena, line_rect, NULL, 1, 0, 0xFF3F3F3F);
 				PushText2_(app, output_arena, line_rect, command_name, 0xFFFFFFFF, 0, 1, 0, NULL);
 			}
+			
+			{
+				LineCol pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
+				Rect rect = RectMakeSized(
+					view->layout.filter_bar_text.x1 + (pos.col - 1) * app->glyph_advance,
+					view->layout.filter_bar_text.y1,
+					app->glyph_advance,
+					app->glyph_height
+				);
+				PushRect_(output_arena, RectClip(rect, view->layout.filter_bar_text), NULL, 1, 0, app->c_cursor);
+			}
+			{
+				LineCol pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
+				Rect rect = RectMakeSized(
+					view->layout.filter_bar_text.x1 + (pos.col - 1) * app->glyph_advance,
+					view->layout.filter_bar_text.y1,
+					app->glyph_advance,
+					app->glyph_height
+				);
+				PushRect_(output_arena, RectClip(rect, view->layout.filter_bar_text), NULL, 1, 0, app->c_cursor_marker);
+			}
 
-			{
-				LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
-				PushQuad_(output_arena, (float32[4]) {
-					view->layout.filter_bar_text.x1 + (cursor_pos.col - 1) * app->glyph_advance,
-					view->layout.filter_bar_text.y1,
-					app->glyph_advance,
-					app->glyph_height,
-				}, NULL, 1, 0, app->c_cursor);
-			}
-			{
-				LineCol cursor_pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
-				PushQuad_(output_arena, (float32[4]) {
-					view->layout.filter_bar_text.x1 + (cursor_pos.col - 1) * app->glyph_advance,
-					view->layout.filter_bar_text.y1,
-					app->glyph_advance,
-					app->glyph_height,
-				}, NULL, 1, 0, app->c_cursor_marker);
-			}
 
 			ArenaRestore(scratch);
 		} break;
@@ -861,6 +868,27 @@ PushPanel_(App* app, Panel* panel, Arena* output_arena, Rect rect, bool is_selec
 
 				PushRect_(output_arena, icon, NULL, 1, 0, ColorFromFileName_(path, 0xFFCCCCCC));
 				PushText2_(app, output_arena, line_rect, path, 0xFFFFFFFF, 0, 1, 0, NULL);
+			}
+
+			{
+				LineCol pos = TextBufferLineColFromOffset(textbuf, view->cursor.offset, app->tab_size);
+				Rect rect = RectMakeSized(
+					view->layout.filter_bar_text.x1 + (pos.col - 1) * app->glyph_advance,
+					view->layout.filter_bar_text.y1,
+					app->glyph_advance,
+					app->glyph_height
+				);
+				PushRect_(output_arena, RectClip(rect, view->layout.filter_bar_text), NULL, 1, 0, app->c_cursor);
+			}
+			{
+				LineCol pos = TextBufferLineColFromOffset(textbuf, view->cursor.marker_offset, app->tab_size);
+				Rect rect = RectMakeSized(
+					view->layout.filter_bar_text.x1 + (pos.col - 1) * app->glyph_advance,
+					view->layout.filter_bar_text.y1,
+					app->glyph_advance,
+					app->glyph_height
+				);
+				PushRect_(output_arena, RectClip(rect, view->layout.filter_bar_text), NULL, 1, 0, app->c_cursor_marker);
 			}
 
 			ArenaRestore(scratch);

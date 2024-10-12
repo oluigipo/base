@@ -414,13 +414,13 @@ struct CF_PreprocessError
 
 struct CF_TokensFromStringResult
 {
-	intsize token_count;
+	intz token_count;
 	intz allocated_token_count;
 	CF_TokenKind*   token_kinds;
 	CF_SourceRange* source_ranges;
 	CF_Loc*         locs;
 
-	intsize lex_error_count;
+	intz lex_error_count;
 	CF_LexError* lex_errors;
 }
 typedef CF_TokensFromStringResult;
