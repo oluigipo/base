@@ -8,6 +8,10 @@
 #include <float.h>
 #include <stdarg.h>
 
+#ifndef API
+#	define API EXTERN_C
+#endif
+
 #if defined(__x86_64__) || defined(_M_X64)
 #	define CONFIG_ARCH_AMD64
 #	define CONFIG_ARCH_X86FAMILY
@@ -362,5 +366,56 @@ AssertionFailure(char const* expr, char const* func, char const* file, int32 lin
 #define StrFmt(x) (x).size, (char*)(x).data
 #define StrMacro_(x) #x
 #define StrMacro(x) StrMacro_(x)
+
+#ifdef __cplusplus
+template <typename T>
+struct Slice
+{
+	T* data;
+	intz count;
+
+	inline T& operator[](intz index) const { return data[index]; }
+	inline T* begin() const { return data; }
+	inline T* end() const { return data + count; }
+	inline operator bool() const { return count > 0; }
+	inline bool operator==(Slice<T> other) const { return data == other.data && count == other.count; }
+	inline operator Slice<T const>() const { return { data, count }; }
+	inline explicit operator Buffer() const
+	{
+		SafeAssert(count <= INTZ_MAX / sizeof(T));
+		return { (uint8 const*)data, count * SignedSizeof(T) };
+	}
+};
+
+template <typename T, size_t N>
+static inline Slice<T>
+SliceFromArray(T (&array)[N])
+{
+	return { array, N };
+}
+
+template <typename T>
+static inline Slice<T>
+SliceFromRange(T* begin, T* end)
+{
+	return { begin, end - begin };
+}
+
+static inline Slice<uint8 const>
+SliceFromBuffer(Buffer buf)
+{
+	return { buf.data, buf.size };
+}
+
+template <typename T>
+static inline Slice<T const>
+SliceFromTypedBuffer(Buffer buf)
+{
+	return {
+		buf.data,
+		buf.size / SignedSizeof(T),
+	};
+}
+#endif
 
 #endif
