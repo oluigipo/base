@@ -7,7 +7,7 @@ thread_local ThreadContext g_thread_context_;
 
 static inline FORCE_INLINE intz StringPrintfFunc_(char* buf, intz buf_size, const char* restrict fmt, va_list args);
 
-EXTERN_C FORCE_NOINLINE intz
+API FORCE_NOINLINE intz
 StringVPrintfBuffer(char* buf, intz len, const char* fmt, va_list args)
 {
 	Trace();
@@ -16,7 +16,7 @@ StringVPrintfBuffer(char* buf, intz len, const char* fmt, va_list args)
 	return StringPrintfFunc_(buf, len, fmt, args);
 }
 
-EXTERN_C intz
+API intz
 StringPrintfBuffer(char* buf, intz len, const char* fmt, ...)
 {
 	Trace();
@@ -31,7 +31,7 @@ StringPrintfBuffer(char* buf, intz len, const char* fmt, ...)
 	return result;
 }
 
-EXTERN_C String
+API String
 StringVPrintf(char* buf, intz len, const char* fmt, va_list args)
 {
 	Trace();
@@ -45,7 +45,7 @@ StringVPrintf(char* buf, intz len, const char* fmt, va_list args)
 	return result;
 }
 
-EXTERN_C String
+API String
 StringPrintf(char* buf, intz len, const char* fmt, ...)
 {
 	Trace();
@@ -64,14 +64,14 @@ StringPrintf(char* buf, intz len, const char* fmt, ...)
 	return result;
 }
 
-EXTERN_C FORCE_NOINLINE intz
+API FORCE_NOINLINE intz
 StringVPrintfSize(const char* fmt, va_list args)
 {
 	Trace();
 	return StringPrintfFunc_(NULL, 0, fmt, args);
 }
 
-EXTERN_C intz
+API intz
 StringPrintfSize(const char* fmt, ...)
 {
 	Trace();
@@ -464,7 +464,7 @@ StringPrintfFunc_(char* buf, intz buf_size, const char* restrict fmt, va_list ar
 #define STBSP_SPECIAL 0x7000
 static inline int32 stbsp__real_to_str(char const** start, uint32* len, char* out, int32* decimal_pos, float64 value, uint32 frac_digits);
 
-EXTERN_C String
+API String
 StringFormatInt64(uint8* buffer, intz size, int64 value, StringFormatParams const* params)
 {
 	Trace();
@@ -528,14 +528,14 @@ StringFormatInt64(uint8* buffer, intz size, int64 value, StringFormatParams cons
 	return StringMake(to_write, buffer);
 }
 
-EXTERN_C String
+API String
 StringFormatIntz(uint8* buffer, intz size, intz value, StringFormatParams const* params)
 {
 	static_assert(sizeof(intz) <= sizeof(int64));
 	return StringFormatInt64(buffer, size, value, params);
 }
 
-EXTERN_C String
+API String
 StringFormatUInt64(uint8* buffer, intz size, uint64 value, StringFormatParams const* params)
 {
 	Trace();
@@ -579,20 +579,20 @@ StringFormatUInt64(uint8* buffer, intz size, uint64 value, StringFormatParams co
 	return StringMake(to_write, buffer);
 }
 
-EXTERN_C String
+API String
 StringFormatUIntz(uint8* buffer, intz size, uintz value, StringFormatParams const* params)
 {
 	static_assert(sizeof(uintz) <= sizeof(uint64));
 	return StringFormatUInt64(buffer, size, value, params);
 }
 
-EXTERN_C String
+API String
 StringFormatFloat32(uint8* buffer, intz size, float32 value, StringFormatParams const* params)
 {
 	return StringFormatFloat64(buffer, size, value, params);
 }
 
-EXTERN_C String
+API String
 StringFormatFloat64(uint8* buffer, intz size, float64 value, StringFormatParams const* params)
 {
 	Trace();

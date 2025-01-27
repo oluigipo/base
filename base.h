@@ -70,7 +70,15 @@
 #define SignedSizeof(x) ((intz)sizeof(x))
 
 #ifndef Trace
-#	define Trace()
+#	define Trace() ((void)0)
+#	define TraceName(...) ((void)0)
+#	define TraceText(...) ((void)0)
+#	define TraceColor(...) ((void)0)
+#	define TraceF(sz, ...) ((void)0)
+#	define TraceFrameBegin() ((void)0)
+#	define TraceFrameEnd() ((void)0)
+#	define TraceInit() ((void)0)
+#	define TraceDeinit() ((void)0)
 #endif
 
 #if defined(__clang__)

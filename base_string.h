@@ -2,7 +2,6 @@
 #define LJRE_BASE_STRING_H
 
 #include "base.h"
-#include "base_assert.h"
 #include "base_intrinsics.h"
 
 static inline FORCE_INLINE String StringMake(intz size, void const* buffer);
@@ -25,12 +24,12 @@ static inline intz StringIndexOf(String str, uint8 ch, intz start_index);
 static inline intz StringIndexOfSubstr(String str, String substr, intz start_index);
 static inline String StringFromFixedBuffer(Buffer buf);
 
-EXTERN_C intz   FORCE_NOINLINE StringVPrintfBuffer(char* buf, intz len, const char* fmt, va_list args);
-EXTERN_C intz                  StringPrintfBuffer (char* buf, intz len, const char* fmt, ...);
-EXTERN_C String                StringVPrintf(char* buf, intz len, const char* fmt, va_list args);
-EXTERN_C String                StringPrintf (char* buf, intz len, const char* fmt, ...);
-EXTERN_C intz   FORCE_NOINLINE StringVPrintfSize(const char* fmt, va_list args);
-EXTERN_C intz                  StringPrintfSize (const char* fmt, ...);
+API intz   FORCE_NOINLINE StringVPrintfBuffer(char* buf, intz len, const char* fmt, va_list args);
+API intz                  StringPrintfBuffer (char* buf, intz len, const char* fmt, ...);
+API String                StringVPrintf(char* buf, intz len, const char* fmt, va_list args);
+API String                StringPrintf (char* buf, intz len, const char* fmt, ...);
+API intz   FORCE_NOINLINE StringVPrintfSize(const char* fmt, va_list args);
+API intz                  StringPrintfSize (const char* fmt, ...);
 
 struct StringFormatParams
 {
@@ -40,19 +39,19 @@ struct StringFormatParams
 }
 typedef StringFormatParams;
 
-EXTERN_C String StringFormatInt64  (uint8* buffer, intz size, int64 value, StringFormatParams const* params);
-EXTERN_C String StringFormatIntz   (uint8* buffer, intz size, intz value, StringFormatParams const* params);
-EXTERN_C String StringFormatUInt64 (uint8* buffer, intz size, uint64 value, StringFormatParams const* params);
-EXTERN_C String StringFormatUIntz  (uint8* buffer, intz size, uintz value, StringFormatParams const* params);
-EXTERN_C String StringFormatFloat32(uint8* buffer, intz size, float32 value, StringFormatParams const* params);
-EXTERN_C String StringFormatFloat64(uint8* buffer, intz size, float64 value, StringFormatParams const* params);
+API String StringFormatInt64  (uint8* buffer, intz size, int64 value, StringFormatParams const* params);
+API String StringFormatIntz   (uint8* buffer, intz size, intz value, StringFormatParams const* params);
+API String StringFormatUInt64 (uint8* buffer, intz size, uint64 value, StringFormatParams const* params);
+API String StringFormatUIntz  (uint8* buffer, intz size, uintz value, StringFormatParams const* params);
+API String StringFormatFloat32(uint8* buffer, intz size, float32 value, StringFormatParams const* params);
+API String StringFormatFloat64(uint8* buffer, intz size, float64 value, StringFormatParams const* params);
 
-EXTERN_C int64   StringParseInt64  (String buffer, intz* out_end_index, int32 base);
-EXTERN_C int64   StringParseIntz   (String buffer, intz* out_end_index, int32 base);
-EXTERN_C int64   StringParseUInt64 (String buffer, intz* out_end_index, int32 base);
-EXTERN_C int64   StringParseUIntz  (String buffer, intz* out_end_index, int32 base);
-EXTERN_C float32 StringParseFloat32(String buffer, intz* out_end_index);
-EXTERN_C float64 StringParseFloat64(String buffer, intz* out_end_index);
+API int64   StringParseInt64  (String buffer, intz* out_end_index, int32 base);
+API int64   StringParseIntz   (String buffer, intz* out_end_index, int32 base);
+API int64   StringParseUInt64 (String buffer, intz* out_end_index, int32 base);
+API int64   StringParseUIntz  (String buffer, intz* out_end_index, int32 base);
+API float32 StringParseFloat32(String buffer, intz* out_end_index);
+API float64 StringParseFloat64(String buffer, intz* out_end_index);
 
 static inline FORCE_INLINE String
 StringMake(intz size, void const* buffer)
