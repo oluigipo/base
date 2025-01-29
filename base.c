@@ -531,7 +531,7 @@ StringFormatInt64(uint8* buffer, intz size, int64 value, StringFormatParams cons
 API String
 StringFormatIntz(uint8* buffer, intz size, intz value, StringFormatParams const* params)
 {
-	static_assert(sizeof(intz) <= sizeof(int64));
+	static_assert(sizeof(intz) <= sizeof(int64), "");
 	return StringFormatInt64(buffer, size, value, params);
 }
 
@@ -582,7 +582,7 @@ StringFormatUInt64(uint8* buffer, intz size, uint64 value, StringFormatParams co
 API String
 StringFormatUIntz(uint8* buffer, intz size, uintz value, StringFormatParams const* params)
 {
-	static_assert(sizeof(uintz) <= sizeof(uint64));
+	static_assert(sizeof(uintz) <= sizeof(uint64), "");
 	return StringFormatUInt64(buffer, size, value, params);
 }
 
