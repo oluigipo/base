@@ -5,7 +5,14 @@
 
 thread_local ThreadContext g_thread_context_;
 
-static inline FORCE_INLINE intz StringPrintfFunc_(char* buf, intz buf_size, const char* restrict fmt, va_list args);
+API ThreadContext*
+ThisThreadContext(void)
+{
+	ThreadContext* ctx = &g_thread_context_;
+	return ctx;
+}
+
+static inline intz StringPrintfFunc_(char* buf, intz buf_size, const char* restrict fmt, va_list args);
 
 API FORCE_NOINLINE intz
 StringVPrintfBuffer(char* buf, intz len, const char* fmt, va_list args)
@@ -124,7 +131,7 @@ StringFillBuf_(char** p, char* end, intz* count, char fill, intz fillsize)
 	}
 }
 
-static inline FORCE_INLINE intz
+static inline intz
 StringPrintfFunc_(char* buf, intz buf_size, const char* restrict fmt, va_list args)
 {
 	Trace();

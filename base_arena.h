@@ -243,7 +243,13 @@ ArenaPushStringAligned(Arena* arena, String str, intz alignment)
 
 static inline void
 ArenaClear(Arena* arena)
-{ arena->offset = 0; }
+{
+	// NOTE(ljre): If this arena is bootstrapped by itself, then don't free itself
+	if ((uint8*)arena == arena->memory)
+		arena->offset = SignedSizeof(Arena);
+	else
+		arena->offset = 0;
+}
 
 static inline void*
 ArenaEnd(Arena* arena)
@@ -410,6 +416,8 @@ ArenaAllocatorProc(void* instance, AllocatorMode mode, intz size, intz alignment
 
 	if (out_err)
 		*out_err = error;
+	else
+		SafeAssert(error == AllocatorError_Ok);
 	return result;
 }
 

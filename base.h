@@ -58,6 +58,17 @@
 #    endif
 #endif //CONFIG_ARCH_X86FAMILY
 
+
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202000
+#	define CONFIG_HAS_ENHANCED_ENUMS 1
+#endif
+
+#ifdef CONFIG_HAS_ENHANCED_ENUMS
+#	define CONFIG_IF_ENHANCED_ENUMS(...) __VA_ARGS__
+#else
+#	define CONFIG_IF_ENHANCED_ENUMS(...)
+#endif
+
 #define AlignUp(x, mask) (((x) + (mask)) & ~(mask))
 #define AlignDown(x, mask) ((x) & ~(mask))
 #define IsPowerOf2(x) ( ((x) & (x)-1) == 0 )
@@ -283,14 +294,7 @@ struct ThreadContext
 }
 typedef ThreadContext;
 
-EXTERN_C thread_local ThreadContext g_thread_context_;
-
-static inline ThreadContext*
-ThisThreadContext(void)
-{
-	ThreadContext* ctx = &g_thread_context_;
-	return ctx;
-}
+API ThreadContext* ThisThreadContext(void);
 
 static inline Arena*
 ScratchArena(intz conflict_count, Arena* const conflicts[])
