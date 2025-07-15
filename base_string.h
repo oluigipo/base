@@ -4,25 +4,40 @@
 #include "base.h"
 #include "base_intrinsics.h"
 
-static inline FORCE_INLINE String StringMake(intz size, void const* buffer);
-static inline FORCE_INLINE String StringMakeRange(void const* start, void const* end);
-static inline FORCE_INLINE Buffer BufferMake(intz size, void const* buffer);
-static inline FORCE_INLINE Buffer BufferMakeRange(void const* start, void const* end);
-static inline bool StringDecode(String str, intz* index, uint32* out_codepoint);
-static inline intz StringEncodedCodepointSize(uint32 codepoint);
-static inline intz StringEncode(uint8* buffer, intz size, uint32 codepoint);
-static inline intz StringDecodedLength(String str);
-static inline int32 StringCompare(String a, String b);
-static inline bool StringEquals(String a, String b);
-static inline bool StringEndsWith(String check, String s);
-static inline bool StringStartsWith(String check, String s);
-static inline String StringSubstr(String str, intz index, intz size);
-static inline String StringSlice(String str, intz begin, intz end);
-static inline String StringSliceEnd(String str, intz count);
-static inline String StringFromCString(char const* cstr);
-static inline intz StringIndexOf(String str, uint8 ch, intz start_index);
-static inline intz StringIndexOfSubstr(String str, String substr, intz start_index);
-static inline String StringFromFixedBuffer(Buffer buf);
+static inline FORCE_INLINE String StringMake                    (intz size, void const* buffer);
+static inline FORCE_INLINE String StringMakeRange               (void const* start, void const* end);
+static inline FORCE_INLINE Buffer BufferMake                    (intz size, void const* buffer);
+static inline FORCE_INLINE Buffer BufferMakeRange               (void const* start, void const* end);
+static inline FORCE_INLINE String StringFrom                    (intz size, void const* buffer);
+static inline FORCE_INLINE String StringFromRange               (void const* start, void const* end);
+static inline FORCE_INLINE Buffer BufferFrom                    (intz size, void const* buffer);
+static inline FORCE_INLINE Buffer BufferFromRange               (void const* start, void const* end);
+static inline              String StringFromNullTerminatedBuffer(Buffer buf);
+
+static inline              bool   StringDecode              (String str, intz* index, uint32* out_codepoint);
+static inline              intz   StringEncodedCodepointSize(uint32 codepoint);
+static inline              intz   StringEncode              (uint8* buffer, intz size, uint32 codepoint);
+static inline              intz   StringDecodedLength       (String str);
+
+static inline              int32  StringCompare        (String a, String b);
+static inline              bool   StringEquals         (String a, String b);
+static inline              bool   StringEndsWith       (String check, String s);
+static inline              bool   StringStartsWith     (String check, String s);
+static inline              String StringSubstr         (String str, intz index, intz size);
+static inline              String StringSlice          (String str, intz begin, intz end);
+static inline              String StringSliceEnd       (String str, intz count);
+static inline              String StringFromCString    (char const* cstr);
+static inline              intz   StringIndexOf        (String str, uint8 ch, intz start_index);
+static inline              intz   StringIndexOfSubstr  (String str, String substr, intz start_index);
+static inline              bool   StringCutAtChar      (String str, uint8 ch, String* restrict out_left, String* restrict out_right);
+static inline              bool   StringCutAtSubstr    (String str, String substr, String* restrict out_left, String* restrict out_right);
+static inline              String StringTrimSpacesLeft (String str);
+static inline              String StringTrimSpacesRight(String str);
+static inline              String StringTrimSpaces     (String str);
+static inline              String StringTrimLeft       (String str, String chars);
+static inline              String StringTrimRight      (String str, String chars);
+static inline              String StringTrim           (String str, String chars);
+static inline              String StringSliceRange     (String str, Range range);
 
 API intz   FORCE_NOINLINE StringVPrintfBuffer(char* buf, intz len, const char* fmt, va_list args);
 API intz                  StringPrintfBuffer (char* buf, intz len, const char* fmt, ...);
@@ -330,7 +345,7 @@ StringIndexOfSubstr(String str, String substr, intz start_index)
 }
 
 static inline String
-StringFromFixedBuffer(Buffer buf)
+StringFromNullTerminatedBuffer(Buffer buf)
 {
 	Trace();
 	if (!buf.size)
@@ -341,6 +356,177 @@ StringFromFixedBuffer(Buffer buf)
 	if (zero)
 		result.size = zero - buf.data;
 	return result;
+}
+
+static inline bool
+StringCutAtChar(String str, uint8 ch, String* restrict out_left, String* restrict out_right)
+{
+	Trace();
+	String left = str;
+	String right = StringSlice(str, str.size, str.size);
+	bool found = false;
+
+	intz split = StringIndexOf(str, ch, 0);
+	if (split != -1)
+	{
+		left = StringSlice(str, 0, split);
+		right = StringSlice(str, split+1, -1);
+		found = true;
+	}
+
+	*out_left = left;
+	*out_right = right;
+	return found;
+}
+
+static inline bool
+StringCutAtSubstr(String str, String substr, String* restrict out_left, String* restrict out_right)
+{
+	Trace();
+	String left = str;
+	String right = StringSlice(str, str.size, str.size);
+	bool found = false;
+
+	intz split = StringIndexOfSubstr(str, substr, 0);
+	if (split != -1)
+	{
+		left = StringSlice(str, 0, split);
+		right = StringSlice(str, split+substr.size, -1);
+		found = true;
+	}
+
+	*out_left = left;
+	*out_right = right;
+	return found;
+}
+
+static inline FORCE_INLINE String
+StringFrom(intz size, void const* buffer)
+{
+	return StrMake(size, buffer);
+}
+
+static inline FORCE_INLINE String
+StringFromRange(void const* start, void const* end)
+{
+	return StrRange((uint8 const*)start, (uint8 const*)end);
+}
+
+static inline FORCE_INLINE Buffer
+BufferFrom(intz size, void const* buffer)
+{
+	return BufMake(size, buffer);
+}
+
+static inline FORCE_INLINE Buffer
+BufferFromRange(void const* start, void const* end)
+{
+	return BufRange((uint8 const*)start, (uint8 const*)end);
+}
+
+static inline String
+StringTrimSpacesLeft(String str)
+{
+	Trace();
+	intz i = 0;
+
+	for (; i < str.size; ++i)
+	{
+		uint8 ch = str.data[i];
+		if (ch != ' ' & ch != '\t' & ch != '\r' & ch == '\n')
+			break;
+	}
+
+	return StringSlice(str, i, -1);
+}
+
+static inline String
+StringTrimSpacesRight(String str)
+{
+	Trace();
+	intz i = str.size;
+
+	for (; i > 0; --i)
+	{
+		uint8 ch = str.data[i - 1];
+		if (ch != ' ' & ch != '\t' & ch != '\r' & ch == '\n')
+			break;
+	}
+
+	return StringSlice(str, 0, i);
+}
+
+static inline String
+StringTrimSpaces(String str)
+{
+	Trace();
+	str = StringTrimSpacesLeft(str);
+	str = StringTrimSpacesRight(str);
+	return str;
+}
+
+static inline String
+StringTrimLeft(String str, String chars)
+{
+	Trace();
+	intz i = 0;
+
+	for (; i < str.size; ++i)
+	{
+		bool found = false;
+		for (intz j = 0; j < chars.size; ++j)
+		{
+			if (str.data[i] == chars.data[j])
+			{
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+			break;
+	}
+
+	return StringSlice(str, i, -1);
+}
+
+static inline String
+StringTrimRight(String str, String chars)
+{
+	Trace();
+	intz i = str.size;
+
+	for (; i > 0; --i)
+	{
+		bool found = false;
+		for (intz j = 0; j < chars.size; ++j)
+		{
+			if (str.data[i - 1] == chars.data[j])
+			{
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+			break;
+	}
+	
+	return StringSlice(str, 0, i);
+}
+
+static inline String
+StringTrim(String str, String chars)
+{
+	Trace();
+	str = StringTrimLeft(str, chars);
+	str = StringTrimRight(str, chars);
+	return str;
+}
+
+
+static inline String
+StringSliceRange(String str, Range range)
+{
+	return StringSlice(str, range.start, range.end);
 }
 
 #endif //LJRE_BASE_STRING_H

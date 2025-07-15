@@ -5,7 +5,7 @@
 
 // NOTE(ljre): FNV-1a implementation.
 static inline FORCE_INLINE uint64
-HashString(String memory)
+HashFnv1a(String memory)
 {
 	Trace();
 	uint64 result = 14695981039346656037u;
@@ -19,6 +19,12 @@ HashString(String memory)
 	}
 	
 	return result;
+}
+
+static inline FORCE_INLINE uint64
+HashString(String memory)
+{
+	return HashFnv1a(memory);
 }
 
 // NOTE(ljre): Perfect hash of 32bit integer permutation.

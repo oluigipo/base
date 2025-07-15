@@ -138,7 +138,7 @@ StringPrintfFunc_(char* buf, intz buf_size, const char* restrict fmt, va_list ar
 	intz count = 0;
 	const char* fmt_end = fmt + MemoryStrlen(fmt);
 	
-	SafeAssert(!buf ? buf_size <= 0 : true);
+	SafeAssert((buf == NULL) == (buf_size <= 0));
 	
 	char* p = buf;
 	char* p_end = buf_size ? buf + buf_size : buf; // NOTE(ljre): avoid "(T*)NULL + 0" UB.
@@ -515,14 +515,17 @@ StringFormatInt64(uint8* buffer, intz size, int64 value, StringFormatParams cons
 	intz left_padding = params->left_padding;
 	if (left_padding > ArrayLength(tmpbuf))
 		left_padding = ArrayLength(tmpbuf);
-		
-	uint8 pad_byte = params->pad_byte;
-	if (!pad_byte)
-		pad_byte = '0';
-	while (ArrayLength(tmpbuf) - head)
+	
+	if (left_padding)
 	{
-		SafeAssert(head > 0);
-		tmpbuf[--head] = pad_byte;
+		uint8 pad_byte = params->pad_byte;
+		if (!pad_byte)
+			pad_byte = '0';
+		while (left_padding-- && ArrayLength(tmpbuf) - head > 0)
+		{
+			SafeAssert(head > 0);
+			tmpbuf[--head] = pad_byte;
+		}
 	}
 
 	if (is_negative && head > 0)
@@ -531,7 +534,7 @@ StringFormatInt64(uint8* buffer, intz size, int64 value, StringFormatParams cons
 	intz to_write = ArrayLength(tmpbuf) - head;
 	if (to_write > size)
 		to_write = size;
-	MemoryCopy(buffer, tmpbuf, to_write);
+	MemoryCopy(buffer, tmpbuf + head, to_write);
 	return StringMake(to_write, buffer);
 }
 
@@ -582,7 +585,7 @@ StringFormatUInt64(uint8* buffer, intz size, uint64 value, StringFormatParams co
 	intz to_write = ArrayLength(tmpbuf) - head;
 	if (to_write > size)
 		to_write = size;
-	MemoryCopy(buffer, tmpbuf, to_write);
+	MemoryCopy(buffer, tmpbuf + head, to_write);
 	return StringMake(to_write, buffer);
 }
 

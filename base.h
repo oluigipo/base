@@ -193,6 +193,13 @@ struct Buffer
 }
 typedef Buffer, String;
 
+struct Range
+{
+	intz start;
+	intz end;
+}
+typedef Range;
+
 struct Arena typedef Arena;
 typedef bool ArenaCommitMemoryProc(Arena* arena, intz needed_size);
 
@@ -260,7 +267,7 @@ struct Allocator
 };
 
 Allocator typedef SingleAllocator;         // Alloc; single allocation
-Allocator typedef SingleResizingAllocator; // Alloc, Resize; single allocation
+Allocator typedef SingleResizingAllocator; // Alloc, Resize, Free; single allocation
 Allocator typedef MultiAllocator;          // Alloc
 Allocator typedef MultiResizingAllocator;  // Alloc, Resize, Free
 Allocator typedef ArenaAllocator;          // Alloc, Pop
@@ -386,16 +393,47 @@ struct Slice
 	T* data;
 	intz count;
 
-	inline T& operator[](intz index) const { return data[index]; }
+	inline T& operator[](intz index) const
+	{
+		SafeAssert(index >= 0 && index < count);
+		return data[index];
+	}
+	inline bool operator==(Slice<T> other) const { return data == other.data && count == other.count; }
+	inline operator bool() const { return count > 0; }
+	inline operator Slice<T const>() const { return { data, count }; }
 	inline T* begin() const { return data; }
 	inline T* end() const { return data + count; }
-	inline operator bool() const { return count > 0; }
-	inline bool operator==(Slice<T> other) const { return data == other.data && count == other.count; }
-	inline operator Slice<T const>() const { return { data, count }; }
-	inline explicit operator Buffer() const
+	inline intz Size() const { return count * SignedSizeof(T); }
+	inline Buffer Buffer() const
 	{
 		SafeAssert(count <= INTZ_MAX / sizeof(T));
 		return { (uint8 const*)data, count * SignedSizeof(T) };
+	}
+
+	inline constexpr Slice<T>
+	SliceRange(intz start, intz end = -1) const
+	{
+		if (!size)
+			return *this;
+		if (start < 0)
+			start = size + start + 1;
+		if (end < 0)
+			end = size + end + 1;
+		start = ClampMax(start, size);
+		end = Clamp(end, start, size);
+
+		return {
+			data + start,
+			end - start,
+		};
+	}
+
+	inline constexpr Slice<T>
+	Slice(intz start, intz len = -1) const
+	{
+		if (len < 0)
+			len = size;
+		return this->SliceRange(start, start + len);
 	}
 };
 

@@ -5,6 +5,12 @@
 #include "base_intrinsics.h"
 #include "base_string.h"
 
+#ifndef CONFIG_ARENA_DEFAULT_ALIGNMENT
+#	define CONFIG_ARENA_DEFAULT_ALIGNMENT 16
+#endif
+
+static_assert(CONFIG_ARENA_DEFAULT_ALIGNMENT != 0 && IsPowerOf2(CONFIG_ARENA_DEFAULT_ALIGNMENT), "Default Arena alignment should always be non-zero and a power of two");
+
 #define ArenaPushStruct(arena, Type) \
 	((Type*)ArenaPushAligned(arena, SignedSizeof(Type), alignof(Type)))
 #define ArenaPushStructData(arena, Type, ...) \
@@ -26,33 +32,37 @@
 #   define ArenaPushStructInit(arena, Type, ...) \
 		((Type*)ArenaPushMemoryAligned(arena, &(Type const&) Type __VA_ARGS__, SignedSizeof(Type), alignof(Type)))
 #endif //__cplusplus
+#define ArenaBeginArray(arena, Type) \
+	((Type*)ArenaEndAligned(arena, alignof(Type)))
+#define ArenaEndArray(arena, Type, begin) \
+	((Type*)ArenaEnd(arena) - begin)
 
-static inline Arena ArenaFromMemory(void* memory, intz size);
-static inline Arena* ArenaBootstrap(Arena arena);
-static inline void* ArenaPush(Arena* arena, intz size);
-static inline void* ArenaPushDirty(Arena* arena, intz size);
-static inline void* ArenaPushAligned(Arena* arena, intz size, intz alignment);
-static inline void* ArenaPushDirtyAligned(Arena* arena, intz size, intz alignment);
-static inline void* ArenaPushMemory(Arena* arena, void const* buf, intz size);
-static inline void* ArenaPushMemoryAligned(Arena* arena, void const* buf, intz size, intz alignment);
-static inline String ArenaPushString(Arena* arena, String str);
+static inline Arena  ArenaFromMemory       (void* memory, intz size);
+static inline Arena* ArenaBootstrap        (Arena arena);
+static inline void*  ArenaPush             (Arena* arena, intz size);
+static inline void*  ArenaPushDirty        (Arena* arena, intz size);
+static inline void*  ArenaPushAligned      (Arena* arena, intz size, intz alignment);
+static inline void*  ArenaPushDirtyAligned (Arena* arena, intz size, intz alignment);
+static inline void*  ArenaPushMemory       (Arena* arena, void const* buf, intz size);
+static inline void*  ArenaPushMemoryAligned(Arena* arena, void const* buf, intz size, intz alignment);
+static inline String ArenaPushString       (Arena* arena, String str);
 static inline String ArenaPushStringAligned(Arena* arena, String str, intz alignment);
-static inline char* ArenaPushCString(Arena* arena, String str);
-static inline String ArenaVPrintf(Arena* arena, const char* fmt, va_list args);
-static inline String ArenaPrintf(Arena* arena, const char* fmt, ...);
-static inline void  ArenaPop(Arena* arena, void* ptr);
-static inline void* ArenaEndAligned(Arena* arena, intz alignment);
-static inline void  ArenaClear(Arena* arena);
-static inline void* ArenaEnd(Arena* arena);
-static inline ArenaSavepoint ArenaSave(Arena* arena);
-static inline void           ArenaRestore(ArenaSavepoint savepoint);
+static inline char*  ArenaPushCString      (Arena* arena, String str);
+static inline String ArenaVPrintf          (Arena* arena, const char* fmt, va_list args);
+static inline String ArenaPrintf           (Arena* arena, const char* fmt, ...);
+static inline void   ArenaPop              (Arena* arena, void* ptr);
+static inline void*  ArenaEndAligned       (Arena* arena, intz alignment);
+static inline void   ArenaClear            (Arena* arena);
+static inline void*  ArenaEnd              (Arena* arena);
+static inline ArenaSavepoint ArenaSave     (Arena* arena);
+static inline void           ArenaRestore  (ArenaSavepoint savepoint);
 
 static inline Allocator AllocatorFromArena(Arena* arena);
 
 static inline Arena
 ArenaFromMemory(void* memory, intz size)
 {
-	Assert(((uintptr)memory & (uintptr)~(CONFIG_ARENA_DEFAULT_ALIGNMENT-1)) == (uintptr)memory);
+	Assert(((uintptr)memory & ~(uintptr)(CONFIG_ARENA_DEFAULT_ALIGNMENT-1)) == (uintptr)memory);
 	
 	Arena result = {
 		.size = size,

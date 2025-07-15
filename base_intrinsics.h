@@ -21,29 +21,28 @@ static inline FORCE_INLINE uint32 ByteSwap32(uint32 x);
 static inline FORCE_INLINE uint16 ByteSwap16(uint16 x);
 static inline FORCE_INLINE uint16  EncodeF16(float32 x);
 static inline FORCE_INLINE float32 DecodeF16(uint16 x);
-static inline intz MemoryStrlen(const char* restrict cstr);
-static inline intz MemoryStrnlen(const char* restrict cstr, intz limit);
-static inline int32 MemoryStrcmp(const char* left, const char* right);
-static inline int32 MemoryStrncmp(const char* left, const char* right, intz limit);
-static inline char* MemoryStrstr(const char* left, const char* right);
-static inline char* MemoryStrnstr(const char* left, const char* right, intz limit);
+static inline intz MemoryStrlen(char const* restrict cstr);
+static inline intz MemoryStrnlen(char const* restrict cstr, intz limit);
+static inline int32 MemoryStrcmp(char const* left, char const* right);
+static inline int32 MemoryStrncmp(char const* left, char const* right, intz limit);
+static inline char* MemoryStrstr(char const* left, char const* right);
+static inline char* MemoryStrnstr(char const* left, char const* right, intz limit);
 static inline void const* MemoryFindByte(const void* buffer, uint8 byte, intz size);
 static inline void* MemoryZeroSafe(void* restrict dst, intz size);
 static inline FORCE_INLINE void* MemoryZero(void* restrict dst, intz size);
-static inline FORCE_INLINE void* MemoryCopy(void* restrict dst, const void* restrict src, intz size);
-static inline FORCE_INLINE void* MemoryMove(void* dst, const void* src, intz size);
+static inline FORCE_INLINE void* MemoryCopy(void* restrict dst, void const* restrict src, intz size);
+static inline FORCE_INLINE void* MemoryMove(void* dst, void const* src, intz size);
 static inline FORCE_INLINE void* MemorySet(void* restrict dst, uint8 byte, intz size);
-static inline FORCE_INLINE int32 MemoryCompare(const void* left_, const void* right_, intz size);
+static inline FORCE_INLINE int32 MemoryCompare(void const* left_, void const* right_, intz size);
+static inline FORCE_INLINE bool MemoryIsZero(void const* data, intz size);
+static inline FORCE_INLINE bool MemoryIsFilled(void const* data, uint8 byte, intz size);
+
+#define IsZero(ptr) MemoryIsZero(ptr, sizeof(*(ptr)))
+#define DidError(err_ptr) ((err_ptr) && !MemoryIsZero(err_ptr, sizeof(*(err_ptr))))
 
 #ifdef CONFIG_ARCH_X86FAMILY
 #   include <immintrin.h>
 #endif
-
-#ifndef CONFIG_ARENA_DEFAULT_ALIGNMENT
-#	define CONFIG_ARENA_DEFAULT_ALIGNMENT 16
-#endif
-
-static_assert(CONFIG_ARENA_DEFAULT_ALIGNMENT != 0 && IsPowerOf2(CONFIG_ARENA_DEFAULT_ALIGNMENT), "Default Arena alignment should always be non-zero and a power of two");
 
 //-
 #if defined(_MSC_VER) && !defined(__clang__)
@@ -383,11 +382,11 @@ MemoryCopyX16(void* restrict dst, const void* restrict src)
 #include <string.h>
 
 static inline FORCE_INLINE void*
-MemoryCopy(void* restrict dst, const void* restrict src, intz size)
+MemoryCopy(void* restrict dst, void const* restrict src, intz size)
 { Trace(); Assert(size >= 0); return size == 0 ? dst : memcpy(dst, src, (size_t)size); }
 
 static inline FORCE_INLINE void*
-MemoryMove(void* dst, const void* src, intz size)
+MemoryMove(void* dst, void const* src, intz size)
 { Trace(); Assert(size >= 0); return size == 0 ? dst : memmove(dst, src, (size_t)size); }
 
 static inline FORCE_INLINE void*
@@ -395,11 +394,11 @@ MemorySet(void* restrict dst, uint8 byte, intz size)
 { Trace(); Assert(size >= 0); return size == 0 ? dst : memset(dst, byte, (size_t)size); }
 
 static inline FORCE_INLINE int32
-MemoryCompare(const void* left_, const void* right_, intz size)
+MemoryCompare(void const* left_, void const* right_, intz size)
 { Trace(); Assert(size >= 0); return size == 0 ? 0 : memcmp(left_, right_, (size_t)size); }
 
 static inline intz
-MemoryStrlen(const char* restrict cstr)
+MemoryStrlen(char const* restrict cstr)
 {
 	Trace();
 	size_t result = strlen(cstr);
@@ -408,7 +407,7 @@ MemoryStrlen(const char* restrict cstr)
 }
 
 static inline intz
-MemoryStrnlen(const char* restrict cstr, intz limit)
+MemoryStrnlen(char const* restrict cstr, intz limit)
 {
 	Trace();
 	Assert(limit >= 0);
@@ -418,11 +417,11 @@ MemoryStrnlen(const char* restrict cstr, intz limit)
 }
 
 static inline int32
-MemoryStrcmp(const char* left, const char* right)
+MemoryStrcmp(char const* left, char const* right)
 { Trace(); return strcmp(left, right); }
 
 static inline int32
-MemoryStrncmp(const char* left, const char* right, intz limit)
+MemoryStrncmp(char const* left, char const* right, intz limit)
 {
 	Trace();
 	Assert(limit >= 0);
@@ -430,11 +429,11 @@ MemoryStrncmp(const char* left, const char* right, intz limit)
 }
 
 static inline char*
-MemoryStrstr(const char* left, const char* right)
+MemoryStrstr(char const* left, char const* right)
 { Trace(); return (char*)strstr(left, right); }
 
-static inline const void*
-MemoryFindByte(const void* buffer, uint8 byte, intz size)
+static inline void const*
+MemoryFindByte(void const* buffer, uint8 byte, intz size)
 {
 	Trace();
 	Assert(size >= 0);
@@ -450,14 +449,14 @@ MemoryZero(void* restrict dst, intz size)
 }
 
 static inline char*
-MemoryStrnstr(const char* left, const char* right, intz limit)
+MemoryStrnstr(char const* left, char const* right, intz limit)
 {
 	Trace();
 	
 	for (; *left && limit > 0; ++left)
 	{
-		const char* it_left = left;
-		const char* it_right = right;
+		char const* it_left = left;
+		char const* it_right = right;
 		intz local_limit = limit--;
 		while (*it_left == *it_right)
 		{
@@ -471,6 +470,28 @@ MemoryStrnstr(const char* left, const char* right, intz limit)
 	}
 	
 	return NULL;
+}
+
+static inline FORCE_INLINE bool
+MemoryIsZero(void const* data, intz size)
+{
+	if (size <= 0)
+		return false;
+	uint8 const* p = (uint8 const*)data;
+	if (size == 1)
+		return p[0] == 0;
+	return p[0] == 0 && MemoryCompare(p, p+1, size - 1) == 0;
+}
+
+static inline FORCE_INLINE bool
+MemoryIsFilled(void const* data, uint8 byte, intz size)
+{
+	if (size <= 0)
+		return false;
+	uint8 const* p = (uint8 const*)data;
+	if (size == 1)
+		return p[0] == byte;
+	return p[0] == byte && MemoryCompare(p, p+1, size - 1) == 0;
 }
 
 #endif //LJRE_BASE_INTRINSICS_H
