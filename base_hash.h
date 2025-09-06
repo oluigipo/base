@@ -66,4 +66,16 @@ HashMsi(uint32 log2_of_cap, uint64 hash, intz index)
 	return (index + step) & mask;
 }
 
+static inline FORCE_INLINE uint64
+HashCombine64(uint64 x, uint64 y)
+{
+	return x ^ (y * 0x9e3779b97f4a7c15 + (x << 6) + (x >> 2));
+}
+
+static inline FORCE_INLINE uint32
+HashCombine32(uint32 x, uint32 y)
+{
+	return x ^ (y * 0x9e3779b9 + (x << 6) + (x >> 2));
+}
+
 #endif //LJRE_BASE_HASH_H

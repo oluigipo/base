@@ -440,36 +440,36 @@ AllocatorFromArena(Arena* arena)
 	};
 }
 
-#ifdef __cplusplus
-struct ScratchScope
-{
-	Arena* arena;
-	Allocator allocator;
-	void* end;
+// #ifdef __cplusplus
+// struct ScratchScope
+// {
+// 	Arena* arena;
+// 	Allocator allocator;
+// 	void* end;
 
-	inline explicit ScratchScope(Arena* arena)
-		: arena(arena), allocator(), end(ArenaEnd(arena))
-	{}
-	inline explicit ScratchScope(Allocator allocator)
-		: arena(), allocator(allocator), end()
-	{
-		AllocatorError err;
-		end = AllocatorAllocNonZeroed(&allocator, 0, 0, &err);
-		if (err)
-			end = NULL;
-	}
-	inline ScratchScope(ScratchScope const& other) = delete;
-	inline ScratchScope(ScratchScope&& other) = delete;
-	inline ScratchScope& operator=(ScratchScope const& other) = delete;
-	inline ScratchScope& operator=(ScratchScope&& other) = delete;
-	inline ~ScratchScope()
-	{
-		if (arena)
-			ArenaPop(arena, end);
-		if (allocator.proc)
-			AllocatorPop(&allocator, end, NULL);
-	}
-};
-#endif
+// 	inline explicit ScratchScope(Arena* arena)
+// 		: arena(arena), allocator(), end(ArenaEnd(arena))
+// 	{}
+// 	inline explicit ScratchScope(Allocator allocator)
+// 		: arena(), allocator(allocator), end()
+// 	{
+// 		AllocatorError err;
+// 		end = AllocatorAllocNonZeroed(&allocator, 0, 0, &err);
+// 		if (err)
+// 			end = NULL;
+// 	}
+// 	inline ScratchScope(ScratchScope const& other) = delete;
+// 	inline ScratchScope(ScratchScope&& other) = delete;
+// 	inline ScratchScope& operator=(ScratchScope const& other) = delete;
+// 	inline ScratchScope& operator=(ScratchScope&& other) = delete;
+// 	inline ~ScratchScope()
+// 	{
+// 		if (arena)
+// 			ArenaPop(arena, end);
+// 		if (allocator.proc)
+// 			AllocatorPop(&allocator, end, NULL);
+// 	}
+// };
+// #endif
 
 #endif //LJRE_BASE_ARENA_H

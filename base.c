@@ -1070,3 +1070,73 @@ stbsp__real_to_str(char const** start, uint32* len, char out[64], int32* decimal
 	*len = (uint32)e;
 	return ng;
 }
+
+API int64
+StringParseInt64(String buffer, intz* out_end_index, int32 base)
+{
+	int64 result = 0;
+	intz head = 0;
+
+	for (;head < buffer.size; ++head)
+	{
+		uint8 ch = buffer.data[head];
+		int64 n;
+		if (ch >= '0' && ch <= '9')
+			n = ch - '0';
+		else if (ch >= 'a' && ch <= 'z')
+			n = ch - 'a' + 10;
+		else if (ch >= 'A' && ch <= 'Z')
+			n = ch - 'A' + 10;
+		else
+			break;
+
+		result *= base;
+		result += n;
+	}
+
+	if (out_end_index)
+		*out_end_index = head;
+	return result;
+}
+
+API float64
+StringParseFloat64(String buffer, intz* out_end_index)
+{
+	float64 result = 0;
+	intz head = 0;
+
+	for (; head < buffer.size; ++head)
+	{
+		uint8 ch = buffer.data[head];
+		float64 n;
+		if (ch >= '0' && ch <= '9')
+			n = (float64)(ch - '0');
+		else
+			break;
+		
+		result *= 10;
+		result += n;
+	}
+
+	if (head < buffer.size && buffer.data[head] == '.')
+	{
+		++head;
+		float64 mul = 0.1;
+		for (; head < buffer.size; ++head)
+		{
+			uint8 ch = buffer.data[head];
+			float64 n;
+			if (ch >= '0' && ch <= '9')
+				n = (float64)(ch - '0');
+			else
+				break;
+		
+			result += n * mul;
+			mul *= 0.1;
+		}
+	}
+
+	if (out_end_index)
+		*out_end_index = head;
+	return result;
+}

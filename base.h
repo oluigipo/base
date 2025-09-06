@@ -79,6 +79,21 @@
 #define ClampMin Max
 #define Clamp(x,min,max) ((x) < (min) ? (min) : (x) > (max) ? (max) : (x))
 #define SignedSizeof(x) ((intz)sizeof(x))
+#define SizeofField(Type, field) ((intz)sizeof( ((Type*)0)->field ))
+#define Deferred(begin, end) (int __i_ = ((void)(begin), 0); __i_ < 1; (void)(end), ++__i_)
+#define Breakable() (int __i_ = 0; __i_ < 1; ++__i_)
+#define AddrofField(ptr, field) ((ptr) ? &(ptr)->field : NULL)
+
+#ifdef __cplusplus
+#	define StridedOffset(ptr, index, stride) ((decltype(ptr))( (char*)(ptr) + (index) * (stride) ))
+#	define StridedIndex(ptr, index, stride) StridedOffset(ptr, index, stride)[0]
+#elif __STDC_VERSION__ >= 202000
+#	define StridedOffset(ptr, index, stride) ((typeof(ptr))( (char*)(ptr) + (index) * (stride) ))
+#	define StridedIndex(ptr, index, stride) StridedOffset(ptr, index, stride)[0]
+#endif
+
+#define StridedOffsetT(Type, ptr, index, stride) ((Type*)( (char*)(ptr) + (intz)(index) * (stride) ))
+#define StridedIndexT(Type, ptr, index, stride) StridedOffsetT(Type, ptr, index, stride)[0]
 
 #ifndef Trace
 #	define Trace() ((void)0)
@@ -140,6 +155,7 @@
 #else
 #	define Assume(...) ((void)0)
 #	define Debugbreak() ((void)0)
+#	define Trap() (*(char*)0 = 0)
 #	define Likely(...) (__VA_ARGS__)
 #	define Unlikely(...) (__VA_ARGS__)
 #	define Unreachable() ((void)0)
@@ -186,12 +202,13 @@ typedef double    float64;
 #define INTZ_MIN PTRDIFF_MIN
 #define UINTZ_MAX SIZE_MAX
 
-struct Buffer
+struct String
 {
 	uint8 const* data;
 	intz size;
 }
-typedef Buffer, String;
+typedef String;
+typedef String Buffer;
 
 struct Range
 {
@@ -413,14 +430,14 @@ struct Slice
 	inline constexpr Slice<T>
 	SliceRange(intz start, intz end = -1) const
 	{
-		if (!size)
+		if (!count)
 			return *this;
 		if (start < 0)
-			start = size + start + 1;
+			start = count + start + 1;
 		if (end < 0)
-			end = size + end + 1;
-		start = ClampMax(start, size);
-		end = Clamp(end, start, size);
+			end = count + end + 1;
+		start = ClampMax(start, count);
+		end = Clamp(end, start, count);
 
 		return {
 			data + start,
@@ -429,10 +446,10 @@ struct Slice
 	}
 
 	inline constexpr Slice<T>
-	Slice(intz start, intz len = -1) const
+	Subslice(intz start, intz len = -1) const
 	{
 		if (len < 0)
-			len = size;
+			len = count;
 		return this->SliceRange(start, start + len);
 	}
 };
